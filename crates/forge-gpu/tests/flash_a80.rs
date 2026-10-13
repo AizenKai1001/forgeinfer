@@ -1,4 +1,4 @@
-//! The Ampere prompt-attention kernels of flash_a80.cu (m16n8k16 MMAs, cp.async K / V tiles; the scores S = Q K^T in fp32 or in fp16 accumulators) against the sm_75 kernels of flash.cu on a dense model: the
+//! The Ampere prompt-attention kernels of flash_a80.cu (m16n8k16 MMAs, cp.async K / V tiles, fp32 accumulators) against the sm_75 kernels of flash.cu on a dense model: the
 //! logits of the last prompt token must stay close, the greedy tokens that follow must match, and the speed of the three is printed. The gated head width 256 of Qwen3.5 is covered by
 //! prefill_variants.rs, the dense head width 128 by `scratch/spike/flash_a80_bench.cu` (no model of that width is kept next to the tests).
 //! Qwen2.5-0.5B-Instruct (14 query heads over 2 key/value heads of width 64); skipped when the file or a CUDA device is missing: set FORGE_QWEN2_GGUF to the file, or put it in FORGE_MODELS as
@@ -58,8 +58,8 @@ fn ampere_prompt_attention_matches_the_sm75_kernels_on_a_dense_model() {
     let mut sess = GpuSession::new(&gpu, n + 64).unwrap();
     let mut results = Vec::new();
     let mut tokens = Vec::new();
-    for (a80, hacc) in [(false, false), (true, false), (true, true)] {
-        sess.set_flash_a80(a80, hacc);
+    for a80 in [false, true] {
+        sess.set_flash_a80(a80);
         sess.reset().unwrap();
         sess.prefill_batched(&p).unwrap();
         let logits = sess.logits().unwrap();
@@ -71,7 +71,7 @@ fn ampere_prompt_attention_matches_the_sm75_kernels_on_a_dense_model() {
             best = best.min(t0.elapsed().as_secs_f64());
         }
         eprintln!(
-            "Ampere attention = {a80}, fp16 scores = {hacc}: prefill of {n} tokens in {:.1} ms = {:.0} tokens/s",
+            "Ampere attention = {a80}: prefill of {n} tokens in {:.1} ms = {:.0} tokens/s",
             best * 1e3,
             n as f64 / best
         );
@@ -80,19 +80,17 @@ fn ampere_prompt_attention_matches_the_sm75_kernels_on_a_dense_model() {
         tokens.push(sess.decode_greedy(16).unwrap());
         results.push(logits);
     }
-    for (i, name) in [(1usize, "fp32 scores"), (2, "fp16 scores")] {
-        let cos = cosine(&results[0], &results[i]);
-        let maxdiff = results[0].iter().zip(&results[i]).map(|(a, b)| (a - b).abs()).fold(0f32, f32::max);
-        let same = tokens[0].iter().zip(&tokens[i]).filter(|(a, b)| a == b).count();
-        eprintln!(
-            "{name}: logits cosine {cos:.7}, max |difference| {maxdiff:.4}, top-1 {} / {}, {same} of {} greedy tokens equal",
-            argmax(&results[0]),
-            argmax(&results[i]),
-            tokens[0].len()
-        );
-        assert!(cos > 0.9995, "the {name} attention changes the logits: cosine {cos}");
-        assert!(results[i].iter().all(|v| v.is_finite()));
-        assert!(same * 10 >= tokens[0].len() * 9, "the {name} attention changes the greedy tokens");
-    }
+    let cos = cosine(&results[0], &results[1]);
+    let same = tokens[0].iter().zip(&tokens[1]).filter(|(a, b)| a == b).count();
+    eprintln!(
+        "logits cosine {cos:.7}, top-1 {} / {}, {same} of {} greedy tokens equal",
+        argmax(&results[0]),
+        argmax(&results[1]),
+        tokens[0].len()
+    );
+    // (head width 64: the 32-key tile of the old kernel's online softmax is the same, the summation order of the scores differs in the last bit)
+    assert!(cos > 0.9995, "the Ampere attention changes the logits: cosine {cos}");
+    assert!(results[1].iter().all(|v| v.is_finite()));
+    assert!(same * 10 >= tokens[0].len() * 9, "the Ampere attention changes the greedy tokens");
     assert_eq!(argmax(&results[0]), argmax(&results[1]));
 }

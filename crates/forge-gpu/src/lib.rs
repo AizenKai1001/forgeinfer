@@ -213,10 +213,10 @@ struct Kernels {
     qkv35_rope_batch: Function,
     attn_prefill_256g: Function,
     flash_256g: Function,
-    /// the Ampere attention kernels of flash_a80.cu (m16n8k16 MMAs, cp.async K / V tiles): Qwen3.5's gated head width 256 [fp32 accumulators, fp16 accumulators for S = Q K^T], and the dense head widths
-    /// [64 fp32, 64 fp16, 128 fp32, 128 fp16] (empty kernels below sm_80: the session picks them only from compute capability 8)
-    flash_256g_a80: [Function; 2],
-    flash_a80: [Function; 4],
+    /// the Ampere attention kernels of flash_a80.cu (m16n8k16 MMAs, cp.async K / V tiles): Qwen3.5's gated head width 256 (warp pairs, 64 KB of dynamic shared memory), and the dense head widths [64, 128]
+    /// (empty kernels below sm_80: the session picks them only from compute capability 8)
+    flash_256g_a80: Function,
+    flash_a80: [Function; 2],
     gemm_f32_out: Function,
     // MTP head
     mtp_prep: Function,
@@ -946,13 +946,8 @@ impl GpuModel {
             qkv35_rope_batch: module.function("qkv35_rope_batch_kernel")?,
             attn_prefill_256g: module.function("attn_prefill_256g")?,
             flash_256g: module.function("flash_fwd_256g")?,
-            flash_256g_a80: [module.function("flash_fwd_256g_a80")?, module.function("flash_fwd_256g_a80h")?],
-            flash_a80: [
-                module.function("flash_fwd_64_a80")?,
-                module.function("flash_fwd_64_a80h")?,
-                module.function("flash_fwd_128_a80")?,
-                module.function("flash_fwd_128_a80h")?,
-            ],
+            flash_256g_a80: module.function("flash_fwd_256g_a80")?,
+            flash_a80: [module.function("flash_fwd_64_a80")?, module.function("flash_fwd_128_a80")?],
             gemm_f32_out: module.function("gemm_nt_f32")?,
             mtp_prep: module.function("mtp_prep_kernel")?,
             mtp_prep_batch: module.function("mtp_prep_batch_kernel")?,
@@ -1034,6 +1029,9 @@ impl GpuModel {
         // the multi-row kernels of blocks of 12 warps use up to 62 KB of shared memory: allow more than the 48 KB of the default launch limit
         for f in k.gemm_s80.iter().chain(k.gemm_s80h.iter()) {
             f.set_max_dynamic_smem(S80_SMEM as i32)?;
+        }
+        if dev.info.cc_major >= 8 {
+            k.flash_256g_a80.set_max_dynamic_smem(FLASH_PAIR_SMEM as i32)?;
         }
         for f in k.mm_out.iter().chain(k.mm_res.iter()).flatten() {
             f.set_max_dynamic_smem(64000)?;
@@ -1712,11 +1710,9 @@ pub struct GpuSession<'m> {
     mmq_min_m: usize,
     /// the int8 activation buffers could not be allocated (a model that fills the card): the integer GEMMs stay off for the rest of the session
     mmq_no_mem: std::cell::Cell<bool>,
-    /// the prompt attention runs on the Ampere kernels of flash_a80.cu (from compute capability 8; FORGE_FLASH_A80=0 keeps the sm_75 kernels of flash.cu / flash256.cu); `flash_hacc`: the scores S = Q K^T
-    /// accumulate in fp16 inside the tensor core (flushed into fp32 after every k16 step). Off by default: it buys only 3 to 4 percent of a long prompt (the kernel 1.15 to 1.25x) for a KL of 4e-4 (Qwen3.5, 8 attention
-    /// layers) to 1.2e-3 (a dense 28-layer model), while the fp32 form is bit-identical to the old kernels at head width 128 (FORGE_FLASH_HACC=1 turns it on)
+    /// the prompt attention runs on the Ampere kernels of flash_a80.cu (from compute capability 8; FORGE_FLASH_A80=0 keeps the sm_75 kernels of flash.cu / flash256.cu); fp32 accumulators throughout, bit-identical
+    /// to the old kernels at head width 128 and 256
     flash_a80: bool,
-    flash_hacc: bool,
     /// the Gated DeltaNet prompt scan on blocks of 128 threads with several state columns per thread (prefill_h.cu `gdn_scan_nc_*`, bit-identical results; FORGE_SCAN_NC=0 keeps one column per thread)
     scan_nc: bool,
     /// the decode attention of a dense model runs in splits of AS_CH positions (decode.cu `attn_split_kernel`) instead of one block per head with all scores in shared memory: from a context of
@@ -1850,6 +1846,8 @@ const MROW_MAX_MMQ: usize = 32;
 const MMQ_SMEM: u32 = 81920;
 /// ... and of the Q6_K one (`Smem6`: the weights take 112 bytes per row and stage, the scales 16 + 8 floats per column)
 const MMQ6_SMEM: u32 = 98304;
+/// Dynamic shared memory of the Ampere width-256 prompt attention (flash_a80.cu: two buffers of a 32-key K tile and V tile, 256 halves per row)
+const FLASH_PAIR_SMEM: u32 = 65_536;
 
 /// Bytes of the always-present dequantization scratch for small matrices (see `PrefillBufs::wscratch_small`): matrices of up to 2 M weights.
 const WSCRATCH_SMALL: usize = 4 << 20;
@@ -1929,7 +1927,6 @@ impl<'m> GpuSession<'m> {
         let plain_s80 = m.dev.info.cc_major >= 8 && std::env::var("FORGE_PLAIN_S80").map(|v| v != "0").unwrap_or(true);
         let mmq_on = m.k.mmq_ok && std::env::var("FORGE_MMQ").map(|v| v != "0").unwrap_or(true);
         let flash_a80 = m.dev.info.cc_major >= 8 && std::env::var("FORGE_FLASH_A80").map(|v| v != "0").unwrap_or(true);
-        let flash_hacc = std::env::var("FORGE_FLASH_HACC").map(|v| v == "1").unwrap_or(false) && m.dev.info.cc_major >= 8;
         let mut s = GpuSession {
             m,
             max_ctx,
@@ -2011,7 +2008,6 @@ impl<'m> GpuSession<'m> {
                 .unwrap_or(16),
             mmq_no_mem: std::cell::Cell::new(false),
             flash_a80,
-            flash_hacc,
             scan_nc: std::env::var("FORGE_SCAN_NC").map(|v| v != "0").unwrap_or(true),
             attn_split: match std::env::var("FORGE_ATTN_SPLIT").ok().as_deref() {
                 Some("1") => true,
@@ -3305,11 +3301,9 @@ impl<'m> GpuSession<'m> {
         self.scan_nc = on;
     }
 
-    /// The prompt attention on the Ampere kernels of flash_a80.cu, with fp16 accumulators for the scores when `hacc` (for A/B tests; stays off below compute capability 8).
-    pub fn set_flash_a80(&mut self, on: bool, hacc: bool) {
-        let ok = self.m.dev.info.cc_major >= 8;
-        self.flash_a80 = on && ok;
-        self.flash_hacc = hacc && ok;
+    /// The prompt attention on the Ampere kernels of flash_a80.cu (for A/B tests; stays off below compute capability 8).
+    pub fn set_flash_a80(&mut self, on: bool) {
+        self.flash_a80 = on && self.m.dev.info.cc_major >= 8;
     }
 
     pub fn max_ctx(&self) -> usize {
@@ -4158,11 +4152,16 @@ impl<'m> GpuSession<'m> {
                             .i32((2 * hd) as i32),
                     )?;
                 } else {
-                    let fa = if self.flash_a80 { k.flash_256g_a80[self.flash_hacc as usize] } else { k.flash_256g };
+                    // the Ampere kernel: warp pairs share S (grid z 1, 256 threads, 64 KB of dynamic shared memory); the old one gives each half of the 256 output dimensions its own block
+                    let (fa, grid, block, smem) = if self.flash_a80 {
+                        (k.flash_256g_a80, (((t + 63) / 64) as u32, nh as u32, 1), (256, 1, 1), FLASH_PAIR_SMEM)
+                    } else {
+                        (k.flash_256g, (((t + 63) / 64) as u32, nh as u32, 2), (128, 1, 1), 0)
+                    };
                     fa.launch(
-                        (((t + 63) / 64) as u32, nh as u32, 2),
-                        (128, 1, 1),
-                        0,
+                        grid,
+                        block,
+                        smem,
                         st,
                         &Args::new()
                             .buf(&pf.q)
@@ -4486,7 +4485,7 @@ impl<'m> GpuSession<'m> {
             let use_flash = std::env::var("FORGE_NO_FLASH").is_err();
             let (attn, qb) = if use_flash {
                 if self.flash_a80 {
-                    (k.flash_a80[(hd != 64) as usize * 2 + self.flash_hacc as usize], 64)
+                    (k.flash_a80[(hd != 64) as usize], 64)
                 } else {
                     (if hd == 64 { k.flash_64 } else { k.flash_128 }, 64)
                 }

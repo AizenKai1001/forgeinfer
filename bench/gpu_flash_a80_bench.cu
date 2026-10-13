@@ -27,16 +27,15 @@ struct Cfg {
     bool gated;
     void* old_k;
     void* new_k;
-    void* new_kh;
 };
 
 int main(int argc, char** argv) {
     const int T = argc > 1 ? atoi(argv[1]) : 1024, pos0 = argc > 2 ? atoi(argv[2]) : 14336;
     const int only = argc > 3 ? atoi(argv[3]) : -1;
     Cfg cfgs[] = {
-        {"hd 256 gated (16 heads, 4 kv)", 256, 16, 4, 2, true, (void*)flash_fwd_256g, (void*)flash_fwd_256g_a80, (void*)flash_fwd_256g_a80h},
-        {"hd 128 (32 heads, 8 kv)", 128, 32, 8, 1, false, (void*)flash_fwd_128, (void*)flash_fwd_128_a80, (void*)flash_fwd_128_a80h},
-        {"hd 64 (14 heads, 2 kv)", 64, 14, 2, 1, false, (void*)flash_fwd_64, (void*)flash_fwd_64_a80, (void*)flash_fwd_64_a80h},
+        {"hd 256 gated (16 heads, 4 kv)", 256, 16, 4, 2, true, (void*)flash_fwd_256g, (void*)flash_fwd_256g_a80},
+        {"hd 128 (32 heads, 8 kv)", 128, 32, 8, 1, false, (void*)flash_fwd_128, (void*)flash_fwd_128_a80},
+        {"hd 64 (14 heads, 2 kv)", 64, 14, 2, 1, false, (void*)flash_fwd_64, (void*)flash_fwd_64_a80},
     };
     cudaEvent_t e0, e1;
     cudaEventCreate(&e0);
@@ -59,14 +58,22 @@ int main(int argc, char** argv) {
         CK(cudaMemcpy(d_k, k.data(), k.size() * 2, cudaMemcpyHostToDevice));
         CK(cudaMemcpy(d_v, v.data(), v.size() * 2, cudaMemcpyHostToDevice));
         CK(cudaMemcpy(d_g, gate.data(), gate.size() * 2, cudaMemcpyHostToDevice));
-        struct Ent { const char* name; void* f; } ents[] = {{"old (sm_75 kernel)", c.old_k}, {"a80  (fp32 acc)", c.new_k}, {"a80h (fp16 acc S)", c.new_kh}};
+        struct Ent { const char* name; void* f; } ents[] = {{"old (sm_75 kernel)", c.old_k}, {"a80  (fp32 acc)", c.new_k}};
         std::vector<half> ref((size_t)T * q_dim), got((size_t)T * q_dim);
+        if (c.gated) {
+            CK(cudaFuncSetAttribute((const void*)c.new_k, cudaFuncAttributeMaxDynamicSharedMemorySize, 65536));
+        }
         auto run = [&](void* f, int TT, int pp) {
+            if (c.gated && f != c.old_k) {   // the Ampere width-256 kernels: warp pairs share S (grid z 1, 256 threads, 64 KB of dynamic shared memory)
+                dim3 grid((TT + 63) / 64, n_head, 1);
+                ((KernG)f)<<<grid, 256, 65536>>>(d_q, d_k, d_v, d_o, TT, pp, n_head, n_kv, d_g, q_dim, HQ);
+                return;
+            }
             dim3 grid((TT + 63) / 64, n_head, c.z);
             if (c.gated) ((KernG)f)<<<grid, 128>>>(d_q, d_k, d_v, d_o, TT, pp, n_head, n_kv, d_g, q_dim, HQ);
             else ((KernD)f)<<<grid, 128>>>(d_q, d_k, d_v, d_o, TT, pp, n_head, n_kv);
         };
-        for (int ei = 0; ei < 3; ei++) {
+        for (int ei = 0; ei < 2; ei++) {
             cudaFuncAttributes fa;
             cudaFuncGetAttributes(&fa, (const void*)ents[ei].f);
             CK(cudaMemset(d_o, 0, (size_t)T * q_dim * 2));
@@ -100,7 +107,7 @@ int main(int argc, char** argv) {
             const int T2 = sh[0], p2 = sh[1];
             if (p2 + T2 > ctx) continue;
             std::vector<half> ref2((size_t)T2 * q_dim), got2((size_t)T2 * q_dim);
-            for (int ei = 0; ei < 3; ei++) {
+            for (int ei = 0; ei < 2; ei++) {
                 CK(cudaMemset(d_o, 0, (size_t)T2 * q_dim * 2));
                 run(ents[ei].f, T2, p2);
                 CK(cudaDeviceSynchronize());

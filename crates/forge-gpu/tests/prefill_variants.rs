@@ -162,8 +162,9 @@ fn int8_prompt_gemms_agree_with_the_fp16_path() {
     assert!(results[1].iter().all(|v| v.is_finite()));
 }
 
-/// The Ampere attention kernels of flash_a80.cu (m16n8k16 MMAs, cp.async K / V tiles; the scores in fp32 or in fp16 accumulators) against the sm_75 kernels of flash256.cu on a prompt of 2,500 tokens (three
-/// chunks, so the later chunks attend to earlier ones): the logits of the last token must stay close, and the speed of the three is printed. Qwen3.5-0.8B (head width 256, gated).
+/// The Ampere attention kernels of flash_a80.cu (warp pairs sharing S, 32-key tiles in swizzled shared memory, m16n8k16 MMAs, cp.async) against the sm_75 kernels of flash256.cu on a prompt of 2,500 tokens (three
+/// chunks, so the later chunks attend to earlier ones): with fp32 accumulators in both the results are bit-identical, so the logits of the last token must be equal; the speed of both is printed. Qwen3.5-0.8B
+/// (head width 256, gated).
 #[test]
 fn ampere_attention_kernels_agree_with_the_sm75_ones() {
     let path = std::env::var("FORGE_VARIANTS_MODEL")
@@ -200,8 +201,8 @@ fn ampere_attention_kernels_agree_with_the_sm75_ones() {
     let mut sess = GpuSession::new(&gpu, 2600).unwrap();
     // (on a device below compute capability 8 the three configurations are the same kernels: the comparison is trivially exact)
     let mut results = Vec::new();
-    for (a80, hacc) in [(false, false), (true, false), (true, true)] {
-        sess.set_flash_a80(a80, hacc);
+    for a80 in [false, true] {
+        sess.set_flash_a80(a80);
         sess.reset().unwrap();
         sess.prefill_batched(&ids).unwrap();
         let logits = sess.logits().unwrap();
@@ -213,24 +214,16 @@ fn ampere_attention_kernels_agree_with_the_sm75_ones() {
             best = best.min(t0.elapsed().as_secs_f64());
         }
         eprintln!(
-            "Ampere attention = {a80}, fp16 scores = {hacc}: prefill of {} tokens in {:.1} ms = {:.0} tokens/s",
+            "Ampere attention = {a80}: prefill of {} tokens in {:.1} ms = {:.0} tokens/s",
             ids.len(),
             best * 1e3,
             ids.len() as f64 / best
         );
         results.push(logits);
     }
-    for (i, name) in [(1, "fp32 scores"), (2, "fp16 scores")] {
-        let cos = cosine(&results[0], &results[i]);
-        eprintln!(
-            "{name}: logits cosine {cos:.7}, top-1 {} / {}",
-            argmax(&results[0]),
-            argmax(&results[i])
-        );
-        assert!(cos > 0.9995, "the {name} attention changes the logits: cosine {cos}");
-        assert!(results[i].iter().all(|v| v.is_finite()));
-    }
-    assert_eq!(argmax(&results[0]), argmax(&results[1]));
+    eprintln!("logits cosine {:.7}, top-1 {} / {}", cosine(&results[0], &results[1]), argmax(&results[0]), argmax(&results[1]));
+    assert!(results[0] == results[1], "the Ampere attention changes the logits (cosine {})", cosine(&results[0], &results[1]));
+    assert!(results[1].iter().all(|v| v.is_finite()));
 }
 
 /// The Gated DeltaNet prompt scan with several state columns per thread (prefill_h.cu `gdn_scan_nc_*`) sums every column in the order of the one-column-per-thread kernel, so a whole prompt pass must give
