@@ -223,6 +223,8 @@ pub struct StudioApp {
     pub scroll_to_bottom: bool,
     pub show_params: bool,
     pub last_speed: Option<f32>,
+    /// A failed save was already reported.
+    save_warned: bool,
     /// The name typed in the parameters panel for a new preset.
     pub preset_name: String,
     /// The model card whose Delete button was pressed once (the second press deletes).
@@ -306,6 +308,7 @@ impl StudioApp {
             scroll_to_bottom: false,
             show_params: false,
             last_speed: None,
+            save_warned: false,
             preset_name: String::new(),
             confirm_delete: None,
             attachments: Vec::new(),
@@ -705,8 +708,18 @@ impl StudioApp {
             return;
         }
         self.chat.updated = crate::util::unix_secs();
-        let _ = self.store.save(&self.chat);
+        if let Err(e) = self.store.save(&self.chat) {
+            self.warn_once_saving(&e.to_string());
+        }
         self.chat_list = self.store.list();
+    }
+
+    /// A chat or the settings could not be written: say so once (the folder may be read-only), not at every answer.
+    pub fn warn_once_saving(&mut self, why: &str) {
+        if !self.save_warned {
+            self.save_warned = true;
+            self.toast(format!("Could not save to the data folder ({why}). Chats and settings of this session will be lost: see Settings > About for the folder."));
+        }
     }
 
     pub fn is_generating(&self) -> bool {
@@ -1168,7 +1181,9 @@ impl StudioApp {
         if self.settings != self.saved {
             let since = *self.dirty_since.get_or_insert_with(Instant::now);
             if since.elapsed() > Duration::from_millis(700) {
-                let _ = self.settings.save();
+                if let Err(e) = self.settings.save() {
+                    self.warn_once_saving(&e.to_string());
+                }
                 self.saved = self.settings.clone();
                 self.dirty_since = None;
             }

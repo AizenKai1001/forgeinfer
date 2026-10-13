@@ -248,6 +248,19 @@ impl Default for Settings {
 /// The app's own folder: settings, chats, downloaded models. `FORGE_STUDIO_HOME` overrides it; a folder named `data` next to the program
 /// makes the app portable (everything stays beside the program).
 pub fn data_dir() -> PathBuf {
+    static DIR: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+    DIR.get_or_init(data_dir_uncached).clone()
+}
+
+/// Can files be created in this folder (a program in `C:\Program Files` cannot write next to itself)?
+pub fn writable(dir: &Path) -> bool {
+    let probe = dir.join(".forge-write-test");
+    let ok = std::fs::write(&probe, b"x").is_ok();
+    let _ = std::fs::remove_file(&probe);
+    ok
+}
+
+fn data_dir_uncached() -> PathBuf {
     if let Some(p) = std::env::var_os("FORGE_STUDIO_HOME") {
         return PathBuf::from(p);
     }
@@ -256,7 +269,8 @@ pub fn data_dir() -> PathBuf {
         .and_then(|e| e.parent().map(Path::to_path_buf))
     {
         let portable = dir.join("data");
-        if portable.is_dir() {
+        // portable mode only where the folder can be written: otherwise the settings and chats of the user's profile are used
+        if portable.is_dir() && writable(&portable) {
             return portable;
         }
     }
@@ -458,6 +472,22 @@ mod tests {
         let s = Settings::parse("\u{feff}{\"port\": 4321}").unwrap();
         assert_eq!(s.port, 4321);
         assert!(Settings::parse("not json").is_err());
+    }
+
+    #[test]
+    fn only_a_folder_that_can_be_written_counts_for_portable_mode() {
+        let dir = std::env::temp_dir().join(format!(
+            "forge-studio-test-writable-{}",
+            crate::util::new_id()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        assert!(writable(&dir));
+        assert!(
+            !dir.join(".forge-write-test").exists(),
+            "the probe cleans up after itself"
+        );
+        assert!(!writable(&dir.join("missing")));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
