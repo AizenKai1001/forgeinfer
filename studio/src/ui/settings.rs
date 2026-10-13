@@ -244,6 +244,10 @@ fn about(ui: &mut Ui) {
             if ui.button("Open data folder").clicked() {
                 crate::util::reveal(&data_dir());
             }
+            ui.hyperlink_to(
+                "Source, releases and documentation",
+                "https://github.com/AizenKai1001/forgeinfer",
+            );
         });
         muted(ui, "Chats, settings and downloads stay on this computer. The only network use is what you ask for: model searches and downloads from huggingface.co, and a server you connect to.");
     });
