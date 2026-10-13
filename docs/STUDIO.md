@@ -59,7 +59,7 @@ Settings → Engine picks what runs the models:
 | engine | runs | needs |
 |---|---|---|
 | **ForgeInfer engine (CUDA)** | GGUF models (`llama`, `qwen3`, `qwen35` architectures) on an NVIDIA GPU, with KV-cache compression, the CPU/GPU split and speculative decoding | the `forge` program: next to the app, in `target/release/`, in the `PATH`, `FORGE_BIN`, or the path in Settings |
-| **llama.cpp server** | any GGUF llama.cpp supports, on any GPU or the CPU; works on macOS | `llama-server` from a [llama.cpp release](https://github.com/ggml-org/llama.cpp/releases) in the `PATH` or in Settings |
+| **llama.cpp server** | any GGUF llama.cpp supports, on any GPU or the CPU; works on macOS. Tested on Windows with the CUDA build of release b11517 (Qwen3.5-4B: streaming, reasoning blocks and tokens per second all work) | `llama-server` from a [llama.cpp release](https://github.com/ggml-org/llama.cpp/releases) in the `PATH` or in Settings |
 | **Connect to a running server** | nothing is started: Studio talks to the address you enter | an OpenAI-compatible server (Ollama on `:11434`, LM Studio on `:1234`, vLLM, the engine on another computer) |
 
 Settings → When a model loads: context length, KV-cache mode (16-bit, 8-bit, 4-bit), speculative depth (Qwen3.5 models draft tokens with their own prediction head; 2 to 3 is fastest), extra engine arguments, "load the last model when the app starts", and **Unload after N idle minutes** (frees the video memory for games; any request to the local server counts as activity).

@@ -11,18 +11,31 @@ use crate::theme;
 use crate::util::{human_bytes, human_gib};
 
 fn code(ui: &mut Ui, id: &str, text: &str) {
-    egui::Frame::new().fill(theme::CODE_BG).stroke(egui::Stroke::new(1.0, theme::BORDER)).corner_radius(egui::CornerRadius::same(8)).inner_margin(egui::Margin::same(10)).show(ui, |ui| {
-        ui.set_width(ui.available_width());
-        ui.horizontal(|ui| {
-            muted(ui, id);
-            right_aligned(ui, |ui| {
-                if ui.small_button("Copy").clicked() {
-                    ui.ctx().copy_text(text.to_string());
-                }
+    egui::Frame::new()
+        .fill(theme::CODE_BG)
+        .stroke(egui::Stroke::new(1.0, theme::BORDER))
+        .corner_radius(egui::CornerRadius::same(8))
+        .inner_margin(egui::Margin::same(10))
+        .show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.horizontal(|ui| {
+                muted(ui, id);
+                right_aligned(ui, |ui| {
+                    if ui.small_button("Copy").clicked() {
+                        ui.ctx().copy_text(text.to_string());
+                    }
+                });
             });
+            ui.add(
+                egui::Label::new(
+                    RichText::new(text)
+                        .monospace()
+                        .size(12.5)
+                        .color(theme::TEXT),
+                )
+                .wrap(),
+            );
         });
-        ui.add(egui::Label::new(RichText::new(text).monospace().size(12.5).color(theme::TEXT)).wrap());
-    });
 }
 
 pub fn show_server(app: &mut StudioApp, ui: &mut Ui) {
@@ -176,34 +189,67 @@ pub fn show_hardware(app: &mut StudioApp, ui: &mut Ui) {
 }
 
 pub fn show_logs(app: &mut StudioApp, ui: &mut Ui) {
-    egui::Frame::new().inner_margin(egui::Margin::symmetric(22, 16)).show(ui, |ui| {
-        ui.set_width(ui.available_width());
-        ui.horizontal(|ui| {
-            heading(ui, "Logs");
-            right_aligned(ui, |ui| {
-                if ui.button("Copy all").clicked() {
-                    ui.ctx().copy_text(app.engine.log().join("\n"));
-                    app.actions.push(Action::Toast("Log copied".to_string()));
-                }
-            });
-        });
-        muted(ui, "The command line and everything the engine prints: loading steps, speed, errors.");
-        ui.add_space(6.0);
-        let log = app.engine.log();
-        egui::Frame::new().fill(theme::CODE_BG).stroke(egui::Stroke::new(1.0, theme::BORDER)).corner_radius(egui::CornerRadius::same(8)).inner_margin(egui::Margin::same(8)).show(ui, |ui| {
+    egui::Frame::new()
+        .inner_margin(egui::Margin::symmetric(22, 16))
+        .show(ui, |ui| {
             ui.set_width(ui.available_width());
-            let row_h = 16.0;
-            let h = (ui.available_height() - 20.0).max(120.0);
-            ScrollArea::vertical().id_salt("log_rows").max_height(h).auto_shrink([false, false]).stick_to_bottom(true).show_rows(ui, row_h, log.len().max(1), |ui, range| {
-                if log.is_empty() {
-                    ui.label(RichText::new("Nothing yet: load a model.").small().color(theme::MUTED));
-                    return;
-                }
-                for line in &log[range] {
-                    let color = if line.to_lowercase().contains("error") || line.contains("cannot") || line.contains("failed") { theme::BAD } else if line.starts_with('$') { theme::ACCENT } else { theme::TEXT };
-                    ui.add(egui::Label::new(RichText::new(line).monospace().size(12.0).color(color)).extend());
-                }
+            ui.horizontal(|ui| {
+                heading(ui, "Logs");
+                right_aligned(ui, |ui| {
+                    if ui.button("Copy all").clicked() {
+                        ui.ctx().copy_text(app.engine.log().join("\n"));
+                        app.actions.push(Action::Toast("Log copied".to_string()));
+                    }
+                });
             });
+            muted(
+                ui,
+                "The command line and everything the engine prints: loading steps, speed, errors.",
+            );
+            ui.add_space(6.0);
+            let log = app.engine.log();
+            egui::Frame::new()
+                .fill(theme::CODE_BG)
+                .stroke(egui::Stroke::new(1.0, theme::BORDER))
+                .corner_radius(egui::CornerRadius::same(8))
+                .inner_margin(egui::Margin::same(8))
+                .show(ui, |ui| {
+                    ui.set_width(ui.available_width());
+                    let row_h = 16.0;
+                    let h = (ui.available_height() - 20.0).max(120.0);
+                    ScrollArea::vertical()
+                        .id_salt("log_rows")
+                        .max_height(h)
+                        .auto_shrink([false, false])
+                        .stick_to_bottom(true)
+                        .show_rows(ui, row_h, log.len().max(1), |ui, range| {
+                            if log.is_empty() {
+                                ui.label(
+                                    RichText::new("Nothing yet: load a model.")
+                                        .small()
+                                        .color(theme::MUTED),
+                                );
+                                return;
+                            }
+                            for line in &log[range] {
+                                let color = if line.to_lowercase().contains("error")
+                                    || line.contains("cannot")
+                                    || line.contains("failed")
+                                {
+                                    theme::BAD
+                                } else if line.starts_with('$') {
+                                    theme::ACCENT
+                                } else {
+                                    theme::TEXT
+                                };
+                                ui.add(
+                                    egui::Label::new(
+                                        RichText::new(line).monospace().size(12.0).color(color),
+                                    )
+                                    .extend(),
+                                );
+                            }
+                        });
+                });
         });
-    });
 }

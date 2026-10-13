@@ -70,12 +70,17 @@ pub fn new_id() -> String {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_micros() as u64)
         .unwrap_or(0);
-    format!("{micros:x}{:02x}", COUNTER.fetch_add(1, Ordering::Relaxed) % 256)
+    format!(
+        "{micros:x}{:02x}",
+        COUNTER.fetch_add(1, Ordering::Relaxed) % 256
+    )
 }
 
 pub fn home_dir() -> PathBuf {
     let var = if cfg!(windows) { "USERPROFILE" } else { "HOME" };
-    std::env::var_os(var).map(PathBuf::from).unwrap_or_else(|| PathBuf::from("."))
+    std::env::var_os(var)
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("."))
 }
 
 /// The first `n` characters of `s`, with an ellipsis when it was cut.
@@ -153,7 +158,12 @@ pub fn die_with_parent_after(child: &std::process::Child) {
         }
         extern "system" {
             fn CreateJobObjectW(attributes: *mut core::ffi::c_void, name: *const u16) -> Handle;
-            fn SetInformationJobObject(job: Handle, class: i32, info: *mut core::ffi::c_void, len: u32) -> i32;
+            fn SetInformationJobObject(
+                job: Handle,
+                class: i32,
+                info: *mut core::ffi::c_void,
+                len: u32,
+            ) -> i32;
             fn AssignProcessToJobObject(job: Handle, process: Handle) -> i32;
         }
         static JOB: OnceLock<usize> = OnceLock::new();
@@ -166,7 +176,12 @@ pub fn die_with_parent_after(child: &std::process::Child) {
                 }
                 let mut info: ExtendedLimit = core::mem::zeroed();
                 info.basic.limit_flags = 0x2000; // JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
-                SetInformationJobObject(h, 9, &mut info as *mut ExtendedLimit as *mut core::ffi::c_void, core::mem::size_of::<ExtendedLimit>() as u32);
+                SetInformationJobObject(
+                    h,
+                    9,
+                    &mut info as *mut ExtendedLimit as *mut core::ffi::c_void,
+                    core::mem::size_of::<ExtendedLimit>() as u32,
+                );
                 h as usize
             }
         });
@@ -184,7 +199,9 @@ pub fn reveal(path: &Path) {
     let target = if path.is_dir() {
         path.to_path_buf()
     } else {
-        path.parent().map(Path::to_path_buf).unwrap_or_else(|| path.to_path_buf())
+        path.parent()
+            .map(Path::to_path_buf)
+            .unwrap_or_else(|| path.to_path_buf())
     };
     let result = if cfg!(windows) {
         Command::new("explorer").arg(&target).spawn()

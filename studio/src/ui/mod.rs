@@ -7,7 +7,10 @@ pub mod server;
 pub mod settings;
 pub mod widgets;
 
-use eframe::egui::{self, Align, Align2, Color32, CornerRadius, FontId, Frame, Layout, Margin, Panel, RichText, Sense, Stroke, Ui};
+use eframe::egui::{
+    self, Align, Align2, Color32, CornerRadius, FontId, Frame, Layout, Margin, Panel, RichText,
+    Sense, Stroke, Ui,
+};
 
 use crate::app::{Action, Screen, StudioApp};
 use crate::engine::EngineState;
@@ -23,22 +26,34 @@ pub fn draw(app: &mut StudioApp, ui: &mut Ui) {
     Panel::left("rail")
         .exact_size(RAIL_WIDTH)
         .resizable(false)
-        .frame(Frame::new().fill(theme::RAIL).inner_margin(Margin::same(10)).stroke(Stroke::new(1.0, theme::BORDER)))
+        .frame(
+            Frame::new()
+                .fill(theme::RAIL)
+                .inner_margin(Margin::same(10))
+                .stroke(Stroke::new(1.0, theme::BORDER)),
+        )
         .show(ui, |ui| rail(app, ui));
     Panel::bottom("status")
         .exact_size(28.0)
         .resizable(false)
-        .frame(Frame::new().fill(theme::RAIL).inner_margin(Margin::symmetric(12, 0)).stroke(Stroke::new(1.0, theme::BORDER)))
+        .frame(
+            Frame::new()
+                .fill(theme::RAIL)
+                .inner_margin(Margin::symmetric(12, 0))
+                .stroke(Stroke::new(1.0, theme::BORDER)),
+        )
         .show(ui, |ui| status_bar(app, ui));
-    egui::CentralPanel::default().frame(Frame::new().fill(theme::PANEL)).show(ui, |ui| match app.screen {
-        Screen::Chat => chat::show(app, ui),
-        Screen::Library => library::show(app, ui),
-        Screen::Discover => discover::show(app, ui),
-        Screen::Server => server::show_server(app, ui),
-        Screen::Hardware => server::show_hardware(app, ui),
-        Screen::Logs => server::show_logs(app, ui),
-        Screen::Settings => settings::show(app, ui),
-    });
+    egui::CentralPanel::default()
+        .frame(Frame::new().fill(theme::PANEL))
+        .show(ui, |ui| match app.screen {
+            Screen::Chat => chat::show(app, ui),
+            Screen::Library => library::show(app, ui),
+            Screen::Discover => discover::show(app, ui),
+            Screen::Server => server::show_server(app, ui),
+            Screen::Hardware => server::show_hardware(app, ui),
+            Screen::Logs => server::show_logs(app, ui),
+            Screen::Settings => settings::show(app, ui),
+        });
     toasts(app, ui.ctx());
 }
 
@@ -56,8 +71,17 @@ fn icon(screen: Screen) -> &'static str {
 
 fn rail(app: &mut StudioApp, ui: &mut Ui) {
     ui.add_space(4.0);
-    ui.label(RichText::new("Forge Studio").size(21.0).color(theme::STRONG).family(theme::bold_family()));
-    ui.label(RichText::new("local models, your hardware").small().color(theme::MUTED));
+    ui.label(
+        RichText::new("Forge Studio")
+            .size(21.0)
+            .color(theme::STRONG)
+            .family(theme::bold_family()),
+    );
+    ui.label(
+        RichText::new("local models, your hardware")
+            .small()
+            .color(theme::MUTED),
+    );
     ui.add_space(14.0);
     for s in Screen::ALL {
         if nav_item(ui, icon(s), s.label(), app.screen == s) {
@@ -66,14 +90,18 @@ fn rail(app: &mut StudioApp, ui: &mut Ui) {
         ui.add_space(1.0);
     }
     // the engine chip sits at the bottom of the rail
-    let busy = matches!(app.engine.state(), EngineState::Ready { .. } | EngineState::Loading { .. });
+    let busy = matches!(
+        app.engine.state(),
+        EngineState::Ready { .. } | EngineState::Loading { .. }
+    );
     let chip_h = if busy { 104.0 } else { 56.0 };
     ui.add_space((ui.available_height() - chip_h).max(6.0));
     engine_chip(app, ui);
 }
 
 fn nav_item(ui: &mut Ui, icon: &str, label: &str, selected: bool) -> bool {
-    let (rect, response) = ui.allocate_exact_size(egui::vec2(ui.available_width(), 34.0), Sense::click());
+    let (rect, response) =
+        ui.allocate_exact_size(egui::vec2(ui.available_width(), 34.0), Sense::click());
     let painter = ui.painter_at(rect);
     let fill = if selected {
         theme::CARD_HOVER
@@ -84,31 +112,68 @@ fn nav_item(ui: &mut Ui, icon: &str, label: &str, selected: bool) -> bool {
     };
     painter.rect_filled(rect, CornerRadius::same(8), fill);
     if selected {
-        painter.rect_filled(egui::Rect::from_min_size(rect.min + egui::vec2(0.0, 8.0), egui::vec2(3.0, rect.height() - 16.0)), CornerRadius::same(2), theme::ACCENT);
+        painter.rect_filled(
+            egui::Rect::from_min_size(
+                rect.min + egui::vec2(0.0, 8.0),
+                egui::vec2(3.0, rect.height() - 16.0),
+            ),
+            CornerRadius::same(2),
+            theme::ACCENT,
+        );
     }
-    let color = if selected { theme::STRONG } else { theme::MUTED };
-    painter.text(rect.left_center() + egui::vec2(16.0, 0.0), Align2::LEFT_CENTER, icon, FontId::proportional(15.0), if selected { theme::ACCENT } else { color });
-    painter.text(rect.left_center() + egui::vec2(42.0, 0.0), Align2::LEFT_CENTER, label, FontId::proportional(14.5), color);
-    response.on_hover_cursor(egui::CursorIcon::PointingHand).clicked()
+    let color = if selected {
+        theme::STRONG
+    } else {
+        theme::MUTED
+    };
+    painter.text(
+        rect.left_center() + egui::vec2(16.0, 0.0),
+        Align2::LEFT_CENTER,
+        icon,
+        FontId::proportional(15.0),
+        if selected { theme::ACCENT } else { color },
+    );
+    painter.text(
+        rect.left_center() + egui::vec2(42.0, 0.0),
+        Align2::LEFT_CENTER,
+        label,
+        FontId::proportional(14.5),
+        color,
+    );
+    response
+        .on_hover_cursor(egui::CursorIcon::PointingHand)
+        .clicked()
 }
 
 fn engine_chip(app: &mut StudioApp, ui: &mut Ui) {
     let (title, detail, color) = engine_summary(app);
-    Frame::new().fill(theme::CARD).corner_radius(CornerRadius::same(8)).stroke(Stroke::new(1.0, theme::BORDER)).inner_margin(Margin::same(8)).show(ui, |ui| {
-        ui.set_width(ui.available_width());
-        ui.with_layout(Layout::top_down(Align::Min), |ui| {
-            ui.horizontal(|ui| {
-                dot(ui, color);
-                ui.label(RichText::new(title).small().color(theme::TEXT));
+    Frame::new()
+        .fill(theme::CARD)
+        .corner_radius(CornerRadius::same(8))
+        .stroke(Stroke::new(1.0, theme::BORDER))
+        .inner_margin(Margin::same(8))
+        .show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.with_layout(Layout::top_down(Align::Min), |ui| {
+                ui.horizontal(|ui| {
+                    dot(ui, color);
+                    ui.label(RichText::new(title).small().color(theme::TEXT));
+                });
+                if !detail.is_empty() {
+                    ui.add(
+                        egui::Label::new(RichText::new(detail).small().color(theme::MUTED))
+                            .truncate(),
+                    );
+                }
+                if matches!(
+                    app.engine.state(),
+                    EngineState::Ready { .. } | EngineState::Loading { .. }
+                ) && ui.small_button("Eject").clicked()
+                {
+                    app.actions.push(Action::Eject);
+                }
             });
-            if !detail.is_empty() {
-                ui.add(egui::Label::new(RichText::new(detail).small().color(theme::MUTED)).truncate());
-            }
-            if matches!(app.engine.state(), EngineState::Ready { .. } | EngineState::Loading { .. }) && ui.small_button("Eject").clicked() {
-                app.actions.push(Action::Eject);
-            }
         });
-    });
 }
 
 /// (headline, detail, colour) of the engine for the chips and the status bar.
@@ -116,15 +181,31 @@ pub fn engine_summary(app: &StudioApp) -> (String, String, Color32) {
     if app.settings.engine == EngineKind::External {
         let ok = !app.external_models.is_empty();
         return (
-            if ok { "Connected".to_string() } else { "Not connected".to_string() },
-            if ok { app.external_pick.clone() } else { app.settings.external_url.clone() },
+            if ok {
+                "Connected".to_string()
+            } else {
+                "Not connected".to_string()
+            },
+            if ok {
+                app.external_pick.clone()
+            } else {
+                app.settings.external_url.clone()
+            },
             if ok { theme::GOOD } else { theme::MUTED },
         );
     }
     match app.engine.state() {
         EngineState::Idle => ("No model loaded".to_string(), String::new(), theme::MUTED),
-        EngineState::Loading { model, since } => (format!("Loading ({:.0} s)", since.elapsed().as_secs_f32()), model, theme::WARN),
-        EngineState::Ready { model, port, .. } => ("Ready".to_string(), format!("{model}  :{port}"), theme::GOOD),
+        EngineState::Loading { model, since } => (
+            format!("Loading ({:.0} s)", since.elapsed().as_secs_f32()),
+            model,
+            theme::WARN,
+        ),
+        EngineState::Ready { model, port, .. } => (
+            "Ready".to_string(),
+            format!("{model}  :{port}"),
+            theme::GOOD,
+        ),
         EngineState::Failed { model, .. } => ("Failed to load".to_string(), model, theme::BAD),
     }
 }
@@ -133,7 +214,15 @@ fn status_bar(app: &mut StudioApp, ui: &mut Ui) {
     ui.horizontal_centered(|ui| {
         let (title, detail, color) = engine_summary(app);
         dot(ui, color);
-        ui.label(RichText::new(if detail.is_empty() { title } else { format!("{title}: {detail}") }).small().color(theme::TEXT));
+        ui.label(
+            RichText::new(if detail.is_empty() {
+                title
+            } else {
+                format!("{title}: {detail}")
+            })
+            .small()
+            .color(theme::TEXT),
+        );
         if let EngineState::Failed { message, .. } = app.engine.state() {
             ui.add(egui::Label::new(RichText::new(message).small().color(theme::BAD)).truncate());
         }
@@ -144,12 +233,24 @@ fn status_bar(app: &mut StudioApp, ui: &mut Ui) {
 fn right_to_left(ui: &mut Ui, app: &StudioApp) {
     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
         if let Some(s) = app.last_speed.filter(|s| *s > 0.0) {
-            ui.label(RichText::new(format!("{s:.1} tok/s")).small().color(theme::ACCENT));
+            ui.label(
+                RichText::new(format!("{s:.1} tok/s"))
+                    .small()
+                    .color(theme::ACCENT),
+            );
             ui.separator();
         }
         if let Some(g) = app.hw.gpus.first() {
-            let used = if g.vram_used > 0 { format!("  {} / {}", human_gib(g.vram_used), human_gib(g.vram_total)) } else { format!("  {}", human_gib(g.vram_total)) };
-            ui.label(RichText::new(format!("{}{}", g.name, used)).small().color(theme::MUTED));
+            let used = if g.vram_used > 0 {
+                format!("  {} / {}", human_gib(g.vram_used), human_gib(g.vram_total))
+            } else {
+                format!("  {}", human_gib(g.vram_total))
+            };
+            ui.label(
+                RichText::new(format!("{}{}", g.name, used))
+                    .small()
+                    .color(theme::MUTED),
+            );
         }
     });
 }
@@ -158,13 +259,21 @@ fn toasts(app: &mut StudioApp, ctx: &egui::Context) {
     if app.toasts.is_empty() {
         return;
     }
-    egui::Area::new(egui::Id::new("toasts")).anchor(Align2::RIGHT_BOTTOM, [-16.0, -44.0]).order(egui::Order::Foreground).show(ctx, |ui| {
-        for t in &app.toasts {
-            Frame::new().fill(theme::CARD_HOVER).corner_radius(CornerRadius::same(8)).stroke(Stroke::new(1.0, theme::ACCENT.gamma_multiply(0.6))).inner_margin(Margin::symmetric(12, 8)).show(ui, |ui| {
-                ui.set_max_width(380.0);
-                ui.add(egui::Label::new(RichText::new(&t.text).color(theme::TEXT)).wrap());
-            });
-            ui.add_space(4.0);
-        }
-    });
+    egui::Area::new(egui::Id::new("toasts"))
+        .anchor(Align2::RIGHT_BOTTOM, [-16.0, -44.0])
+        .order(egui::Order::Foreground)
+        .show(ctx, |ui| {
+            for t in &app.toasts {
+                Frame::new()
+                    .fill(theme::CARD_HOVER)
+                    .corner_radius(CornerRadius::same(8))
+                    .stroke(Stroke::new(1.0, theme::ACCENT.gamma_multiply(0.6)))
+                    .inner_margin(Margin::symmetric(12, 8))
+                    .show(ui, |ui| {
+                        ui.set_max_width(380.0);
+                        ui.add(egui::Label::new(RichText::new(&t.text).color(theme::TEXT)).wrap());
+                    });
+                ui.add_space(4.0);
+            }
+        });
 }

@@ -47,10 +47,20 @@ impl ModelEntry {
             return Some("a vision projector goes with a model, it is not a model".to_string());
         }
         if !FORGE_ARCHS.contains(&self.arch.as_str()) {
-            return Some(format!("the \"{}\" architecture is not supported yet (llama, qwen3 and qwen3.5 are)", self.arch));
+            return Some(format!(
+                "the \"{}\" architecture is not supported yet (llama, qwen3 and qwen3.5 are)",
+                self.arch
+            ));
         }
         if self.tokenizer != "gpt2" {
-            return Some(format!("its tokenizer type is \"{}\"; only byte-level BPE (gpt2) is supported yet", if self.tokenizer.is_empty() { "none" } else { &self.tokenizer }));
+            return Some(format!(
+                "its tokenizer type is \"{}\"; only byte-level BPE (gpt2) is supported yet",
+                if self.tokenizer.is_empty() {
+                    "none"
+                } else {
+                    &self.tokenizer
+                }
+            ));
         }
         None
     }
@@ -107,7 +117,10 @@ fn dominant_dtype(g: &Gguf) -> String {
             *by.entry(t.dtype.name()).or_default() += t.checked_n_bytes().unwrap_or(0);
         }
     }
-    by.into_iter().max_by_key(|(_, b)| *b).map(|(n, _)| n).unwrap_or_else(|| "?".to_string())
+    by.into_iter()
+        .max_by_key(|(_, b)| *b)
+        .map(|(n, _)| n)
+        .unwrap_or_else(|| "?".to_string())
 }
 
 fn arch_u64(g: &Gguf, key: &str) -> u64 {
@@ -116,13 +129,21 @@ fn arch_u64(g: &Gguf, key: &str) -> u64 {
 }
 
 fn modified_secs(p: &Path) -> u64 {
-    std::fs::metadata(p).and_then(|m| m.modified()).ok().and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()).map(|d| d.as_secs()).unwrap_or(0)
+    std::fs::metadata(p)
+        .and_then(|m| m.modified())
+        .ok()
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
 }
 
 /// Read one file's header into an entry.
 pub fn read_entry(path: &Path, display: Option<String>, source: &str) -> ModelEntry {
     let size = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
-    let file_stem = path.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_else(|| "model".to_string());
+    let file_stem = path
+        .file_stem()
+        .map(|s| s.to_string_lossy().to_string())
+        .unwrap_or_else(|| "model".to_string());
     let mut e = ModelEntry {
         path: path.to_path_buf(),
         name: display.unwrap_or(file_stem.clone()),
@@ -148,7 +169,10 @@ pub fn read_entry(path: &Path, display: Option<String>, source: &str) -> ModelEn
             e.ctx_train = arch_u64(&g, "context_length");
             e.layers = arch_u64(&g, "block_count");
             e.tokenizer = g.get_str("tokenizer.ggml.model").unwrap_or("").to_string();
-            e.params = g.get_u64("general.parameter_count").filter(|&n| n > 0).unwrap_or_else(|| g.tensors.iter().map(|t| t.n_elements() as u64).sum());
+            e.params = g
+                .get_u64("general.parameter_count")
+                .filter(|&n| n > 0)
+                .unwrap_or_else(|| g.tensors.iter().map(|t| t.n_elements() as u64).sum());
         }
         Err(err) => e.error = Some(err.to_string()),
     }
@@ -159,13 +183,19 @@ fn walk(dir: &Path, depth: usize, out: &mut Vec<PathBuf>) {
     if depth > 6 {
         return;
     }
-    let Ok(rd) = std::fs::read_dir(dir) else { return };
+    let Ok(rd) = std::fs::read_dir(dir) else {
+        return;
+    };
     for entry in rd.flatten() {
         let p = entry.path();
         let Ok(ft) = entry.file_type() else { continue };
         if ft.is_dir() {
             walk(&p, depth + 1, out);
-        } else if p.extension().and_then(|e| e.to_str()).map_or(false, |e| e.eq_ignore_ascii_case("gguf")) {
+        } else if p
+            .extension()
+            .and_then(|e| e.to_str())
+            .is_some_and(|e| e.eq_ignore_ascii_case("gguf"))
+        {
             out.push(p);
         }
     }
@@ -178,13 +208,17 @@ fn source_label(dir: &Path) -> String {
     } else if s.contains("forgestudio") || s.contains("forge-studio") {
         "Forge Studio".to_string()
     } else {
-        dir.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_else(|| "folder".to_string())
+        dir.file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_else(|| "folder".to_string())
     }
 }
 
 /// Ollama keeps models as hash-named blobs; its manifests say which blob is the model of which name.
 pub fn ollama_models_dir() -> PathBuf {
-    std::env::var_os("OLLAMA_MODELS").map(PathBuf::from).unwrap_or_else(|| home_dir().join(".ollama").join("models"))
+    std::env::var_os("OLLAMA_MODELS")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| home_dir().join(".ollama").join("models"))
 }
 
 pub fn ollama_blobs() -> Vec<(String, PathBuf)> {
@@ -209,17 +243,30 @@ pub fn ollama_blobs() -> Vec<(String, PathBuf)> {
     }
     walk_all(&manifests, 0, &mut files);
     for f in files {
-        let Ok(text) = std::fs::read_to_string(&f) else { continue };
-        let Ok(v) = serde_json::from_str::<serde_json::Value>(&text) else { continue };
-        let Some(layers) = v["layers"].as_array() else { continue };
+        let Ok(text) = std::fs::read_to_string(&f) else {
+            continue;
+        };
+        let Ok(v) = serde_json::from_str::<serde_json::Value>(&text) else {
+            continue;
+        };
+        let Some(layers) = v["layers"].as_array() else {
+            continue;
+        };
         for l in layers {
             if l["mediaType"].as_str() == Some("application/vnd.ollama.image.model") {
                 if let Some(d) = l["digest"].as_str() {
                     let blob = root.join("blobs").join(d.replace(':', "-"));
                     if blob.is_file() {
                         // .../library/<name>/<tag>
-                        let tag = f.file_name().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
-                        let name = f.parent().and_then(|p| p.file_name()).map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
+                        let tag = f
+                            .file_name()
+                            .map(|s| s.to_string_lossy().to_string())
+                            .unwrap_or_default();
+                        let name = f
+                            .parent()
+                            .and_then(|p| p.file_name())
+                            .map(|s| s.to_string_lossy().to_string())
+                            .unwrap_or_default();
                         out.push((format!("{name}:{tag}"), blob));
                     }
                 }
@@ -237,7 +284,9 @@ pub fn scan(dirs: &[PathBuf], with_ollama: bool) -> Vec<ModelEntry> {
         walk(d, 0, &mut files);
         let label = source_label(d);
         for f in files {
-            if f.extension().map_or(false, |e| e.eq_ignore_ascii_case("part")) {
+            if f.extension()
+                .is_some_and(|e| e.eq_ignore_ascii_case("part"))
+            {
                 continue;
             }
             jobs.push((f, None, label.clone()));
@@ -254,7 +303,16 @@ pub fn scan(dirs: &[PathBuf], with_ollama: bool) -> Vec<ModelEntry> {
     let workers = 4.min(jobs.len().max(1));
     let chunk = jobs.len().div_ceil(workers).max(1);
     std::thread::scope(|s| {
-        let handles: Vec<_> = jobs.chunks(chunk).map(|c| s.spawn(move || c.iter().map(|(p, n, src)| read_entry(p, n.clone(), src)).collect::<Vec<_>>())).collect();
+        let handles: Vec<_> = jobs
+            .chunks(chunk)
+            .map(|c| {
+                s.spawn(move || {
+                    c.iter()
+                        .map(|(p, n, src)| read_entry(p, n.clone(), src))
+                        .collect::<Vec<_>>()
+                })
+            })
+            .collect();
         for h in handles {
             if let Ok(v) = h.join() {
                 entries.extend(v);
@@ -262,7 +320,12 @@ pub fn scan(dirs: &[PathBuf], with_ollama: bool) -> Vec<ModelEntry> {
         }
     });
     // vision projectors go last: they are not models to chat with
-    entries.sort_by(|a, b| a.projector.cmp(&b.projector).then_with(|| b.modified.cmp(&a.modified)).then_with(|| a.name.cmp(&b.name)));
+    entries.sort_by(|a, b| {
+        a.projector
+            .cmp(&b.projector)
+            .then_with(|| b.modified.cmp(&a.modified))
+            .then_with(|| a.name.cmp(&b.name))
+    });
     entries
 }
 
@@ -354,16 +417,26 @@ pub fn inspect(path: &Path, display: Option<String>, source: &str) -> Result<Ins
     let entry = read_entry(path, display, source);
     let mut meta = Vec::new();
     for (k, v) in &g.metadata {
-        if k.starts_with("tokenizer.ggml.") && k != "tokenizer.ggml.model" && k != "tokenizer.ggml.pre" && !k.ends_with("_token_id") {
+        if k.starts_with("tokenizer.ggml.")
+            && k != "tokenizer.ggml.model"
+            && k != "tokenizer.ggml.pre"
+            && !k.ends_with("_token_id")
+        {
             continue;
         }
         if k.ends_with(".chat_template") {
-            meta.push((k.clone(), format!("{} characters", v.as_str().map_or(0, str::len))));
+            meta.push((
+                k.clone(),
+                format!("{} characters", v.as_str().map_or(0, str::len)),
+            ));
             continue;
         }
         meta.push((k.clone(), value_text(v)));
     }
-    let vocab = g.get("tokenizer.ggml.tokens").and_then(|v| v.as_array()).map_or(0, |a| a.len());
+    let vocab = g
+        .get("tokenizer.ggml.tokens")
+        .and_then(|v| v.as_array())
+        .map_or(0, |a| a.len());
     let mut tensors = Vec::with_capacity(g.tensors.len());
     let mut by_layer: BTreeMap<usize, (Vec<String>, u64, BTreeMap<String, u64>)> = BTreeMap::new();
     let mut formats: BTreeMap<String, (u64, usize)> = BTreeMap::new();
@@ -371,7 +444,12 @@ pub fn inspect(path: &Path, display: Option<String>, source: &str) -> Result<Ins
     for t in &g.tensors {
         let bytes = t.checked_n_bytes().unwrap_or(0);
         let dtype = t.dtype.name();
-        tensors.push(TensorRow { name: t.name.clone(), dtype: dtype.clone(), shape: t.shape(), bytes });
+        tensors.push(TensorRow {
+            name: t.name.clone(),
+            dtype: dtype.clone(),
+            shape: t.shape(),
+            bytes,
+        });
         let f = formats.entry(dtype.clone()).or_default();
         f.0 += bytes;
         f.1 += 1;
@@ -398,15 +476,34 @@ pub fn inspect(path: &Path, display: Option<String>, source: &str) -> Result<Ins
             } else {
                 "Other"
             };
-            let dtype = dts.into_iter().max_by_key(|(_, b)| *b).map(|(n, _)| n).unwrap_or_default();
-            LayerRow { index, kind: kind.to_string(), bytes, dtype }
+            let dtype = dts
+                .into_iter()
+                .max_by_key(|(_, b)| *b)
+                .map(|(n, _)| n)
+                .unwrap_or_default();
+            LayerRow {
+                index,
+                kind: kind.to_string(),
+                bytes,
+                dtype,
+            }
         })
         .collect();
-    let mut formats: Vec<(String, u64, usize)> = formats.into_iter().map(|(k, (b, n))| (k, b, n)).collect();
+    let mut formats: Vec<(String, u64, usize)> =
+        formats.into_iter().map(|(k, (b, n))| (k, b, n)).collect();
     formats.sort_by(|a, b| b.1.cmp(&a.1));
-    let mut roles: Vec<(String, u64)> = roles.into_iter().map(|(k, b)| (k.to_string(), b)).collect();
+    let mut roles: Vec<(String, u64)> =
+        roles.into_iter().map(|(k, b)| (k.to_string(), b)).collect();
     roles.sort_by(|a, b| b.1.cmp(&a.1));
-    Ok(Inspect { entry, meta, tensors, layers, formats, roles, vocab })
+    Ok(Inspect {
+        entry,
+        meta,
+        tensors,
+        layers,
+        formats,
+        roles,
+        vocab,
+    })
 }
 
 #[cfg(test)]
@@ -423,7 +520,11 @@ mod tests {
         let mut b: Vec<u8> = Vec::new();
         b.extend(b"GGUF");
         b.extend(3u32.to_le_bytes());
-        let tensors: [(&str, [u64; 2]); 3] = [("token_embd.weight", [4, 3]), ("blk.0.attn_q.weight", [4, 4]), ("blk.1.ffn_up.weight", [4, 2])];
+        let tensors: [(&str, [u64; 2]); 3] = [
+            ("token_embd.weight", [4, 3]),
+            ("blk.0.attn_q.weight", [4, 4]),
+            ("blk.1.ffn_up.weight", [4, 2]),
+        ];
         b.extend((tensors.len() as u64).to_le_bytes());
         b.extend(5u64.to_le_bytes());
         put_str(&mut b, "tokenizer.ggml.model");
@@ -461,7 +562,10 @@ mod tests {
     }
 
     fn temp_dir(name: &str) -> PathBuf {
-        let d = std::env::temp_dir().join(format!("forge-studio-test-{name}-{}", crate::util::new_id()));
+        let d = std::env::temp_dir().join(format!(
+            "forge-studio-test-{name}-{}",
+            crate::util::new_id()
+        ));
         std::fs::create_dir_all(&d).unwrap();
         d
     }

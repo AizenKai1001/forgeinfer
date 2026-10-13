@@ -56,7 +56,16 @@ pub struct Message {
 
 impl Message {
     pub fn new(role: Role, content: impl Into<String>) -> Message {
-        Message { id: new_id(), role, content: content.into(), reasoning: String::new(), stats: None, error: None, streaming: false, thought_secs: 0.0 }
+        Message {
+            id: new_id(),
+            role,
+            content: content.into(),
+            reasoning: String::new(),
+            stats: None,
+            error: None,
+            streaming: false,
+            thought_secs: 0.0,
+        }
     }
 }
 
@@ -80,7 +89,15 @@ pub const NEW_TITLE: &str = "New chat";
 impl Chat {
     pub fn new() -> Chat {
         let now = unix_secs();
-        Chat { id: new_id(), title: NEW_TITLE.to_string(), created: now, updated: now, model: String::new(), system: String::new(), messages: Vec::new() }
+        Chat {
+            id: new_id(),
+            title: NEW_TITLE.to_string(),
+            created: now,
+            updated: now,
+            model: String::new(),
+            system: String::new(),
+            messages: Vec::new(),
+        }
     }
 
     /// The title comes from the first thing the user wrote.
@@ -98,7 +115,11 @@ impl Chat {
     /// The conversation as the server wants it: the system prompt, then every finished message (an answer that is empty or failed is left out).
     pub fn api_messages(&self, default_system: &str) -> Vec<(Role, String)> {
         let mut out = Vec::new();
-        let system = if self.system.trim().is_empty() { default_system } else { self.system.as_str() };
+        let system = if self.system.trim().is_empty() {
+            default_system
+        } else {
+            self.system.as_str()
+        };
         if !system.trim().is_empty() {
             out.push((Role::System, system.to_string()));
         }
@@ -149,7 +170,10 @@ impl Store {
     }
 
     fn path(&self, id: &str) -> PathBuf {
-        let safe: String = id.chars().filter(|c| c.is_ascii_alphanumeric() || *c == '-' || *c == '_').collect();
+        let safe: String = id
+            .chars()
+            .filter(|c| c.is_ascii_alphanumeric() || *c == '-' || *c == '_')
+            .collect();
         self.dir.join(format!("{safe}.json"))
     }
 
@@ -173,15 +197,23 @@ impl Store {
     /// Newest first.
     pub fn list(&self) -> Vec<ChatMeta> {
         let mut out = Vec::new();
-        let Ok(rd) = std::fs::read_dir(&self.dir) else { return out };
+        let Ok(rd) = std::fs::read_dir(&self.dir) else {
+            return out;
+        };
         for e in rd.flatten() {
             let p = e.path();
             if p.extension().and_then(|x| x.to_str()) != Some("json") {
                 continue;
             }
-            let Ok(text) = std::fs::read_to_string(&p) else { continue };
+            let Ok(text) = std::fs::read_to_string(&p) else {
+                continue;
+            };
             if let Ok(c) = serde_json::from_str::<Chat>(&text) {
-                out.push(ChatMeta { id: c.id, title: c.title, updated: c.updated });
+                out.push(ChatMeta {
+                    id: c.id,
+                    title: c.title,
+                    updated: c.updated,
+                });
             }
         }
         out.sort_by(|a, b| b.updated.cmp(&a.updated));
@@ -208,10 +240,15 @@ mod tests {
         let dir = temp_dir("chats");
         let store = Store::new(&dir);
         let mut c = Chat::new();
-        c.messages.push(Message::new(Role::User, "Hello there,\n how are you?"));
+        c.messages
+            .push(Message::new(Role::User, "Hello there,\n how are you?"));
         let mut a = Message::new(Role::Assistant, "Fine.");
         a.reasoning = "thinking".into();
-        a.stats = Some(Stats { completion_tokens: 3, tok_per_s: 40.5, ..Default::default() });
+        a.stats = Some(Stats {
+            completion_tokens: 3,
+            tok_per_s: 40.5,
+            ..Default::default()
+        });
         c.messages.push(a);
         c.retitle();
         assert_eq!(c.title, "Hello there, how are you?");

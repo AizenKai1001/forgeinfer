@@ -22,8 +22,14 @@ fn icon() -> egui::IconData {
         for x in 0..N {
             let (fx, fy) = (x as f32 + 0.5, y as f32 + 0.5);
             let (cx, cy) = (fx.clamp(15.0, 49.0), fy.clamp(15.0, 49.0));
-            let inside = ((fx - cx).powi(2) + (fy - cy).powi(2)).sqrt() <= 12.0 && fx > 3.0 && fx < 61.0 && fy > 3.0 && fy < 61.0;
-            let letter = (x >= 19 && x < 28 && y >= 14 && y < 50) || (x >= 19 && x < 46 && y >= 14 && y < 23) || (x >= 19 && x < 40 && y >= 28 && y < 37);
+            let inside = ((fx - cx).powi(2) + (fy - cy).powi(2)).sqrt() <= 12.0
+                && fx > 3.0
+                && fx < 61.0
+                && fy > 3.0
+                && fy < 61.0;
+            let letter = ((19..28).contains(&x) && (14..50).contains(&y))
+                || ((19..46).contains(&x) && (14..23).contains(&y))
+                || ((19..40).contains(&x) && (28..37).contains(&y));
             let px = if !inside {
                 [0, 0, 0, 0]
             } else if letter {
@@ -34,7 +40,11 @@ fn icon() -> egui::IconData {
             rgba[(y * N + x) * 4..(y * N + x) * 4 + 4].copy_from_slice(&px);
         }
     }
-    egui::IconData { rgba, width: N as u32, height: N as u32 }
+    egui::IconData {
+        rgba,
+        width: N as u32,
+        height: N as u32,
+    }
 }
 
 fn parse_args() -> Result<StartupOpts, String> {
@@ -45,7 +55,8 @@ fn parse_args() -> Result<StartupOpts, String> {
         match a.as_str() {
             "--screen" => {
                 let v = value("--screen")?;
-                o.screen = Some(Screen::from_name(&v).ok_or_else(|| format!("unknown screen {v:?}"))?);
+                o.screen =
+                    Some(Screen::from_name(&v).ok_or_else(|| format!("unknown screen {v:?}"))?);
             }
             "--demo" => o.demo = true,
             "--open-last" => o.open_last = true,
@@ -54,14 +65,27 @@ fn parse_args() -> Result<StartupOpts, String> {
             "--send" => o.send = Some(value("--send")?),
             "--search" => o.hf_query = Some(value("--search")?),
             "--inspect" => o.inspect = Some(value("--inspect")?.into()),
-            "--stop-after" => o.stop_after = Some(value("--stop-after")?.parse().map_err(|_| "--stop-after needs a number".to_string())?),
+            "--stop-after" => {
+                o.stop_after = Some(
+                    value("--stop-after")?
+                        .parse()
+                        .map_err(|_| "--stop-after needs a number".to_string())?,
+                )
+            }
             "--shot" => o.shot = Some(value("--shot")?.into()),
-            "--shot-delay" => o.shot_delay = value("--shot-delay")?.parse().map_err(|_| "--shot-delay needs a number".to_string())?,
+            "--shot-delay" => {
+                o.shot_delay = value("--shot-delay")?
+                    .parse()
+                    .map_err(|_| "--shot-delay needs a number".to_string())?
+            }
             "--shot-after-reply" => o.shot_after_reply = true,
             "--size" => {
                 let v = value("--size")?;
                 let (w, h) = v.split_once('x').ok_or("--size needs WxH")?;
-                o.size = Some((w.parse().map_err(|_| "bad width")?, h.parse().map_err(|_| "bad height")?));
+                o.size = Some((
+                    w.parse().map_err(|_| "bad width")?,
+                    h.parse().map_err(|_| "bad height")?,
+                ));
             }
             "--help" | "-h" => return Err(String::new()),
             other => return Err(format!("unknown option {other:?}")),
@@ -82,7 +106,18 @@ fn main() -> eframe::Result {
         }
     };
     let (w, h) = opts.size.unwrap_or((1280.0, 800.0));
-    let viewport = egui::ViewportBuilder::default().with_title("Forge Studio").with_inner_size([w, h]).with_min_inner_size([900.0, 560.0]).with_icon(icon());
-    let options = eframe::NativeOptions { viewport, ..Default::default() };
-    eframe::run_native("Forge Studio", options, Box::new(move |cc| Ok(Box::new(StudioApp::new(cc, opts.clone())))))
+    let viewport = egui::ViewportBuilder::default()
+        .with_title("Forge Studio")
+        .with_inner_size([w, h])
+        .with_min_inner_size([900.0, 560.0])
+        .with_icon(icon());
+    let options = eframe::NativeOptions {
+        viewport,
+        ..Default::default()
+    };
+    eframe::run_native(
+        "Forge Studio",
+        options,
+        Box::new(move |cc| Ok(Box::new(StudioApp::new(cc, opts.clone())))),
+    )
 }

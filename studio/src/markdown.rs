@@ -1,7 +1,10 @@
 //! A small Markdown parser and its egui renderer, for chat messages: headings, emphasis, inline code, fenced code, lists, quotes, tables,
 //! links and rules. The parser never fails: text it does not understand stays text, and a fence that is still open (a streaming reply) is a code block up to the end.
 
-use eframe::egui::{self, text::LayoutJob, Color32, CornerRadius, FontId, Frame, Margin, RichText, Sense, Stroke, TextFormat, Ui};
+use eframe::egui::{
+    self, text::LayoutJob, Color32, CornerRadius, FontId, Frame, Margin, RichText, Sense, Stroke,
+    TextFormat, Ui,
+};
 use std::cell::Cell;
 
 #[derive(Clone, Debug, PartialEq)]
@@ -18,11 +21,21 @@ pub enum Span {
 pub enum Block {
     Heading(u8, Vec<Span>),
     Paragraph(Vec<Span>),
-    Code { lang: String, text: String },
-    List { ordered: bool, start: u64, items: Vec<Vec<Block>> },
+    Code {
+        lang: String,
+        text: String,
+    },
+    List {
+        ordered: bool,
+        start: u64,
+        items: Vec<Vec<Block>>,
+    },
     Quote(Vec<Block>),
     Rule,
-    Table { header: Vec<Vec<Span>>, rows: Vec<Vec<Vec<Span>>> },
+    Table {
+        header: Vec<Vec<Span>>,
+        rows: Vec<Vec<Vec<Span>>>,
+    },
 }
 
 // ------------------------------------------------------------------------------------------------------------------ blocks
@@ -98,7 +111,10 @@ fn heading(trimmed: &str) -> Option<(u8, &str)> {
 
 fn is_rule(trimmed: &str) -> bool {
     let t: String = trimmed.chars().filter(|c| !c.is_whitespace()).collect();
-    t.len() >= 3 && (t.chars().all(|c| c == '-') || t.chars().all(|c| c == '*') || t.chars().all(|c| c == '_'))
+    t.len() >= 3
+        && (t.chars().all(|c| c == '-')
+            || t.chars().all(|c| c == '*')
+            || t.chars().all(|c| c == '_'))
 }
 
 struct Marker {
@@ -121,7 +137,13 @@ fn list_marker(line: &str) -> Option<Marker> {
         let after = &rest[1..];
         if after.is_empty() || after.starts_with(' ') || after.starts_with('\t') {
             let gap = if after.is_empty() { 0 } else { 1 };
-            return Some(Marker { indent, ordered: false, number: 0, content: indent + 2, text: start + 1 + gap });
+            return Some(Marker {
+                indent,
+                ordered: false,
+                number: 0,
+                content: indent + 2,
+                text: start + 1 + gap,
+            });
         }
         return None;
     }
@@ -140,7 +162,13 @@ fn list_marker(line: &str) -> Option<Marker> {
         if tail.is_empty() || tail.starts_with(' ') || tail.starts_with('\t') {
             let number = rest[..digits].parse().unwrap_or(1);
             let gap = if tail.is_empty() { 0 } else { 1 };
-            return Some(Marker { indent, ordered: true, number, content: indent + digits + 2, text: start + digits + 1 + gap });
+            return Some(Marker {
+                indent,
+                ordered: true,
+                number,
+                content: indent + digits + 2,
+                text: start + digits + 1 + gap,
+            });
         }
     }
     None
@@ -175,12 +203,18 @@ fn split_cells(line: &str) -> Vec<String> {
 
 fn is_table_separator(line: &str) -> bool {
     let t = line.trim();
-    t.contains('|') && t.contains('-') && t.chars().all(|c| matches!(c, '|' | '-' | ':' | ' ' | '\t'))
+    t.contains('|')
+        && t.contains('-')
+        && t.chars().all(|c| matches!(c, '|' | '-' | ':' | ' ' | '\t'))
 }
 
 fn starts_block(line: &str) -> bool {
     let trimmed = line.trim_start();
-    fence_start(trimmed).is_some() || heading(trimmed).is_some() || trimmed.starts_with('>') || is_rule(trimmed) || list_marker(line).is_some()
+    fence_start(trimmed).is_some()
+        || heading(trimmed).is_some()
+        || trimmed.starts_with('>')
+        || is_rule(trimmed)
+        || list_marker(line).is_some()
 }
 
 fn parse_lines(lines: &[&str]) -> Vec<Block> {
@@ -201,7 +235,10 @@ fn parse_lines(lines: &[&str]) -> Vec<Block> {
                 body.push(strip_indent(lines[i], indent));
                 i += 1;
             }
-            blocks.push(Block::Code { lang, text: body.join("\n") });
+            blocks.push(Block::Code {
+                lang,
+                text: body.join("\n"),
+            });
             continue;
         }
         if trimmed.is_empty() {
@@ -219,12 +256,16 @@ fn parse_lines(lines: &[&str]) -> Vec<Block> {
             continue;
         }
         if line.contains('|') && i + 1 < lines.len() && is_table_separator(lines[i + 1]) {
-            let header: Vec<Vec<Span>> = split_cells(line).iter().map(|c| parse_inline(c)).collect();
+            let header: Vec<Vec<Span>> =
+                split_cells(line).iter().map(|c| parse_inline(c)).collect();
             let cols = header.len();
             let mut rows = Vec::new();
             i += 2;
             while i < lines.len() && lines[i].contains('|') && !lines[i].trim().is_empty() {
-                let mut cells: Vec<Vec<Span>> = split_cells(lines[i]).iter().map(|c| parse_inline(c)).collect();
+                let mut cells: Vec<Vec<Span>> = split_cells(lines[i])
+                    .iter()
+                    .map(|c| parse_inline(c))
+                    .collect();
                 cells.resize(cols, Vec::new());
                 rows.push(cells);
                 i += 1;
@@ -247,12 +288,18 @@ fn parse_lines(lines: &[&str]) -> Vec<Block> {
             let (ordered, start) = (first.ordered, first.number);
             let mut items: Vec<Vec<Block>> = Vec::new();
             while i < lines.len() {
-                let Some(m) = list_marker(lines[i]) else { break };
-                if m.indent + 1 < first.indent || m.indent > first.indent + 1 || m.ordered != ordered {
+                let Some(m) = list_marker(lines[i]) else {
+                    break;
+                };
+                if m.indent + 1 < first.indent
+                    || m.indent > first.indent + 1
+                    || m.ordered != ordered
+                {
                     break;
                 }
                 let content = m.content;
-                let mut item_lines: Vec<String> = vec![lines[i][m.text.min(lines[i].len())..].to_string()];
+                let mut item_lines: Vec<String> =
+                    vec![lines[i][m.text.min(lines[i].len())..].to_string()];
                 i += 1;
                 let mut blanks = 0;
                 while i < lines.len() {
@@ -281,7 +328,11 @@ fn parse_lines(lines: &[&str]) -> Vec<Block> {
                 let refs: Vec<&str> = item_lines.iter().map(String::as_str).collect();
                 items.push(parse_lines(&refs));
             }
-            blocks.push(Block::List { ordered, start, items });
+            blocks.push(Block::List {
+                ordered,
+                start,
+                items,
+            });
             continue;
         }
         // a paragraph: lines up to a blank line or the start of another block
@@ -289,7 +340,10 @@ fn parse_lines(lines: &[&str]) -> Vec<Block> {
         i += 1;
         while i < lines.len() {
             let l = lines[i];
-            if l.trim().is_empty() || starts_block(l) || (l.contains('|') && i + 1 < lines.len() && is_table_separator(lines[i + 1])) {
+            if l.trim().is_empty()
+                || starts_block(l)
+                || (l.contains('|') && i + 1 < lines.len() && is_table_separator(lines[i + 1]))
+            {
                 break;
             }
             para.push(l.trim_start());
@@ -341,7 +395,7 @@ fn find_closer(c: &[char], from: usize, ch: char, n: usize) -> Option<usize> {
             let run = run_len(c, j, ch);
             let before_ok = j > from && !c[j - 1].is_whitespace();
             let after = c.get(j + run);
-            let after_ok = ch != '_' || after.map_or(true, |a| !a.is_alphanumeric());
+            let after_ok = ch != '_' || after.is_none_or(|a| !a.is_alphanumeric());
             if run >= n && before_ok && after_ok {
                 // the closer is the last n characters of the run, so ***text*** works for both
                 return Some(j + run - n);
@@ -387,20 +441,24 @@ fn inline(c: &[char]) -> Vec<Span> {
                     flush(&mut out, &mut text);
                     let mut code: String = c[i + n..end].iter().collect();
                     code = code.replace('\n', " ");
-                    if code.len() > 2 && code.starts_with(' ') && code.ends_with(' ') && code.trim().len() > 0 {
+                    if code.len() > 2
+                        && code.starts_with(' ')
+                        && code.ends_with(' ')
+                        && !code.trim().is_empty()
+                    {
                         code = code[1..code.len() - 1].to_string();
                     }
                     out.push(Span::Code(code));
                     i = end + n;
                 } else {
-                    text.extend(std::iter::repeat('`').take(n));
+                    text.extend(std::iter::repeat_n('`', n));
                     i += n;
                 }
             }
             '*' | '_' => {
                 let run = run_len(c, i, ch);
                 let prev_ok = ch != '_' || i == 0 || !c[i - 1].is_alphanumeric();
-                let next_ok = c.get(i + run).map_or(false, |x| !x.is_whitespace());
+                let next_ok = c.get(i + run).is_some_and(|x| !x.is_whitespace());
                 if prev_ok && next_ok {
                     // longest first: bold+italic (3), bold (2), italic (1)
                     let mut done = false;
@@ -432,7 +490,7 @@ fn inline(c: &[char]) -> Vec<Span> {
                         continue;
                     }
                 }
-                text.extend(std::iter::repeat(ch).take(run));
+                text.extend(std::iter::repeat_n(ch, run));
                 i += run;
             }
             '~' if c.get(i + 1) == Some(&'~') => {
@@ -468,7 +526,10 @@ fn inline(c: &[char]) -> Vec<Span> {
                             let url = url.split_whitespace().next().unwrap_or("").to_string();
                             if !url.is_empty() {
                                 flush(&mut out, &mut text);
-                                out.push(Span::Link { text: inline(&c[i + 1..cl]), url });
+                                out.push(Span::Link {
+                                    text: inline(&c[i + 1..cl]),
+                                    url,
+                                });
                                 i = cl + 2 + rel + 1;
                                 linked = true;
                             }
@@ -480,9 +541,15 @@ fn inline(c: &[char]) -> Vec<Span> {
                     i += 1;
                 }
             }
-            'h' if (c[i..].starts_with(&['h', 't', 't', 'p', ':', '/', '/']) || c[i..].starts_with(&['h', 't', 't', 'p', 's', ':', '/', '/'])) && (i == 0 || !c[i - 1].is_alphanumeric()) => {
+            'h' if (c[i..].starts_with(&['h', 't', 't', 'p', ':', '/', '/'])
+                || c[i..].starts_with(&['h', 't', 't', 'p', 's', ':', '/', '/']))
+                && (i == 0 || !c[i - 1].is_alphanumeric()) =>
+            {
                 let mut end = i;
-                while end < c.len() && !c[end].is_whitespace() && !matches!(c[end], '<' | '>' | '"' | ')' | ']') {
+                while end < c.len()
+                    && !c[end].is_whitespace()
+                    && !matches!(c[end], '<' | '>' | '"' | ')' | ']')
+                {
                     end += 1;
                 }
                 while end > i && matches!(c[end - 1], '.' | ',' | ';' | ':' | '!' | '?') {
@@ -490,7 +557,10 @@ fn inline(c: &[char]) -> Vec<Span> {
                 }
                 let url: String = c[i..end].iter().collect();
                 flush(&mut out, &mut text);
-                out.push(Span::Link { text: vec![Span::Text(url.clone())], url });
+                out.push(Span::Link {
+                    text: vec![Span::Text(url.clone())],
+                    url,
+                });
                 i = end;
             }
             _ => {
@@ -540,14 +610,46 @@ struct Fmt {
     link: bool,
 }
 
-fn add_spans(job: &mut LayoutJob, links: &mut Vec<(usize, usize, String)>, pos: &mut usize, spans: &[Span], fmt: Fmt, size: f32, ctx: &Ctx) {
+fn add_spans(
+    job: &mut LayoutJob,
+    links: &mut Vec<(usize, usize, String)>,
+    pos: &mut usize,
+    spans: &[Span],
+    fmt: Fmt,
+    size: f32,
+    ctx: &Ctx,
+) {
     for span in spans {
         match span {
             Span::Text(t) => append(job, pos, t, fmt, size, ctx),
             Span::Code(t) => append(job, pos, t, Fmt { code: true, ..fmt }, size, ctx),
-            Span::Bold(inner) => add_spans(job, links, pos, inner, Fmt { bold: true, ..fmt }, size, ctx),
-            Span::Italic(inner) => add_spans(job, links, pos, inner, Fmt { italic: true, ..fmt }, size, ctx),
-            Span::Strike(inner) => add_spans(job, links, pos, inner, Fmt { strike: true, ..fmt }, size, ctx),
+            Span::Bold(inner) => {
+                add_spans(job, links, pos, inner, Fmt { bold: true, ..fmt }, size, ctx)
+            }
+            Span::Italic(inner) => add_spans(
+                job,
+                links,
+                pos,
+                inner,
+                Fmt {
+                    italic: true,
+                    ..fmt
+                },
+                size,
+                ctx,
+            ),
+            Span::Strike(inner) => add_spans(
+                job,
+                links,
+                pos,
+                inner,
+                Fmt {
+                    strike: true,
+                    ..fmt
+                },
+                size,
+                ctx,
+            ),
             Span::Link { text, url } => {
                 let start = *pos;
                 add_spans(job, links, pos, text, Fmt { link: true, ..fmt }, size, ctx);
@@ -576,10 +678,22 @@ fn append(job: &mut LayoutJob, pos: &mut usize, t: &str, fmt: Fmt, size: f32, ct
     let format = TextFormat {
         font_id,
         color,
-        background: if fmt.code { s.code_bg } else { Color32::TRANSPARENT },
+        background: if fmt.code {
+            s.code_bg
+        } else {
+            Color32::TRANSPARENT
+        },
         italics: fmt.italic,
-        underline: if fmt.link { Stroke::new(1.0, s.accent) } else { Stroke::NONE },
-        strikethrough: if fmt.strike { Stroke::new(1.0, color) } else { Stroke::NONE },
+        underline: if fmt.link {
+            Stroke::new(1.0, s.accent)
+        } else {
+            Stroke::NONE
+        },
+        strikethrough: if fmt.strike {
+            Stroke::new(1.0, color)
+        } else {
+            Stroke::NONE
+        },
         ..Default::default()
     };
     job.append(t, 0.0, format);
@@ -637,7 +751,16 @@ fn render_block(ui: &mut Ui, b: &Block, ctx: &Ctx) {
                 _ => s.size * 1.05,
             };
             ui.add_space(4.0);
-            rich_paragraph(ui, spans, size, Fmt { bold: true, ..Default::default() }, ctx);
+            rich_paragraph(
+                ui,
+                spans,
+                size,
+                Fmt {
+                    bold: true,
+                    ..Default::default()
+                },
+                ctx,
+            );
         }
         Block::Paragraph(spans) => rich_paragraph(ui, spans, s.size, Fmt::default(), ctx),
         Block::Rule => {
@@ -646,20 +769,41 @@ fn render_block(ui: &mut Ui, b: &Block, ctx: &Ctx) {
         }
         Block::Code { lang, text } => code_block(ui, lang, text, ctx),
         Block::Quote(inner) => {
-            let r = Frame::new().inner_margin(Margin { left: 12, right: 0, top: 2, bottom: 2 }).show(ui, |ui| {
-                ui.set_width(ui.available_width());
-                render_blocks_inner(ui, inner, ctx);
-            });
+            let r = Frame::new()
+                .inner_margin(Margin {
+                    left: 12,
+                    right: 0,
+                    top: 2,
+                    bottom: 2,
+                })
+                .show(ui, |ui| {
+                    ui.set_width(ui.available_width());
+                    render_blocks_inner(ui, inner, ctx);
+                });
             let rect = r.response.rect;
-            ui.painter().line_segment([rect.left_top(), rect.left_bottom()], Stroke::new(3.0, s.border));
+            ui.painter().line_segment(
+                [rect.left_top(), rect.left_bottom()],
+                Stroke::new(3.0, s.border),
+            );
         }
-        Block::List { ordered, start, items } => {
+        Block::List {
+            ordered,
+            start,
+            items,
+        } => {
             for (n, item) in items.iter().enumerate() {
                 ui.horizontal_top(|ui| {
                     ui.spacing_mut().item_spacing.x = 6.0;
                     ui.add_space(6.0);
-                    let marker = if *ordered { format!("{}.", start + n as u64) } else { "\u{2022}".to_string() };
-                    ui.add_sized([if *ordered { 26.0 } else { 14.0 }, s.size * 1.3], egui::Label::new(RichText::new(marker).size(s.size).color(s.muted)));
+                    let marker = if *ordered {
+                        format!("{}.", start + n as u64)
+                    } else {
+                        "\u{2022}".to_string()
+                    };
+                    ui.add_sized(
+                        [if *ordered { 26.0 } else { 14.0 }, s.size * 1.3],
+                        egui::Label::new(RichText::new(marker).size(s.size).color(s.muted)),
+                    );
                     ui.vertical(|ui| {
                         ui.spacing_mut().item_spacing.y = 4.0;
                         render_blocks_inner(ui, item, ctx);
@@ -669,20 +813,32 @@ fn render_block(ui: &mut Ui, b: &Block, ctx: &Ctx) {
         }
         Block::Table { header, rows } => {
             let id = ctx.id(ui);
-            Frame::new().stroke(Stroke::new(1.0, s.border)).corner_radius(CornerRadius::same(6)).inner_margin(Margin::same(6)).show(ui, |ui| {
-                egui::Grid::new(id).striped(true).spacing([14.0, 5.0]).show(ui, |ui| {
-                    for cell in header {
-                        ui.label(RichText::new(plain_text(cell)).strong().color(s.strong).size(s.size));
-                    }
-                    ui.end_row();
-                    for row in rows {
-                        for cell in row {
-                            rich_paragraph(ui, cell, s.size, Fmt::default(), ctx);
-                        }
-                        ui.end_row();
-                    }
+            Frame::new()
+                .stroke(Stroke::new(1.0, s.border))
+                .corner_radius(CornerRadius::same(6))
+                .inner_margin(Margin::same(6))
+                .show(ui, |ui| {
+                    egui::Grid::new(id)
+                        .striped(true)
+                        .spacing([14.0, 5.0])
+                        .show(ui, |ui| {
+                            for cell in header {
+                                ui.label(
+                                    RichText::new(plain_text(cell))
+                                        .strong()
+                                        .color(s.strong)
+                                        .size(s.size),
+                                );
+                            }
+                            ui.end_row();
+                            for row in rows {
+                                for cell in row {
+                                    rich_paragraph(ui, cell, s.size, Fmt::default(), ctx);
+                                }
+                                ui.end_row();
+                            }
+                        });
                 });
-            });
         }
     }
 }
@@ -690,20 +846,40 @@ fn render_block(ui: &mut Ui, b: &Block, ctx: &Ctx) {
 fn code_block(ui: &mut Ui, lang: &str, text: &str, ctx: &Ctx) {
     let s = ctx.style;
     let id = ctx.id(ui);
-    Frame::new().fill(s.code_bg).stroke(Stroke::new(1.0, s.border)).corner_radius(CornerRadius::same(8)).inner_margin(Margin::same(8)).show(ui, |ui| {
-        ui.set_width(ui.available_width());
-        ui.horizontal(|ui| {
-            ui.label(RichText::new(if lang.is_empty() { "code" } else { lang }).small().color(s.muted));
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if ui.small_button("Copy").clicked() {
-                    ui.ctx().copy_text(text.to_string());
-                }
+    Frame::new()
+        .fill(s.code_bg)
+        .stroke(Stroke::new(1.0, s.border))
+        .corner_radius(CornerRadius::same(8))
+        .inner_margin(Margin::same(8))
+        .show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.horizontal(|ui| {
+                ui.label(
+                    RichText::new(if lang.is_empty() { "code" } else { lang })
+                        .small()
+                        .color(s.muted),
+                );
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if ui.small_button("Copy").clicked() {
+                        ui.ctx().copy_text(text.to_string());
+                    }
+                });
             });
+            egui::ScrollArea::horizontal()
+                .id_salt(id)
+                .auto_shrink([false, true])
+                .show(ui, |ui| {
+                    ui.add(
+                        egui::Label::new(
+                            RichText::new(text)
+                                .monospace()
+                                .size(s.size * 0.92)
+                                .color(s.text),
+                        )
+                        .extend(),
+                    );
+                });
         });
-        egui::ScrollArea::horizontal().id_salt(id).auto_shrink([false, true]).show(ui, |ui| {
-            ui.add(egui::Label::new(RichText::new(text).monospace().size(s.size * 0.92).color(s.text)).extend());
-        });
-    });
 }
 
 fn render_blocks_inner(ui: &mut Ui, blocks: &[Block], ctx: &Ctx) {
@@ -717,7 +893,12 @@ fn render_blocks_inner(ui: &mut Ui, blocks: &[Block], ctx: &Ctx) {
 
 /// Draw parsed blocks. `salt` keeps the ids of scroll areas and tables of different messages apart.
 pub fn render(ui: &mut Ui, blocks: &[Block], style: &MdStyle, salt: u64, bold: egui::FontFamily) {
-    let ctx = Ctx { style, salt, counter: Cell::new(0), bold };
+    let ctx = Ctx {
+        style,
+        salt,
+        counter: Cell::new(0),
+        bold,
+    };
     ui.spacing_mut().item_spacing.y = 6.0;
     render_blocks_inner(ui, blocks, &ctx);
 }
@@ -742,7 +923,8 @@ mod tests {
 
     #[test]
     fn emphasis_code_and_links() {
-        let s = parse_inline("a **bold** and *it* and `code` and ~~gone~~ [site](https://x.org/a) end");
+        let s =
+            parse_inline("a **bold** and *it* and `code` and ~~gone~~ [site](https://x.org/a) end");
         assert_eq!(
             s,
             vec![
@@ -755,7 +937,10 @@ mod tests {
                 t(" and "),
                 Span::Strike(vec![t("gone")]),
                 t(" "),
-                Span::Link { text: vec![t("site")], url: "https://x.org/a".into() },
+                Span::Link {
+                    text: vec![t("site")],
+                    url: "https://x.org/a".into()
+                },
                 t(" end"),
             ]
         );
@@ -764,23 +949,48 @@ mod tests {
     #[test]
     fn unterminated_markers_stay_text_while_streaming() {
         assert_eq!(parse_inline("half **bold"), vec![t("half **bold")]);
-        assert_eq!(parse_inline("snake_case_word and 2 * 3 * 4"), vec![t("snake_case_word and 2 * 3 * 4")]);
+        assert_eq!(
+            parse_inline("snake_case_word and 2 * 3 * 4"),
+            vec![t("snake_case_word and 2 * 3 * 4")]
+        );
         assert_eq!(parse_inline("`open"), vec![t("`open")]);
     }
 
     #[test]
     fn bare_urls_become_links_without_the_trailing_dot() {
         let s = parse_inline("see https://example.com/a?b=1.");
-        assert_eq!(s, vec![t("see "), Span::Link { text: vec![t("https://example.com/a?b=1")], url: "https://example.com/a?b=1".into() }, t(".")]);
+        assert_eq!(
+            s,
+            vec![
+                t("see "),
+                Span::Link {
+                    text: vec![t("https://example.com/a?b=1")],
+                    url: "https://example.com/a?b=1".into()
+                },
+                t(".")
+            ]
+        );
     }
 
     #[test]
     fn fenced_code_open_or_closed() {
         let b = parse("before\n```rust\nfn main() {}\n```\nafter");
-        assert_eq!(b[1], Block::Code { lang: "rust".into(), text: "fn main() {}".into() });
+        assert_eq!(
+            b[1],
+            Block::Code {
+                lang: "rust".into(),
+                text: "fn main() {}".into()
+            }
+        );
         assert_eq!(b.len(), 3);
         let open = parse("```python\nprint(1)\nprint(2)");
-        assert_eq!(open, vec![Block::Code { lang: "python".into(), text: "print(1)\nprint(2)".into() }]);
+        assert_eq!(
+            open,
+            vec![Block::Code {
+                lang: "python".into(),
+                text: "print(1)\nprint(2)".into()
+            }]
+        );
     }
 
     #[test]
@@ -795,7 +1005,11 @@ mod tests {
             other => panic!("{other:?}"),
         }
         match &b[1] {
-            Block::List { ordered, start, items } => {
+            Block::List {
+                ordered,
+                start,
+                items,
+            } => {
                 assert!(*ordered);
                 assert_eq!(*start, 1);
                 assert_eq!(items.len(), 2);

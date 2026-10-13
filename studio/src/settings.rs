@@ -19,7 +19,11 @@ pub enum EngineKind {
 }
 
 impl EngineKind {
-    pub const ALL: [EngineKind; 3] = [EngineKind::Forge, EngineKind::LlamaCpp, EngineKind::External];
+    pub const ALL: [EngineKind; 3] = [
+        EngineKind::Forge,
+        EngineKind::LlamaCpp,
+        EngineKind::External,
+    ];
 
     pub fn label(self) -> &'static str {
         match self {
@@ -119,7 +123,15 @@ fn de_thinking<'de, D: serde::Deserializer<'de>>(d: D) -> Result<ThinkingMode, D
 
 impl Default for GenParams {
     fn default() -> Self {
-        GenParams { temperature: 0.7, top_p: 0.9, top_k: 40, min_p: 0.0, repeat_penalty: 1.05, max_tokens: 0, thinking: ThinkingMode::Default }
+        GenParams {
+            temperature: 0.7,
+            top_p: 0.9,
+            top_k: 40,
+            min_p: 0.0,
+            repeat_penalty: 1.05,
+            max_tokens: 0,
+            thinking: ThinkingMode::Default,
+        }
     }
 }
 
@@ -167,9 +179,16 @@ impl Default for Settings {
     fn default() -> Self {
         let data = data_dir();
         Settings {
-            model_dirs: default_model_dirs(&data).iter().map(|p| p.display().to_string()).collect(),
+            model_dirs: default_model_dirs(&data)
+                .iter()
+                .map(|p| p.display().to_string())
+                .collect(),
             download_dir: data.join("models").display().to_string(),
-            engine: if cfg!(target_os = "macos") { EngineKind::LlamaCpp } else { EngineKind::Forge },
+            engine: if cfg!(target_os = "macos") {
+                EngineKind::LlamaCpp
+            } else {
+                EngineKind::Forge
+            },
             forge_binary: String::new(),
             llama_server: String::new(),
             external_url: "http://127.0.0.1:11434".to_string(),
@@ -198,7 +217,10 @@ pub fn data_dir() -> PathBuf {
     if let Some(p) = std::env::var_os("FORGE_STUDIO_HOME") {
         return PathBuf::from(p);
     }
-    if let Some(dir) = std::env::current_exe().ok().and_then(|e| e.parent().map(Path::to_path_buf)) {
+    if let Some(dir) = std::env::current_exe()
+        .ok()
+        .and_then(|e| e.parent().map(Path::to_path_buf))
+    {
         let portable = dir.join("data");
         if portable.is_dir() {
             return portable;
@@ -208,9 +230,15 @@ pub fn data_dir() -> PathBuf {
         if let Some(p) = std::env::var_os("APPDATA") {
             return PathBuf::from(p).join("ForgeStudio");
         }
-        home_dir().join("AppData").join("Roaming").join("ForgeStudio")
+        home_dir()
+            .join("AppData")
+            .join("Roaming")
+            .join("ForgeStudio")
     } else if cfg!(target_os = "macos") {
-        home_dir().join("Library").join("Application Support").join("ForgeStudio")
+        home_dir()
+            .join("Library")
+            .join("Application Support")
+            .join("ForgeStudio")
     } else if let Some(p) = std::env::var_os("XDG_CONFIG_HOME") {
         PathBuf::from(p).join("forge-studio")
     } else {
@@ -221,7 +249,10 @@ pub fn data_dir() -> PathBuf {
 /// Where models usually live: the app's own folder and, when they exist, the folders of LM Studio.
 pub fn default_model_dirs(data: &Path) -> Vec<PathBuf> {
     let mut v = vec![data.join("models")];
-    for p in [home_dir().join(".lmstudio").join("models"), home_dir().join(".cache").join("lm-studio").join("models")] {
+    for p in [
+        home_dir().join(".lmstudio").join("models"),
+        home_dir().join(".cache").join("lm-studio").join("models"),
+    ] {
         if p.is_dir() {
             v.push(p);
         }
@@ -240,7 +271,10 @@ impl Settings {
                 Ok(settings) => settings,
                 Err(_) => {
                     // keep what the user had: the next save would overwrite it
-                    let _ = std::fs::rename(settings_path(), settings_path().with_extension("json.broken"));
+                    let _ = std::fs::rename(
+                        settings_path(),
+                        settings_path().with_extension("json.broken"),
+                    );
                     Settings::default()
                 }
             },
@@ -259,7 +293,11 @@ impl Settings {
     }
 
     pub fn dirs(&self) -> Vec<PathBuf> {
-        self.model_dirs.iter().filter(|s| !s.trim().is_empty()).map(|s| PathBuf::from(s.trim())).collect()
+        self.model_dirs
+            .iter()
+            .filter(|s| !s.trim().is_empty())
+            .map(|s| PathBuf::from(s.trim()))
+            .collect()
     }
 
     /// The URL of the server the chat talks to, without a trailing slash and without `/v1`.
@@ -302,7 +340,9 @@ pub fn find_forge(settings: &Settings) -> Option<PathBuf> {
 
 pub fn find_in_path(name: &str) -> Option<PathBuf> {
     let path = std::env::var_os("PATH")?;
-    std::env::split_paths(&path).map(|d| d.join(name)).find(|p| p.is_file())
+    std::env::split_paths(&path)
+        .map(|d| d.join(name))
+        .find(|p| p.is_file())
 }
 
 /// llama.cpp's server: the path in the settings, then the PATH.
@@ -312,7 +352,11 @@ pub fn find_llama_server(settings: &Settings) -> Option<PathBuf> {
         let p = PathBuf::from(given);
         return p.is_file().then_some(p);
     }
-    let name = if cfg!(windows) { "llama-server.exe" } else { "llama-server" };
+    let name = if cfg!(windows) {
+        "llama-server.exe"
+    } else {
+        "llama-server"
+    };
     find_in_path(name)
 }
 
@@ -335,7 +379,8 @@ mod tests {
 
     #[test]
     fn the_old_boolean_thinking_setting_still_loads() {
-        let on: Settings = serde_json::from_str(r#"{"gen": {"thinking": true}, "port": 4000}"#).unwrap();
+        let on: Settings =
+            serde_json::from_str(r#"{"gen": {"thinking": true}, "port": 4000}"#).unwrap();
         assert_eq!(on.gen.thinking, ThinkingMode::On);
         assert_eq!(on.port, 4000);
         let off: Settings = serde_json::from_str(r#"{"gen": {"thinking": false}}"#).unwrap();

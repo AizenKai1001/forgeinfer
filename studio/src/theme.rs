@@ -1,6 +1,9 @@
 //! The look: a dark graphite theme with one ember-orange accent, and system fonts when they exist (a real bold needs one).
 
-use eframe::egui::{self, Color32, CornerRadius, FontData, FontDefinitions, FontFamily, FontId, Stroke, TextStyle, Theme, Visuals};
+use eframe::egui::{
+    self, Color32, CornerRadius, FontData, FontDefinitions, FontFamily, FontId, Stroke, TextStyle,
+    Theme, Visuals,
+};
 use std::sync::Arc;
 
 pub const BG: Color32 = Color32::from_rgb(16, 17, 20);
@@ -56,15 +59,30 @@ pub fn apply(ctx: &egui::Context) {
         v.widgets.active.weak_bg_fill = Color32::from_rgb(64, 69, 82);
         v.widgets.active.bg_fill = Color32::from_rgb(64, 69, 82);
         v.widgets.active.fg_stroke = Stroke::new(1.0, Color32::WHITE);
-        for w in [&mut v.widgets.inactive, &mut v.widgets.hovered, &mut v.widgets.active, &mut v.widgets.noninteractive] {
+        for w in [
+            &mut v.widgets.inactive,
+            &mut v.widgets.hovered,
+            &mut v.widgets.active,
+            &mut v.widgets.noninteractive,
+        ] {
             w.corner_radius = CornerRadius::same(7);
         }
         style.visuals = v;
-        style.text_styles.insert(TextStyle::Heading, FontId::proportional(22.0));
-        style.text_styles.insert(TextStyle::Body, FontId::proportional(14.5));
-        style.text_styles.insert(TextStyle::Button, FontId::proportional(14.5));
-        style.text_styles.insert(TextStyle::Small, FontId::proportional(12.5));
-        style.text_styles.insert(TextStyle::Monospace, FontId::monospace(13.0));
+        style
+            .text_styles
+            .insert(TextStyle::Heading, FontId::proportional(22.0));
+        style
+            .text_styles
+            .insert(TextStyle::Body, FontId::proportional(14.5));
+        style
+            .text_styles
+            .insert(TextStyle::Button, FontId::proportional(14.5));
+        style
+            .text_styles
+            .insert(TextStyle::Small, FontId::proportional(12.5));
+        style
+            .text_styles
+            .insert(TextStyle::Monospace, FontId::monospace(13.0));
         style.spacing.item_spacing = egui::vec2(8.0, 6.0);
         style.spacing.button_padding = egui::vec2(11.0, 5.0);
         style.spacing.interact_size.y = 27.0;
@@ -85,8 +103,14 @@ pub fn install_fonts(ctx: &egui::Context) {
         )
     } else if cfg!(target_os = "macos") {
         (
-            first_existing(&["/System/Library/Fonts/Supplemental/Arial.ttf", "/Library/Fonts/Arial.ttf"]),
-            first_existing(&["/System/Library/Fonts/Supplemental/Arial Bold.ttf", "/Library/Fonts/Arial Bold.ttf"]),
+            first_existing(&[
+                "/System/Library/Fonts/Supplemental/Arial.ttf",
+                "/Library/Fonts/Arial.ttf",
+            ]),
+            first_existing(&[
+                "/System/Library/Fonts/Supplemental/Arial Bold.ttf",
+                "/Library/Fonts/Arial Bold.ttf",
+            ]),
         )
     } else {
         (
@@ -106,12 +130,26 @@ pub fn install_fonts(ctx: &egui::Context) {
     };
     let mut fonts = FontDefinitions::default();
     if let Some(bytes) = regular {
-        fonts.font_data.insert("system-regular".to_string(), Arc::new(FontData::from_owned(bytes)));
-        fonts.families.entry(FontFamily::Proportional).or_default().insert(0, "system-regular".to_string());
+        fonts.font_data.insert(
+            "system-regular".to_string(),
+            Arc::new(FontData::from_owned(bytes)),
+        );
+        fonts
+            .families
+            .entry(FontFamily::Proportional)
+            .or_default()
+            .insert(0, "system-regular".to_string());
     }
-    let mut bold_list = fonts.families.get(&FontFamily::Proportional).cloned().unwrap_or_default();
+    let mut bold_list = fonts
+        .families
+        .get(&FontFamily::Proportional)
+        .cloned()
+        .unwrap_or_default();
     if let Some(bytes) = bold {
-        fonts.font_data.insert("system-bold".to_string(), Arc::new(FontData::from_owned(bytes)));
+        fonts.font_data.insert(
+            "system-bold".to_string(),
+            Arc::new(FontData::from_owned(bytes)),
+        );
         bold_list.insert(0, "system-bold".to_string());
     }
     fonts.families.insert(bold_family(), bold_list);

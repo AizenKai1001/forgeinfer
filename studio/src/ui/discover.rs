@@ -10,7 +10,16 @@ use crate::hf;
 use crate::theme;
 use crate::util::{human_bytes, human_count};
 
-const SUGGESTIONS: [&str; 8] = ["Qwen3.5", "Qwen3", "Llama 3.2", "SmolLM2", "Gemma", "Mistral", "Phi", "DeepSeek"];
+const SUGGESTIONS: [&str; 8] = [
+    "Qwen3.5",
+    "Qwen3",
+    "Llama 3.2",
+    "SmolLM2",
+    "Gemma",
+    "Mistral",
+    "Phi",
+    "DeepSeek",
+];
 
 pub fn show(app: &mut StudioApp, ui: &mut Ui) {
     egui::Frame::new().inner_margin(egui::Margin::symmetric(22, 16)).show(ui, |ui| {
@@ -60,31 +69,64 @@ pub fn show(app: &mut StudioApp, ui: &mut Ui) {
 
 fn results(app: &mut StudioApp, ui: &mut Ui, height: f32) {
     ui.set_min_height(height);
-    ScrollArea::vertical().id_salt("hf_results").max_height(height).auto_shrink([false, false]).show(ui, |ui| {
-        if app.hf_results.is_empty() && !app.hf_busy && app.hf_error.is_empty() {
-            muted(ui, "Search for a model family to see the GGUF repositories that offer it.");
-        }
-        for r in app.hf_results.clone() {
-            let selected = app.hf_repo.as_deref() == Some(r.id.as_str());
-            let resp = egui::Frame::new()
-                .fill(if selected { theme::CARD_HOVER } else { theme::CARD })
-                .corner_radius(egui::CornerRadius::same(8))
-                .stroke(egui::Stroke::new(1.0, if selected { theme::ACCENT.gamma_multiply(0.6) } else { theme::BORDER }))
-                .inner_margin(egui::Margin::symmetric(10, 7))
-                .show(ui, |ui| {
-                    ui.set_width(ui.available_width());
-                    ui.add(egui::Label::new(RichText::new(&r.id).color(theme::STRONG).family(theme::bold_family())).truncate());
-                    ui.label(RichText::new(format!("{} downloads  \u{00B7}  {} likes", human_count(r.downloads), human_count(r.likes))).small().color(theme::MUTED));
-                })
-                .response
-                .interact(egui::Sense::click())
-                .on_hover_cursor(egui::CursorIcon::PointingHand);
-            if resp.clicked() {
-                app.actions.push(Action::HfOpen(r.id.clone()));
+    ScrollArea::vertical()
+        .id_salt("hf_results")
+        .max_height(height)
+        .auto_shrink([false, false])
+        .show(ui, |ui| {
+            if app.hf_results.is_empty() && !app.hf_busy && app.hf_error.is_empty() {
+                muted(
+                    ui,
+                    "Search for a model family to see the GGUF repositories that offer it.",
+                );
             }
-            ui.add_space(4.0);
-        }
-    });
+            for r in app.hf_results.clone() {
+                let selected = app.hf_repo.as_deref() == Some(r.id.as_str());
+                let resp = egui::Frame::new()
+                    .fill(if selected {
+                        theme::CARD_HOVER
+                    } else {
+                        theme::CARD
+                    })
+                    .corner_radius(egui::CornerRadius::same(8))
+                    .stroke(egui::Stroke::new(
+                        1.0,
+                        if selected {
+                            theme::ACCENT.gamma_multiply(0.6)
+                        } else {
+                            theme::BORDER
+                        },
+                    ))
+                    .inner_margin(egui::Margin::symmetric(10, 7))
+                    .show(ui, |ui| {
+                        ui.set_width(ui.available_width());
+                        ui.add(
+                            egui::Label::new(
+                                RichText::new(&r.id)
+                                    .color(theme::STRONG)
+                                    .family(theme::bold_family()),
+                            )
+                            .truncate(),
+                        );
+                        ui.label(
+                            RichText::new(format!(
+                                "{} downloads  \u{00B7}  {} likes",
+                                human_count(r.downloads),
+                                human_count(r.likes)
+                            ))
+                            .small()
+                            .color(theme::MUTED),
+                        );
+                    })
+                    .response
+                    .interact(egui::Sense::click())
+                    .on_hover_cursor(egui::CursorIcon::PointingHand);
+                if resp.clicked() {
+                    app.actions.push(Action::HfOpen(r.id.clone()));
+                }
+                ui.add_space(4.0);
+            }
+        });
 }
 
 fn files(app: &mut StudioApp, ui: &mut Ui, height: f32) {
@@ -94,108 +136,164 @@ fn files(app: &mut StudioApp, ui: &mut Ui, height: f32) {
         return;
     };
     ui.horizontal(|ui| {
-        ui.label(RichText::new(&repo).size(16.0).color(theme::STRONG).family(theme::bold_family()));
+        ui.label(
+            RichText::new(&repo)
+                .size(16.0)
+                .color(theme::STRONG)
+                .family(theme::bold_family()),
+        );
         if app.hf_files_busy {
             ui.spinner();
         }
         if ui.small_button("Open on huggingface.co").clicked() {
-            ui.ctx().open_url(egui::OpenUrl::new_tab(format!("https://huggingface.co/{repo}")));
+            ui.ctx().open_url(egui::OpenUrl::new_tab(format!(
+                "https://huggingface.co/{repo}"
+            )));
         }
     });
-    ScrollArea::vertical().id_salt("hf_files").max_height(height - 30.0).auto_shrink([false, false]).show(ui, |ui| {
-        if app.hf_files.is_empty() && !app.hf_files_busy {
-            muted(ui, "No GGUF files in this repository.");
-        }
-        for f in app.hf_files.clone() {
-            let dest = hf::destination(std::path::Path::new(&app.settings.download_dir), &repo, &f);
-            let have = dest.is_file();
-            let running = app.downloads.iter().find(|d| d.repo == repo && d.file.path == f.path && d.state == DlState::Running).map(|d| d.id);
-            card(ui, |ui| {
-                ui.horizontal(|ui| {
-                    ui.add(egui::Label::new(RichText::new(f.file_name()).color(theme::TEXT)).truncate());
-                    right_aligned(ui, |ui| {
-                        if have {
-                            badge(ui, "downloaded", theme::GOOD, theme::CARD);
-                        } else if let Some(id) = running {
-                            if ui.button("Cancel").clicked() {
-                                app.actions.push(Action::CancelDownload(id));
+    ScrollArea::vertical()
+        .id_salt("hf_files")
+        .max_height(height - 30.0)
+        .auto_shrink([false, false])
+        .show(ui, |ui| {
+            if app.hf_files.is_empty() && !app.hf_files_busy {
+                muted(ui, "No GGUF files in this repository.");
+            }
+            for f in app.hf_files.clone() {
+                let dest =
+                    hf::destination(std::path::Path::new(&app.settings.download_dir), &repo, &f);
+                let have = dest.is_file();
+                let running = app
+                    .downloads
+                    .iter()
+                    .find(|d| {
+                        d.repo == repo && d.file.path == f.path && d.state == DlState::Running
+                    })
+                    .map(|d| d.id);
+                card(ui, |ui| {
+                    ui.horizontal(|ui| {
+                        ui.add(
+                            egui::Label::new(RichText::new(f.file_name()).color(theme::TEXT))
+                                .truncate(),
+                        );
+                        right_aligned(ui, |ui| {
+                            if have {
+                                badge(ui, "downloaded", theme::GOOD, theme::CARD);
+                            } else if let Some(id) = running {
+                                if ui.button("Cancel").clicked() {
+                                    app.actions.push(Action::CancelDownload(id));
+                                }
+                            } else if primary_button(ui, "Download").clicked() {
+                                app.actions.push(Action::Download {
+                                    repo: repo.clone(),
+                                    file: f.clone(),
+                                });
                             }
-                        } else if primary_button(ui, "Download").clicked() {
-                            app.actions.push(Action::Download { repo: repo.clone(), file: f.clone() });
+                        });
+                    });
+                    ui.horizontal_wrapped(|ui| {
+                        let q = f.quant();
+                        if !q.is_empty() {
+                            badge(ui, &q, theme::ACCENT, theme::ACCENT_DIM);
+                            let note = hf::quant_note(&q);
+                            if !note.is_empty() {
+                                muted(ui, note);
+                            }
+                        }
+                        neutral_badge(ui, &human_bytes(f.size));
+                        if f.is_projector() {
+                            badge(ui, "vision projector", theme::INFO, theme::CARD);
+                        } else if let Some((part, of)) = f.shard() {
+                            badge(
+                                ui,
+                                &format!("part {part} of {of}: download every part"),
+                                theme::WARN,
+                                theme::CARD,
+                            );
+                        } else {
+                            match fit(&app.hw, f.size) {
+                                Fit::Gpu => {
+                                    badge(ui, "fits in video memory", theme::GOOD, theme::CARD);
+                                }
+                                Fit::Split => {
+                                    badge(ui, "split GPU + CPU", theme::WARN, theme::CARD);
+                                }
+                                Fit::TooBig => {
+                                    badge(ui, "too large", theme::BAD, theme::CARD);
+                                }
+                                Fit::Unknown => {}
+                            }
                         }
                     });
                 });
-                ui.horizontal_wrapped(|ui| {
-                    let q = f.quant();
-                    if !q.is_empty() {
-                        badge(ui, &q, theme::ACCENT, theme::ACCENT_DIM);
-                        let note = hf::quant_note(&q);
-                        if !note.is_empty() {
-                            muted(ui, note);
-                        }
-                    }
-                    neutral_badge(ui, &human_bytes(f.size));
-                    if f.is_projector() {
-                        badge(ui, "vision projector", theme::INFO, theme::CARD);
-                    } else if let Some((part, of)) = f.shard() {
-                        badge(ui, &format!("part {part} of {of}: download every part"), theme::WARN, theme::CARD);
-                    } else {
-                        match fit(&app.hw, f.size) {
-                            Fit::Gpu => {
-                                badge(ui, "fits in video memory", theme::GOOD, theme::CARD);
-                            }
-                            Fit::Split => {
-                                badge(ui, "split GPU + CPU", theme::WARN, theme::CARD);
-                            }
-                            Fit::TooBig => {
-                                badge(ui, "too large", theme::BAD, theme::CARD);
-                            }
-                            Fit::Unknown => {}
-                        }
-                    }
-                });
-            });
-            ui.add_space(4.0);
-        }
-    });
+                ui.add_space(4.0);
+            }
+        });
 }
 
 fn downloads(app: &mut StudioApp, ui: &mut Ui) {
     section(ui, "Downloads");
-    ScrollArea::vertical().id_salt("downloads").max_height(210.0).auto_shrink([false, true]).show(ui, |ui| {
-        for d in app.downloads.iter().rev() {
-            card(ui, |ui| {
-                ui.horizontal(|ui| {
-                    ui.add(egui::Label::new(RichText::new(d.file.file_name()).color(theme::TEXT)).truncate());
-                    right_aligned(ui, |ui| match &d.state {
-                        DlState::Running => {
-                            if ui.button("Cancel").clicked() {
-                                app.actions.push(Action::CancelDownload(d.id));
+    ScrollArea::vertical()
+        .id_salt("downloads")
+        .max_height(210.0)
+        .auto_shrink([false, true])
+        .show(ui, |ui| {
+            for d in app.downloads.iter().rev() {
+                card(ui, |ui| {
+                    ui.horizontal(|ui| {
+                        ui.add(
+                            egui::Label::new(RichText::new(d.file.file_name()).color(theme::TEXT))
+                                .truncate(),
+                        );
+                        right_aligned(ui, |ui| match &d.state {
+                            DlState::Running => {
+                                if ui.button("Cancel").clicked() {
+                                    app.actions.push(Action::CancelDownload(d.id));
+                                }
                             }
-                        }
-                        DlState::Done(p) => {
-                            if ui.button("Show in folder").clicked() {
-                                crate::util::reveal(p);
+                            DlState::Done(p) => {
+                                if ui.button("Show in folder").clicked() {
+                                    crate::util::reveal(p);
+                                }
                             }
-                        }
-                        DlState::Failed(_) => {}
+                            DlState::Failed(_) => {}
+                        });
                     });
+                    let done = d.progress.done.load(Ordering::Relaxed);
+                    let total = d
+                        .progress
+                        .total
+                        .load(Ordering::Relaxed)
+                        .max(d.file.size)
+                        .max(1);
+                    match &d.state {
+                        DlState::Running => {
+                            bar(ui, done as f32 / total as f32, theme::ACCENT, 8.0);
+                            let eta = if d.speed > 1.0 {
+                                format!(
+                                    "  \u{00B7}  {:.0} s left",
+                                    (total - done.min(total)) as f64 / d.speed
+                                )
+                            } else {
+                                String::new()
+                            };
+                            muted(
+                                ui,
+                                &format!(
+                                    "{} of {}  \u{00B7}  {}/s{eta}",
+                                    human_bytes(done),
+                                    human_bytes(total),
+                                    human_bytes(d.speed as u64)
+                                ),
+                            );
+                        }
+                        DlState::Done(_) => muted(ui, &format!("Done: {}", human_bytes(done))),
+                        DlState::Failed(e) => {
+                            ui.label(RichText::new(e).small().color(theme::BAD));
+                        }
+                    }
                 });
-                let done = d.progress.done.load(Ordering::Relaxed);
-                let total = d.progress.total.load(Ordering::Relaxed).max(d.file.size).max(1);
-                match &d.state {
-                    DlState::Running => {
-                        bar(ui, done as f32 / total as f32, theme::ACCENT, 8.0);
-                        let eta = if d.speed > 1.0 { format!("  \u{00B7}  {:.0} s left", (total - done.min(total)) as f64 / d.speed) } else { String::new() };
-                        muted(ui, &format!("{} of {}  \u{00B7}  {}/s{eta}", human_bytes(done), human_bytes(total), human_bytes(d.speed as u64)));
-                    }
-                    DlState::Done(_) => muted(ui, &format!("Done: {}", human_bytes(done))),
-                    DlState::Failed(e) => {
-                        ui.label(RichText::new(e).small().color(theme::BAD));
-                    }
-                }
-            });
-            ui.add_space(4.0);
-        }
-    });
+                ui.add_space(4.0);
+            }
+        });
 }

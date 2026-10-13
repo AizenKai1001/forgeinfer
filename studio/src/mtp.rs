@@ -58,7 +58,11 @@ pub fn find_head(model: &Path, dirs: &[PathBuf]) -> Option<PathBuf> {
         places.push(d.join("mtp"));
     }
     for d in places {
-        for name in [format!("{base}-mtp.safetensors"), format!("{base}.mtp.safetensors"), format!("{stem}-mtp.safetensors")] {
+        for name in [
+            format!("{base}-mtp.safetensors"),
+            format!("{base}.mtp.safetensors"),
+            format!("{stem}-mtp.safetensors"),
+        ] {
             let p = d.join(&name);
             if p.is_file() {
                 return Some(p);
@@ -69,14 +73,24 @@ pub fn find_head(model: &Path, dirs: &[PathBuf]) -> Option<PathBuf> {
 }
 
 fn agent() -> ureq::Agent {
-    let config = ureq::Agent::config_builder().timeout_connect(Some(Duration::from_secs(10))).http_status_as_error(false).user_agent("forge-studio/0.1").build();
+    let config = ureq::Agent::config_builder()
+        .timeout_connect(Some(Duration::from_secs(10)))
+        .http_status_as_error(false)
+        .user_agent("forge-studio/0.1")
+        .build();
     ureq::Agent::new_with_config(config)
 }
 
 fn get_range(url: &str, start: u64, end: u64) -> Result<Vec<u8>, String> {
     let mut last = String::new();
     for attempt in 0..4 {
-        let r = agent().get(url).header("Range", format!("bytes={start}-{end}")).config().timeout_global(Some(Duration::from_secs(300))).build().call();
+        let r = agent()
+            .get(url)
+            .header("Range", format!("bytes={start}-{end}"))
+            .config()
+            .timeout_global(Some(Duration::from_secs(300)))
+            .build()
+            .call();
         match r {
             Ok(mut resp) if resp.status().as_u16() == 206 || resp.status().as_u16() == 200 => {
                 let mut data = Vec::new();
@@ -112,7 +126,13 @@ fn get_range(url: &str, start: u64, end: u64) -> Result<Vec<u8>, String> {
 }
 
 fn get_text(url: &str) -> Result<Option<String>, String> {
-    let mut resp = agent().get(url).config().timeout_global(Some(Duration::from_secs(60))).build().call().map_err(|e| format!("cannot reach Hugging Face: {e}"))?;
+    let mut resp = agent()
+        .get(url)
+        .config()
+        .timeout_global(Some(Duration::from_secs(60)))
+        .build()
+        .call()
+        .map_err(|e| format!("cannot reach Hugging Face: {e}"))?;
     let status = resp.status().as_u16();
     if status == 404 {
         return Ok(None);
@@ -120,7 +140,10 @@ fn get_text(url: &str) -> Result<Option<String>, String> {
     if !(200..300).contains(&status) {
         return Err(format!("Hugging Face answered HTTP {status}"));
     }
-    resp.body_mut().read_to_string().map(Some).map_err(|e| e.to_string())
+    resp.body_mut()
+        .read_to_string()
+        .map(Some)
+        .map_err(|e| e.to_string())
 }
 
 pub struct Piece {
@@ -134,7 +157,10 @@ pub struct Piece {
 }
 
 /// Assemble a safetensors file from tensors held in memory: `(name, dtype, shape, bytes)`, sorted by name.
-pub fn write_safetensors(out: &Path, tensors: &[(String, String, Value, Vec<u8>)]) -> std::io::Result<()> {
+pub fn write_safetensors(
+    out: &Path,
+    tensors: &[(String, String, Value, Vec<u8>)],
+) -> std::io::Result<()> {
     let mut header = Map::new();
     let mut offset = 0u64;
     for (name, dtype, shape, bytes) in tensors {
@@ -143,7 +169,7 @@ pub fn write_safetensors(out: &Path, tensors: &[(String, String, Value, Vec<u8>)
     }
     header.insert("__metadata__".to_string(), json!({"format": "pt"}));
     let mut text = serde_json::to_string(&Value::Object(header)).unwrap_or_default();
-    while text.len() % 8 != 0 {
+    while !text.len().is_multiple_of(8) {
         text.push(' ');
     }
     let tmp = out.with_extension("safetensors.part");
@@ -160,12 +186,23 @@ pub fn write_safetensors(out: &Path, tensors: &[(String, String, Value, Vec<u8>)
 
 /// What a head consists of: the `mtp.*` tensors of `repo` and where their bytes are (only the index and the safetensors headers are read: a few kilobytes).
 pub fn plan_head(repo: &str) -> Result<Vec<Piece>, String> {
-    let index = get_text(&format!("{API}/{repo}/resolve/main/model.safetensors.index.json"))?;
+    let index = get_text(&format!(
+        "{API}/{repo}/resolve/main/model.safetensors.index.json"
+    ))?;
     // which shard files hold mtp tensors (None: the checkpoint is one file)
     let files: Vec<String> = match index {
         Some(text) => {
-            let v: Value = serde_json::from_str(&text).map_err(|e| format!("unexpected index: {e}"))?;
-            let mut f: Vec<String> = v["weight_map"].as_object().map(|m| m.iter().filter(|(k, _)| k.starts_with("mtp.")).map(|(_, f)| f.as_str().unwrap_or("").to_string()).collect()).unwrap_or_default();
+            let v: Value =
+                serde_json::from_str(&text).map_err(|e| format!("unexpected index: {e}"))?;
+            let mut f: Vec<String> = v["weight_map"]
+                .as_object()
+                .map(|m| {
+                    m.iter()
+                        .filter(|(k, _)| k.starts_with("mtp."))
+                        .map(|(_, f)| f.as_str().unwrap_or("").to_string())
+                        .collect()
+                })
+                .unwrap_or_default();
             f.sort();
             f.dedup();
             f
@@ -178,17 +215,33 @@ pub fn plan_head(repo: &str) -> Result<Vec<Piece>, String> {
     let mut pieces: Vec<Piece> = Vec::new();
     for f in &files {
         let url = format!("{API}/{repo}/resolve/main/{f}");
-        let n = u64::from_le_bytes(get_range(&url, 0, 7)?.try_into().map_err(|_| "bad safetensors header".to_string())?);
+        let n = u64::from_le_bytes(
+            get_range(&url, 0, 7)?
+                .try_into()
+                .map_err(|_| "bad safetensors header".to_string())?,
+        );
         if n == 0 || n > 64 << 20 {
             return Err(format!("{f}: implausible header size {n}"));
         }
-        let header: Value = serde_json::from_slice(&get_range(&url, 8, 8 + n - 1)?).map_err(|e| format!("{f}: {e}"))?;
+        let header: Value = serde_json::from_slice(&get_range(&url, 8, 8 + n - 1)?)
+            .map_err(|e| format!("{f}: {e}"))?;
         for (k, t) in header.as_object().into_iter().flatten() {
             if !k.starts_with("mtp.") {
                 continue;
             }
-            let (b0, b1) = (t["data_offsets"][0].as_u64().unwrap_or(0), t["data_offsets"][1].as_u64().unwrap_or(0));
-            pieces.push(Piece { name: k.clone(), dtype: t["dtype"].as_str().unwrap_or("BF16").to_string(), shape: t["shape"].clone(), url: url.clone(), base: 8 + n, b0, b1 });
+            let (b0, b1) = (
+                t["data_offsets"][0].as_u64().unwrap_or(0),
+                t["data_offsets"][1].as_u64().unwrap_or(0),
+            );
+            pieces.push(Piece {
+                name: k.clone(),
+                dtype: t["dtype"].as_str().unwrap_or("BF16").to_string(),
+                shape: t["shape"].clone(),
+                url: url.clone(),
+                base: 8 + n,
+                b0,
+                b1,
+            });
         }
     }
     if pieces.is_empty() {
@@ -201,10 +254,13 @@ pub fn plan_head(repo: &str) -> Result<Vec<Piece>, String> {
 /// Download the `mtp.*` tensors of `repo` into the safetensors file `out`. Blocks; run it on a thread. `progress.total` is set once the sizes are known.
 pub fn fetch_head(repo: &str, out: &Path, progress: &Progress) -> Result<(), String> {
     if let Some(dir) = out.parent() {
-        std::fs::create_dir_all(dir).map_err(|e| format!("cannot create {}: {e}", dir.display()))?;
+        std::fs::create_dir_all(dir)
+            .map_err(|e| format!("cannot create {}: {e}", dir.display()))?;
     }
     let pieces = plan_head(repo)?;
-    progress.total.store(pieces.iter().map(|p| p.b1 - p.b0).sum(), Ordering::Relaxed);
+    progress
+        .total
+        .store(pieces.iter().map(|p| p.b1 - p.b0).sum(), Ordering::Relaxed);
     progress.done.store(0, Ordering::Relaxed);
     let mut tensors = Vec::with_capacity(pieces.len());
     for p in &pieces {
@@ -216,7 +272,9 @@ pub fn fetch_head(repo: &str, out: &Path, progress: &Progress) -> Result<(), Str
             }
             let end = (at + CHUNK).min(p.b1);
             let part = get_range(&p.url, p.base + at, p.base + end - 1)?;
-            progress.done.fetch_add(part.len() as u64, Ordering::Relaxed);
+            progress
+                .done
+                .fetch_add(part.len() as u64, Ordering::Relaxed);
             bytes.extend_from_slice(&part);
             at = end;
         }
@@ -234,7 +292,10 @@ mod tests {
         assert_eq!(base_name("Qwen3.5-9B-Q4_K_M"), "Qwen3.5-9B");
         assert_eq!(base_name("Qwen3.5-27B-UD-Q2_K_XL"), "Qwen3.5-27B");
         assert_eq!(base_name("Qwen3.5-4B-Q8_0"), "Qwen3.5-4B");
-        assert_eq!(repo_of("Qwen3.5-9B-Q4_K_M").as_deref(), Some("Qwen/Qwen3.5-9B"));
+        assert_eq!(
+            repo_of("Qwen3.5-9B-Q4_K_M").as_deref(),
+            Some("Qwen/Qwen3.5-9B")
+        );
         assert_eq!(repo_of("Qwen3-4B-Q4_K_M"), None);
         assert_eq!(repo_of("Qwen3.5-4B-mmproj-F16"), None);
     }
@@ -247,7 +308,10 @@ mod tests {
         std::fs::write(&model, b"x").unwrap();
         assert_eq!(find_head(&model, &[]), None);
         std::fs::write(dir.join("mtp").join("Qwen3.5-9B-mtp.safetensors"), b"x").unwrap();
-        assert_eq!(find_head(&model, &[]), Some(dir.join("mtp").join("Qwen3.5-9B-mtp.safetensors")));
+        assert_eq!(
+            find_head(&model, &[]),
+            Some(dir.join("mtp").join("Qwen3.5-9B-mtp.safetensors"))
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -256,7 +320,24 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("forge-studio-st-{}", crate::util::new_id()));
         std::fs::create_dir_all(&dir).unwrap();
         let out = dir.join("head.safetensors");
-        write_safetensors(&out, &[("mtp.a".to_string(), "F32".to_string(), json!([2]), vec![0, 0, 128, 63, 0, 0, 0, 64]), ("mtp.b".to_string(), "BF16".to_string(), json!([1]), vec![1, 2])]).unwrap();
+        write_safetensors(
+            &out,
+            &[
+                (
+                    "mtp.a".to_string(),
+                    "F32".to_string(),
+                    json!([2]),
+                    vec![0, 0, 128, 63, 0, 0, 0, 64],
+                ),
+                (
+                    "mtp.b".to_string(),
+                    "BF16".to_string(),
+                    json!([1]),
+                    vec![1, 2],
+                ),
+            ],
+        )
+        .unwrap();
         let data = std::fs::read(&out).unwrap();
         let n = u64::from_le_bytes(data[..8].try_into().unwrap()) as usize;
         assert_eq!(n % 8, 0);
@@ -274,17 +355,28 @@ mod tests {
     #[test]
     #[ignore]
     fn live_plan_matches_a_head_fetched_by_the_python_tool() {
-        let Ok(reference) = std::env::var("FORGE_MTP_REFERENCE") else { return };
-        let repo = std::env::var("FORGE_MTP_REPO").unwrap_or_else(|_| "Qwen/Qwen3.5-4B".to_string());
+        let Ok(reference) = std::env::var("FORGE_MTP_REFERENCE") else {
+            return;
+        };
+        let repo =
+            std::env::var("FORGE_MTP_REPO").unwrap_or_else(|_| "Qwen/Qwen3.5-4B".to_string());
         let plan = plan_head(&repo).expect("plan");
         let data = std::fs::read(&reference).unwrap();
         let n = u64::from_le_bytes(data[..8].try_into().unwrap()) as usize;
         let header: Value = serde_json::from_slice(&data[8..8 + n]).unwrap();
-        let names: Vec<&String> = header.as_object().unwrap().keys().filter(|k| k.as_str() != "__metadata__").collect();
+        let names: Vec<&String> = header
+            .as_object()
+            .unwrap()
+            .keys()
+            .filter(|k| k.as_str() != "__metadata__")
+            .collect();
         assert_eq!(names.len(), plan.len());
         for p in &plan {
             let t = &header[p.name.as_str()];
-            let (b0, b1) = (t["data_offsets"][0].as_u64().unwrap(), t["data_offsets"][1].as_u64().unwrap());
+            let (b0, b1) = (
+                t["data_offsets"][0].as_u64().unwrap(),
+                t["data_offsets"][1].as_u64().unwrap(),
+            );
             assert_eq!(b1 - b0, p.b1 - p.b0, "{}", p.name);
             assert_eq!(t["dtype"].as_str().unwrap(), p.dtype, "{}", p.name);
             assert_eq!(&t["shape"], &p.shape, "{}", p.name);
@@ -295,11 +387,16 @@ mod tests {
     #[test]
     #[ignore]
     fn live_fetch_of_a_small_head() {
-        let Ok(out) = std::env::var("FORGE_MTP_OUT") else { return };
+        let Ok(out) = std::env::var("FORGE_MTP_OUT") else {
+            return;
+        };
         let out = PathBuf::from(out);
         let progress = Progress::default();
         fetch_head("Qwen/Qwen3.5-0.8B", &out, &progress).expect("fetch");
-        assert_eq!(progress.done.load(Ordering::Relaxed), progress.total.load(Ordering::Relaxed));
+        assert_eq!(
+            progress.done.load(Ordering::Relaxed),
+            progress.total.load(Ordering::Relaxed)
+        );
         let st = forge_gguf::SafeTensors::open(&out).unwrap();
         assert!(st.tensors.len() >= 10 && st.tensors.iter().all(|t| t.name.starts_with("mtp.")));
     }

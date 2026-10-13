@@ -29,7 +29,15 @@ pub enum Screen {
 }
 
 impl Screen {
-    pub const ALL: [Screen; 7] = [Screen::Chat, Screen::Library, Screen::Discover, Screen::Server, Screen::Hardware, Screen::Logs, Screen::Settings];
+    pub const ALL: [Screen; 7] = [
+        Screen::Chat,
+        Screen::Library,
+        Screen::Discover,
+        Screen::Server,
+        Screen::Hardware,
+        Screen::Logs,
+        Screen::Settings,
+    ];
 
     pub fn label(self) -> &'static str {
         match self {
@@ -44,7 +52,11 @@ impl Screen {
     }
 
     pub fn from_name(s: &str) -> Option<Screen> {
-        Screen::ALL.iter().copied().find(|x| x.label().to_lowercase().replace(' ', "") == s.to_lowercase().replace(['-', '_', ' '], "") || format!("{x:?}").to_lowercase() == s.to_lowercase())
+        Screen::ALL.iter().copied().find(|x| {
+            x.label().to_lowercase().replace(' ', "")
+                == s.to_lowercase().replace(['-', '_', ' '], "")
+                || format!("{x:?}").to_lowercase() == s.to_lowercase()
+        })
     }
 }
 
@@ -69,7 +81,10 @@ pub enum Action {
     RefreshExternal,
     HfSearch,
     HfOpen(String),
-    Download { repo: String, file: RepoFile },
+    Download {
+        repo: String,
+        file: RepoFile,
+    },
     CancelDownload(u64),
     Toast(String),
 }
@@ -77,11 +92,26 @@ pub enum Action {
 pub enum Msg {
     Scan(Vec<ModelEntry>),
     Hardware(HardwareInfo),
-    Live { gpus: Vec<hardware::Gpu>, ram_free: u64 },
-    Chat { req: u64, ev: ChatEvent },
-    HfSearch { seq: u64, result: Result<Vec<Repo>, String> },
-    HfFiles { repo: String, result: Result<Vec<RepoFile>, String> },
-    DownloadDone { id: u64, result: Result<PathBuf, String> },
+    Live {
+        gpus: Vec<hardware::Gpu>,
+        ram_free: u64,
+    },
+    Chat {
+        req: u64,
+        ev: ChatEvent,
+    },
+    HfSearch {
+        seq: u64,
+        result: Result<Vec<Repo>, String>,
+    },
+    HfFiles {
+        repo: String,
+        result: Result<Vec<RepoFile>, String>,
+    },
+    DownloadDone {
+        id: u64,
+        result: Result<PathBuf, String>,
+    },
     Models(Result<Vec<String>, String>),
     Inspected(Result<Inspect, String>),
 }
@@ -212,7 +242,14 @@ impl StudioApp {
         let (tx, rx) = channel();
         let store = Store::new(chats::chats_dir(&data_dir()));
         let chat_list = store.list();
-        let chat = if opts.open_last { chat_list.first().and_then(|m| store.load(&m.id)).unwrap_or_default() } else { Chat::new() };
+        let chat = if opts.open_last {
+            chat_list
+                .first()
+                .and_then(|m| store.load(&m.id))
+                .unwrap_or_default()
+        } else {
+            Chat::new()
+        };
         let mut app = StudioApp {
             saved: settings.clone(),
             settings,
@@ -253,7 +290,12 @@ impl StudioApp {
             hf_files_busy: false,
             downloads: Vec::new(),
             toasts: Vec::new(),
-            shot: opts.shot.clone().map(|path| ShotState { path, at: Instant::now() + Duration::from_secs_f32(opts.shot_delay.max(0.5)), requested: false, wait_reply: opts.shot_after_reply }),
+            shot: opts.shot.clone().map(|path| ShotState {
+                path,
+                at: Instant::now() + Duration::from_secs_f32(opts.shot_delay.max(0.5)),
+                requested: false,
+                wait_reply: opts.shot_after_reply,
+            }),
             pending_send: opts.send.clone(),
             pending_load: opts.load.clone(),
             no_head: Default::default(),
@@ -291,7 +333,10 @@ impl StudioApp {
     }
 
     pub fn toast(&mut self, text: impl Into<String>) {
-        self.toasts.push(Toast { text: text.into(), at: Instant::now() });
+        self.toasts.push(Toast {
+            text: text.into(),
+            at: Instant::now(),
+        });
     }
 
     fn spawn<F: FnOnce(Sender<Msg>, Arc<dyn Fn() + Send + Sync>) + Send + 'static>(&self, f: F) {
@@ -324,7 +369,9 @@ impl StudioApp {
         let entry = self.library.iter().find(|e| e.path == path).cloned();
         let shown = path.clone();
         self.spawn(move |tx, wake| {
-            let (name, source) = entry.map(|e| (Some(e.name), e.source)).unwrap_or((None, "file".to_string()));
+            let (name, source) = entry
+                .map(|e| (Some(e.name), e.source))
+                .unwrap_or((None, "file".to_string()));
             let r = library::inspect(&path, name, &source);
             let _ = tx.send(Msg::Inspected(r));
             wake();
@@ -333,7 +380,10 @@ impl StudioApp {
     }
 
     pub fn refresh_external(&mut self) {
-        let ep = Endpoint { base: self.settings.external_base(), key: self.settings.external_key.clone() };
+        let ep = Endpoint {
+            base: self.settings.external_base(),
+            key: self.settings.external_key.clone(),
+        };
         self.external_status = "checking ...".to_string();
         self.spawn(move |tx, wake| {
             let _ = tx.send(Msg::Models(client::list_models(&ep)));
@@ -351,7 +401,10 @@ impl StudioApp {
         self.hf_seq += 1;
         let seq = self.hf_seq;
         self.spawn(move |tx, wake| {
-            let _ = tx.send(Msg::HfSearch { seq, result: hf::search(&q) });
+            let _ = tx.send(Msg::HfSearch {
+                seq,
+                result: hf::search(&q),
+            });
             wake();
         });
     }
@@ -368,15 +421,32 @@ impl StudioApp {
     }
 
     pub fn start_download(&mut self, repo: String, file: RepoFile) {
-        let dest = hf::destination(std::path::Path::new(&self.settings.download_dir), &repo, &file);
-        if self.downloads.iter().any(|d| d.repo == repo && d.file.path == file.path && d.state == DlState::Running) {
+        let dest = hf::destination(
+            std::path::Path::new(&self.settings.download_dir),
+            &repo,
+            &file,
+        );
+        if self
+            .downloads
+            .iter()
+            .any(|d| d.repo == repo && d.file.path == file.path && d.state == DlState::Running)
+        {
             return;
         }
         let id = self.next_req;
         self.next_req += 1;
         let progress = Arc::new(Progress::default());
         progress.total.store(file.size, Ordering::Relaxed);
-        self.downloads.push(Download { id, repo: repo.clone(), file: file.clone(), progress: progress.clone(), state: DlState::Running, started: Instant::now(), speed: 0.0, last: (Instant::now(), 0) });
+        self.downloads.push(Download {
+            id,
+            repo: repo.clone(),
+            file: file.clone(),
+            progress: progress.clone(),
+            state: DlState::Running,
+            started: Instant::now(),
+            speed: 0.0,
+            last: (Instant::now(), 0),
+        });
         self.spawn(move |tx, wake| {
             let w = wake.clone();
             let r = hf::download(&repo, &file, &dest, &progress, &move || w());
@@ -397,11 +467,23 @@ impl StudioApp {
     /// The server the chat talks to and the model name to send, when there is one.
     pub fn active_endpoint(&self) -> Option<(Endpoint, String)> {
         if self.settings.engine == EngineKind::External {
-            let name = if !self.external_pick.is_empty() { self.external_pick.clone() } else { self.external_models.first().cloned()? };
-            return Some((Endpoint { base: self.settings.external_base(), key: self.settings.external_key.clone() }, name));
+            let name = if !self.external_pick.is_empty() {
+                self.external_pick.clone()
+            } else {
+                self.external_models.first().cloned()?
+            };
+            return Some((
+                Endpoint {
+                    base: self.settings.external_base(),
+                    key: self.settings.external_key.clone(),
+                },
+                name,
+            ));
         }
         match self.engine.state() {
-            EngineState::Ready { model, port, .. } => Some((Endpoint::local(port, &self.settings.api_key), model)),
+            EngineState::Ready { model, port, .. } => {
+                Some((Endpoint::local(port, &self.settings.api_key), model))
+            }
             _ => None,
         }
     }
@@ -421,12 +503,27 @@ impl StudioApp {
             _ => settings::find_forge(&self.settings),
         };
         let Some(binary) = binary else {
-            let what = if self.settings.engine == EngineKind::LlamaCpp { "llama-server" } else { "forge" };
-            self.toast(format!("Cannot find the {what} program. Set its path in Settings."));
+            let what = if self.settings.engine == EngineKind::LlamaCpp {
+                "llama-server"
+            } else {
+                "forge"
+            };
+            self.toast(format!(
+                "Cannot find the {what} program. Set its path in Settings."
+            ));
             self.screen = Screen::Settings;
             return;
         };
-        let name = self.library.iter().find(|e| e.path == path).map(|e| e.name.clone()).unwrap_or_else(|| path.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_else(|| "model".into()));
+        let name = self
+            .library
+            .iter()
+            .find(|e| e.path == path)
+            .map(|e| e.name.clone())
+            .unwrap_or_else(|| {
+                path.file_stem()
+                    .map(|s| s.to_string_lossy().to_string())
+                    .unwrap_or_else(|| "model".into())
+            });
         self.generation_cancel();
         self.engine.stop();
         let port = free_port(self.settings.port.max(1024));
@@ -437,13 +534,26 @@ impl StudioApp {
             model: path.clone(),
             name: name.clone(),
             port,
-            host: if self.settings.serve_on_lan { "0.0.0.0".to_string() } else { "127.0.0.1".to_string() },
+            host: if self.settings.serve_on_lan {
+                "0.0.0.0".to_string()
+            } else {
+                "127.0.0.1".to_string()
+            },
             ctx: self.settings.context_len,
             kv: self.settings.kv_cache,
-            depth: if mtp.is_some() && self.settings.spec_depth == 0 { 3 } else { self.settings.spec_depth },
+            depth: if mtp.is_some() && self.settings.spec_depth == 0 {
+                3
+            } else {
+                self.settings.spec_depth
+            },
             mtp,
             api_key: self.settings.api_key.clone(),
-            extra: self.settings.extra_args.split_whitespace().map(str::to_string).collect(),
+            extra: self
+                .settings
+                .extra_args
+                .split_whitespace()
+                .map(str::to_string)
+                .collect(),
         };
         match self.engine.start(launch, self.wake()) {
             Ok(()) => {
@@ -456,7 +566,10 @@ impl StudioApp {
 
     /// The prediction head to use for a model: speculative decoding is on, the engine is ForgeInfer, a head file is found, and it did not fail to load before.
     pub fn head_for(&self, model: &std::path::Path) -> Option<PathBuf> {
-        if !self.settings.speculative || self.settings.engine != EngineKind::Forge || self.no_head.contains(model) {
+        if !self.settings.speculative
+            || self.settings.engine != EngineKind::Forge
+            || self.no_head.contains(model)
+        {
             return None;
         }
         let arch = match self.library.iter().find(|e| e.path == model) {
@@ -473,21 +586,42 @@ impl StudioApp {
 
     /// Download the prediction head of a Qwen3.5 model from its Hugging Face repository into `<download folder>/mtp/`.
     pub fn get_head(&mut self, model: PathBuf) {
-        let stem = model.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
+        let stem = model
+            .file_stem()
+            .map(|s| s.to_string_lossy().to_string())
+            .unwrap_or_default();
         let Some(repo) = crate::mtp::repo_of(&stem) else {
             self.toast("No known original checkpoint for this model: put a <name>-mtp.safetensors file next to it.");
             return;
         };
         let base = crate::mtp::base_name(&stem);
-        let dest = std::path::Path::new(&self.settings.download_dir).join("mtp").join(format!("{base}-mtp.safetensors"));
-        if self.downloads.iter().any(|d| d.repo == repo && d.state == DlState::Running && d.file.path.ends_with("-mtp.safetensors")) {
+        let dest = std::path::Path::new(&self.settings.download_dir)
+            .join("mtp")
+            .join(format!("{base}-mtp.safetensors"));
+        if self.downloads.iter().any(|d| {
+            d.repo == repo
+                && d.state == DlState::Running
+                && d.file.path.ends_with("-mtp.safetensors")
+        }) {
             return;
         }
         let id = self.next_req;
         self.next_req += 1;
         let progress = Arc::new(Progress::default());
-        let file = RepoFile { path: format!("{base}-mtp.safetensors (prediction head)"), size: 0 };
-        self.downloads.push(Download { id, repo: repo.clone(), file, progress: progress.clone(), state: DlState::Running, started: Instant::now(), speed: 0.0, last: (Instant::now(), 0) });
+        let file = RepoFile {
+            path: format!("{base}-mtp.safetensors (prediction head)"),
+            size: 0,
+        };
+        self.downloads.push(Download {
+            id,
+            repo: repo.clone(),
+            file,
+            progress: progress.clone(),
+            state: DlState::Running,
+            started: Instant::now(),
+            speed: 0.0,
+            last: (Instant::now(), 0),
+        });
         self.toast(format!("Fetching the prediction head of {repo} (about 0.2 to 0.9 GB): see Discover > Downloads."));
         self.spawn(move |tx, wake| {
             let r = crate::mtp::fetch_head(&repo, &dest, &progress).map(|_| dest.clone());
@@ -565,11 +699,27 @@ impl StudioApp {
         let req = self.next_req;
         self.next_req += 1;
         let cancel = Arc::new(AtomicBool::new(false));
-        self.generation = Some(Generation { req, cancel: cancel.clone(), started: Instant::now(), reasoning_started: None });
+        self.generation = Some(Generation {
+            req,
+            cancel: cancel.clone(),
+            started: Instant::now(),
+            reasoning_started: None,
+        });
         self.scroll_to_bottom = true;
-        let params = ChatParams { model, messages, gen: self.settings.gen.clone() };
+        let params = ChatParams {
+            model,
+            messages,
+            gen: self.settings.gen.clone(),
+        };
         let wake = self.wake();
-        client::spawn_chat(ep, params, cancel, self.tx.clone(), move |ev| Msg::Chat { req, ev }, move || wake());
+        client::spawn_chat(
+            ep,
+            params,
+            cancel,
+            self.tx.clone(),
+            move |ev| Msg::Chat { req, ev },
+            move || wake(),
+        );
         self.save_chat();
     }
 
@@ -614,14 +764,22 @@ impl StudioApp {
                 self.library = entries;
                 if let Some(p) = self.pending_load.take() {
                     self.load_model(p);
-                } else if self.settings.auto_load_last && !self.settings.last_model.is_empty() && !self.engine.state().is_busy() {
+                } else if self.settings.auto_load_last
+                    && !self.settings.last_model.is_empty()
+                    && !self.engine.state().is_busy()
+                {
                     let p = PathBuf::from(&self.settings.last_model);
                     if p.is_file() {
                         self.load_model(p);
                     }
                 }
                 if let Some(name) = self.opts.select_model.take() {
-                    if let Some(e) = self.library.iter().find(|e| e.name.to_lowercase().contains(&name.to_lowercase())).cloned() {
+                    if let Some(e) = self
+                        .library
+                        .iter()
+                        .find(|e| e.name.to_lowercase().contains(&name.to_lowercase()))
+                        .cloned()
+                    {
                         self.load_model(e.path);
                     }
                 }
@@ -689,18 +847,26 @@ impl StudioApp {
             },
             Msg::Inspected(r) => {
                 self.inspect_loading = false;
-                let path = self.inspect.as_ref().map(|(p, _)| p.clone()).unwrap_or_default();
+                let path = self
+                    .inspect
+                    .as_ref()
+                    .map(|(p, _)| p.clone())
+                    .unwrap_or_default();
                 self.inspect = Some((path, r));
             }
         }
     }
 
     fn on_chat_event(&mut self, req: u64, ev: ChatEvent) {
-        let Some(g) = self.generation.as_mut() else { return };
+        let Some(g) = self.generation.as_mut() else {
+            return;
+        };
         if g.req != req {
             return;
         }
-        let Some(m) = self.chat.messages.last_mut() else { return };
+        let Some(m) = self.chat.messages.last_mut() else {
+            return;
+        };
         match ev {
             ChatEvent::Reasoning(s) => {
                 if g.reasoning_started.is_none() {
@@ -745,7 +911,9 @@ impl StudioApp {
             self.handle(m);
         }
         self.engine.poll();
-        if let (EngineState::Failed { .. }, Some(l)) = (self.engine.state(), self.engine.current().cloned()) {
+        if let (EngineState::Failed { .. }, Some(l)) =
+            (self.engine.state(), self.engine.current().cloned())
+        {
             if l.mtp.is_some() {
                 // the prediction head did not load (a head of another model, a broken file): run without it
                 self.no_head.insert(l.model.clone());
@@ -753,7 +921,8 @@ impl StudioApp {
                 self.load_model(l.model.clone());
             }
         }
-        self.toasts.retain(|t| t.at.elapsed() < Duration::from_secs(6));
+        self.toasts
+            .retain(|t| t.at.elapsed() < Duration::from_secs(6));
         for d in &mut self.downloads {
             if d.state == DlState::Running {
                 let done = d.progress.done.load(Ordering::Relaxed);
@@ -765,9 +934,21 @@ impl StudioApp {
             }
         }
         // a .gguf file or a folder dropped on the window: its folder joins the model folders
-        let dropped: Vec<PathBuf> = self.ctx.input(|i| i.raw.dropped_files.iter().map(|f| f.path().to_path_buf()).collect());
+        let dropped: Vec<PathBuf> = self.ctx.input(|i| {
+            i.raw
+                .dropped_files
+                .iter()
+                .map(|f| f.path().to_path_buf())
+                .collect()
+        });
         for p in dropped {
-            let dir = if p.is_dir() { p.clone() } else { p.parent().map(|d| d.to_path_buf()).unwrap_or_else(|| p.clone()) };
+            let dir = if p.is_dir() {
+                p.clone()
+            } else {
+                p.parent()
+                    .map(|d| d.to_path_buf())
+                    .unwrap_or_else(|| p.clone())
+            };
             let shown = dir.display().to_string();
             if self.settings.model_dirs.contains(&shown) {
                 self.toast("That folder is already in My models.");
@@ -779,7 +960,11 @@ impl StudioApp {
             self.screen = Screen::Library;
         }
         // GPU memory in use and free RAM change while models load: look again every few seconds
-        let every = if self.screen == Screen::Hardware || self.engine.state().is_busy() { Duration::from_secs(3) } else { Duration::from_secs(12) };
+        let every = if self.screen == Screen::Hardware || self.engine.state().is_busy() {
+            Duration::from_secs(3)
+        } else {
+            Duration::from_secs(12)
+        };
         if !self.live_busy && self.live_at.elapsed() > every && self.hw.threads > 0 {
             self.live_busy = true;
             self.live_at = Instant::now();
@@ -792,7 +977,13 @@ impl StudioApp {
         // idle unload: any request the engine logs (from this window or from another program) counts as activity
         let log_len = self.engine.log_len();
         if log_len != self.seen_log {
-            if self.engine.log().iter().skip(self.seen_log.min(log_len)).any(|l| l.contains("POST /v1/") || l.contains("POST /completion")) {
+            if self
+                .engine
+                .log()
+                .iter()
+                .skip(self.seen_log.min(log_len))
+                .any(|l| l.contains("POST /v1/") || l.contains("POST /completion"))
+            {
                 self.last_activity = Instant::now();
             }
             self.seen_log = log_len;
@@ -801,10 +992,15 @@ impl StudioApp {
             self.last_activity = Instant::now();
         }
         let idle = Duration::from_secs(60 * self.settings.idle_eject_minutes as u64);
-        if self.settings.idle_eject_minutes > 0 && matches!(self.engine.state(), EngineState::Ready { .. }) && self.last_activity.elapsed() > idle {
+        if self.settings.idle_eject_minutes > 0
+            && matches!(self.engine.state(), EngineState::Ready { .. })
+            && self.last_activity.elapsed() > idle
+        {
             let minutes = self.settings.idle_eject_minutes;
             self.eject();
-            self.toast(format!("The model was unloaded after {minutes} idle minutes (Settings)."));
+            self.toast(format!(
+                "The model was unloaded after {minutes} idle minutes (Settings)."
+            ));
         }
         // settings: save a moment after the last change
         if self.settings != self.saved {
@@ -822,11 +1018,17 @@ impl StudioApp {
             }
         }
         // test hooks: send a message once the model is ready
-        if self.pending_send.is_some() && self.active_endpoint().is_some() && self.generation.is_none() {
+        if self.pending_send.is_some()
+            && self.active_endpoint().is_some()
+            && self.generation.is_none()
+        {
             self.input = self.pending_send.take().unwrap_or_default();
             self.send();
         }
-        if self.engine.state().is_busy() || self.generation.is_some() || self.downloads.iter().any(|d| d.state == DlState::Running) {
+        if self.engine.state().is_busy()
+            || self.generation.is_some()
+            || self.downloads.iter().any(|d| d.state == DlState::Running)
+        {
             self.ctx.request_repaint_after(Duration::from_millis(250));
         }
     }
@@ -882,10 +1084,18 @@ impl StudioApp {
     /// Screenshot plumbing for `--shot`.
     pub fn handle_shot(&mut self, ctx: &egui::Context) {
         let ready_for_reply = {
-            let waiting = self.shot.as_ref().map_or(false, |s| s.wait_reply);
-            !waiting || (self.opts.send.is_some() && self.pending_send.is_none() && self.generation.is_none() && self.chat.messages.iter().any(|m| m.role == Role::Assistant && m.stats.is_some() || m.error.is_some()))
+            let waiting = self.shot.as_ref().is_some_and(|s| s.wait_reply);
+            !waiting
+                || (self.opts.send.is_some()
+                    && self.pending_send.is_none()
+                    && self.generation.is_none()
+                    && self.chat.messages.iter().any(|m| {
+                        m.role == Role::Assistant && m.stats.is_some() || m.error.is_some()
+                    }))
         };
-        let Some(shot) = self.shot.as_mut() else { return };
+        let Some(shot) = self.shot.as_mut() else {
+            return;
+        };
         if !shot.requested && Instant::now() >= shot.at && ready_for_reply && !self.scanning {
             shot.requested = true;
             ctx.send_viewport_cmd(egui::ViewportCommand::Screenshot(egui::UserData::default()));
@@ -908,7 +1118,9 @@ impl StudioApp {
                 enc.set_color(png::ColorType::Rgba);
                 enc.set_depth(png::BitDepth::Eight);
                 let mut writer = enc.write_header().map_err(|e| e.to_string())?;
-                writer.write_image_data(img.as_raw()).map_err(|e| e.to_string())?;
+                writer
+                    .write_image_data(img.as_raw())
+                    .map_err(|e| e.to_string())?;
                 Ok(())
             })();
             match result {
@@ -937,7 +1149,14 @@ fn demo_chat() -> Chat {
     );
     a.reasoning = "The user wants a short explanation, a code sample and a table. Keep it concise and accurate.".to_string();
     a.thought_secs = 2.4;
-    a.stats = Some(chats::Stats { completion_tokens: 212, prompt_tokens: 38, tok_per_s: 80.3, first_token_s: 0.21, total_s: 2.9, finish: "stop".into() });
+    a.stats = Some(chats::Stats {
+        completion_tokens: 212,
+        prompt_tokens: 38,
+        tok_per_s: 80.3,
+        first_token_s: 0.21,
+        total_s: 2.9,
+        finish: "stop".into(),
+    });
     c.messages.push(a);
     c.model = "Qwen3.5-4B-Q4_K_M".to_string();
     c

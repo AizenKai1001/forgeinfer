@@ -48,6 +48,8 @@ Qwen3.5 models ship a small prediction head (multi-token prediction, `mtp.*` ten
 
 A full streamed chat on the 9B with thinking on and the app's sampler settings (T 0.7, top-p 0.9, top-k 40, repetition penalty 1.05, 600 tokens, the server's own timings): 45.3 tokens/s without the head, **78 to 82 with it**. The sampler settings cost little (top-p, top-k and the repetition penalty one at a time: 65 to 71 against 66 plain with the head on a prose prompt).
 
+**It is not bit-identical to plain decoding.** The drafted tokens are checked by the multi-token kernels, which round slightly differently from the single-token path (the activations are quantized to int8 in both, in different groupings). On eight short chat prompts with temperature 0, the answers matched word for word in 6 of 8 cases (4B) and 5 of 8 (9B); where they differed it was at a near-tie between two good words ("a golden-brown exterior" against "a golden-brown crust", "little political power" against "no political power") and both answers were fluent and correct. Expect the same quality, not the same text.
+
 Two practical points:
 
 - The head is 0.24 GB for the 4B and 0.49 GB for the 9B. Forge Studio fetches it with HTTP range requests (only the `mtp.*` tensors of the original checkpoint, no multi-gigabyte download) from the model's card in My models, and uses it automatically; `tools/fetch_mtp.py` does the same from a shell, and `--mtp FILE --depth 3` passes it to `forge serve`.

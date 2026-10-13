@@ -21,3 +21,6 @@ cloud/kaggle_chain.log
 studio/home/
 studio/shots/
 dist/
+studio/retry_test/
+studio/home_llama/
+studio/home_shot/
