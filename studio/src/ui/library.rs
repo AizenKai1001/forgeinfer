@@ -145,6 +145,15 @@ fn model_card(app: &mut StudioApp, ui: &mut Ui, e: &ModelEntry) {
                     }
                     Fit::Unknown => {}
                 }
+                if e.arch == "qwen35" && !e.projector && app.settings.engine == EngineKind::Forge {
+                    if crate::mtp::find_head(&e.path, &{ let mut d = app.settings.dirs(); d.push(std::path::PathBuf::from(&app.settings.download_dir)); d }).is_some() {
+                        badge(ui, "prediction head: faster answers", theme::GOOD, theme::CARD).on_hover_text("Speculative decoding is used when this model loads (Settings > When a model loads).");
+                    } else if let Some(repo) = crate::mtp::repo_of(&e.path.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_default()) {
+                        if ui.small_button("Get the prediction head").on_hover_text(format!("About 0.2 to 0.9 GB from huggingface.co/{repo}. With it the model answers about 1.5 to 2 times faster (speculative decoding).")).clicked() {
+                            app.actions.push(Action::GetHead(e.path.clone()));
+                        }
+                    }
+                }
                 if app.settings.engine == EngineKind::Forge {
                     if let Some(why) = e.forge_issue() {
                         badge(ui, "not supported by the ForgeInfer engine", theme::WARN, theme::CARD).on_hover_text(why);

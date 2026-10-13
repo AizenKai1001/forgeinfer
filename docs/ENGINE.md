@@ -22,7 +22,7 @@ forge serve <model.gguf> [--native | --q8 | --f16] [--tokenizer FILE] [--host H]
 | `--host-ffn LAYERS\|all` | force layers' feed-forward weights into system memory (the default planner does this automatically when the model does not fit the card) |
 | `--vram-reserve MIB` | leave this much video memory free for other programs |
 | `--api-key KEY`, `--host`, `--port` | access control; the default host is `127.0.0.1` |
-| `--mtp FILE` | the Qwen3.5 prediction head (`mtp.safetensors`, not part of the GGUF files); picked up automatically when it sits next to the model |
+| `--mtp FILE` | the Qwen3.5 prediction head (`mtp.safetensors`, not part of the GGUF files; `tools/fetch_mtp.py REPO OUT` extracts it from the original checkpoint with range requests); picked up automatically when a file of that name sits next to the model. With `--depth 3` the 9B answers about 2 times faster ([PERFORMANCE.md](PERFORMANCE.md#speculative-decoding-on-the-rtx-4060)) |
 
 ## HTTP API
 

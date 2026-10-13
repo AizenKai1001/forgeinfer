@@ -37,6 +37,22 @@ Reading it: on the 4B and 9B, decode is memory-bound (272 GB/s) and both engines
 
 A first tuning on this card came out of that table: the engine switches between a fused dequantizing GEMM (short chunks) and a two-pass dequantize-then-GEMM (long chunks), and its 448-token threshold was measured on Turing. On the RTX 4060 the fused kernel wins at every length measured (4B, 9B, tokens per second): at 554 tokens 2,246 to 2,379 and 1,271 to 1,360; at 1,086 tokens 2,120 to 2,463 (+16 %) and 1,159 to 1,397 (+21 %); at 2,169 tokens +8 to +10 %. Greedy continuations after 1,000 to 1,400-token prompts are identical with both paths. Ada GPUs (compute capability 8.9) now use the fused path always; `FORGE_FUSED_MAX=N` overrides, `0` restores the two-pass path.
 
+## Speculative decoding on the RTX 4060
+
+Qwen3.5 models ship a small prediction head (multi-token prediction, `mtp.*` tensors in the original checkpoint, not in the GGUF files). With it the engine drafts 2 or 3 tokens ahead and the main model checks them all in one pass over the weights; when decode is limited by memory bandwidth, that pass costs about the same as one token, so every accepted guess is free. Measured on the PC (a 128-token continuation of English prose, 128 tokens, median of four runs, Q4_K_M files, `--depth 3`):
+
+| model | greedy | greedy + head | sampled (T 0.7) | sampled + head |
+|---|---|---|---|---|
+| Qwen3.5-4B | 81.6 | **144.6** (1.77x) | 80.8 | **117.4** (1.45x) |
+| Qwen3.5-9B | 45.8 | **99.4** (2.17x; depth 2: 86.7) | 45.8 | **72.0** (1.57x) |
+
+A full streamed chat on the 9B with thinking on and the app's sampler settings (T 0.7, top-p 0.9, top-k 40, repetition penalty 1.05, 600 tokens, the server's own timings): 45.3 tokens/s without the head, **78 to 82 with it**. The sampler settings cost little (top-p, top-k and the repetition penalty one at a time: 65 to 71 against 66 plain with the head on a prose prompt).
+
+Two practical points:
+
+- The head is 0.24 GB for the 4B and 0.49 GB for the 9B. Forge Studio fetches it with HTTP range requests (only the `mtp.*` tensors of the original checkpoint, no multi-gigabyte download) from the model's card in My models, and uses it automatically; `tools/fetch_mtp.py` does the same from a shell, and `--mtp FILE --depth 3` passes it to `forge serve`.
+- **A window that redraws on every streamed token slows the engine down.** The first Studio build repainted for each token and measured 34.6 tokens/s with the head on, against 78 to 82 through the HTTP API alone: on Windows the graphics and the compute work of one GPU take turns, and speculative decoding makes many short steps. Studio now spaces repaints by 50 ms and measures 79.3 tokens/s in the window. (Without the head the loss had been smaller: 41.3 against 45.3.)
+
 ## A 27B model on an 8 GB card
 
 Qwen3.5-27B has 64 layers; a 4-bit file is 16 to 17 GB. The engine keeps the attention and recurrent layers, the embeddings, the head and the KV cache on the card and runs the feed-forward layers that do not fit (62 of 64) from page-locked system memory with AVX2 kernels inside the CUDA graph. Decode is then bounded by system-memory bandwidth (about 40 GB/s of weights per token set), not by the GPU.

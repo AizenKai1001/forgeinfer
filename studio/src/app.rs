@@ -64,6 +64,8 @@ pub enum Action {
     AddDir(String),
     RemoveDir(usize),
     Inspect(PathBuf),
+    /// Fetch the prediction head of a Qwen3.5 model (the model file's path).
+    GetHead(PathBuf),
     RefreshExternal,
     HfSearch,
     HfOpen(String),
@@ -193,6 +195,7 @@ pub struct StudioApp {
     pub opts: StartupOpts,
     pending_send: Option<String>,
     pending_load: Option<PathBuf>,
+    no_head: std::collections::HashSet<PathBuf>,
     live_at: Instant,
     live_busy: bool,
     last_activity: Instant,
@@ -253,6 +256,7 @@ impl StudioApp {
             shot: opts.shot.clone().map(|path| ShotState { path, at: Instant::now() + Duration::from_secs_f32(opts.shot_delay.max(0.5)), requested: false, wait_reply: opts.shot_after_reply }),
             pending_send: opts.send.clone(),
             pending_load: opts.load.clone(),
+            no_head: Default::default(),
             live_at: Instant::now(),
             live_busy: false,
             last_activity: Instant::now(),
@@ -279,9 +283,11 @@ impl StudioApp {
         app
     }
 
+    /// What worker threads call when they have news. Repaints are spaced by 50 ms (about 20 per second): a window that redraws on every streamed
+    /// token competes with the engine for the GPU (on Windows the graphics and compute work take turns) and measurably slows generation down.
     pub fn wake(&self) -> Arc<dyn Fn() + Send + Sync> {
         let ctx = self.ctx.clone();
-        Arc::new(move || ctx.request_repaint())
+        Arc::new(move || ctx.request_repaint_after(Duration::from_millis(50)))
     }
 
     pub fn toast(&mut self, text: impl Into<String>) {
@@ -424,6 +430,7 @@ impl StudioApp {
         self.generation_cancel();
         self.engine.stop();
         let port = free_port(self.settings.port.max(1024));
+        let mtp = self.head_for(&path);
         let launch = Launch {
             kind: self.settings.engine,
             binary,
@@ -433,7 +440,8 @@ impl StudioApp {
             host: if self.settings.serve_on_lan { "0.0.0.0".to_string() } else { "127.0.0.1".to_string() },
             ctx: self.settings.context_len,
             kv: self.settings.kv_cache,
-            depth: self.settings.spec_depth,
+            depth: if mtp.is_some() && self.settings.spec_depth == 0 { 3 } else { self.settings.spec_depth },
+            mtp,
             api_key: self.settings.api_key.clone(),
             extra: self.settings.extra_args.split_whitespace().map(str::to_string).collect(),
         };
@@ -444,6 +452,48 @@ impl StudioApp {
             }
             Err(e) => self.toast(e),
         }
+    }
+
+    /// The prediction head to use for a model: speculative decoding is on, the engine is ForgeInfer, a head file is found, and it did not fail to load before.
+    pub fn head_for(&self, model: &std::path::Path) -> Option<PathBuf> {
+        if !self.settings.speculative || self.settings.engine != EngineKind::Forge || self.no_head.contains(model) {
+            return None;
+        }
+        let arch = match self.library.iter().find(|e| e.path == model) {
+            Some(e) => e.arch.clone(),
+            None => library::read_entry(model, None, "file").arch,
+        };
+        if arch != "qwen35" {
+            return None;
+        }
+        let mut dirs = self.settings.dirs();
+        dirs.push(PathBuf::from(&self.settings.download_dir));
+        crate::mtp::find_head(model, &dirs)
+    }
+
+    /// Download the prediction head of a Qwen3.5 model from its Hugging Face repository into `<download folder>/mtp/`.
+    pub fn get_head(&mut self, model: PathBuf) {
+        let stem = model.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
+        let Some(repo) = crate::mtp::repo_of(&stem) else {
+            self.toast("No known original checkpoint for this model: put a <name>-mtp.safetensors file next to it.");
+            return;
+        };
+        let base = crate::mtp::base_name(&stem);
+        let dest = std::path::Path::new(&self.settings.download_dir).join("mtp").join(format!("{base}-mtp.safetensors"));
+        if self.downloads.iter().any(|d| d.repo == repo && d.state == DlState::Running && d.file.path.ends_with("-mtp.safetensors")) {
+            return;
+        }
+        let id = self.next_req;
+        self.next_req += 1;
+        let progress = Arc::new(Progress::default());
+        let file = RepoFile { path: format!("{base}-mtp.safetensors (prediction head)"), size: 0 };
+        self.downloads.push(Download { id, repo: repo.clone(), file, progress: progress.clone(), state: DlState::Running, started: Instant::now(), speed: 0.0, last: (Instant::now(), 0) });
+        self.toast(format!("Fetching the prediction head of {repo} (about 0.2 to 0.9 GB): see Discover > Downloads."));
+        self.spawn(move |tx, wake| {
+            let r = crate::mtp::fetch_head(&repo, &dest, &progress).map(|_| dest.clone());
+            let _ = tx.send(Msg::DownloadDone { id, result: r });
+            wake();
+        });
     }
 
     pub fn eject(&mut self) {
@@ -695,6 +745,14 @@ impl StudioApp {
             self.handle(m);
         }
         self.engine.poll();
+        if let (EngineState::Failed { .. }, Some(l)) = (self.engine.state(), self.engine.current().cloned()) {
+            if l.mtp.is_some() {
+                // the prediction head did not load (a head of another model, a broken file): run without it
+                self.no_head.insert(l.model.clone());
+                self.toast("The prediction head could not be used: starting the model without speculative decoding.");
+                self.load_model(l.model.clone());
+            }
+        }
         self.toasts.retain(|t| t.at.elapsed() < Duration::from_secs(6));
         for d in &mut self.downloads {
             if d.state == DlState::Running {
@@ -806,6 +864,7 @@ impl StudioApp {
                     }
                 }
                 Action::Inspect(p) => self.inspect_model(p),
+                Action::GetHead(p) => self.get_head(p),
                 Action::RefreshExternal => self.refresh_external(),
                 Action::HfSearch => self.hf_search(),
                 Action::HfOpen(r) => self.hf_open(r),

@@ -155,7 +155,8 @@ fn model_picker(app: &mut StudioApp, ui: &mut Ui) {
             ui.label(RichText::new(format!("loading ... {:.0} s", since.elapsed().as_secs_f32())).color(theme::WARN));
         }
         EngineState::Ready { load_secs, .. } => {
-            ui.label(RichText::new(format!("ready \u{00B7} loaded in {load_secs:.1} s")).small().color(theme::GOOD));
+            let spec = app.engine.current().map_or(false, |l| l.mtp.is_some());
+            ui.label(RichText::new(format!("ready \u{00B7} {load_secs:.1} s{}", if spec { " \u{00B7} speculative" } else { "" })).small().color(theme::GOOD)).on_hover_text("Time to load. Speculative: the model's prediction head drafts tokens ahead for faster answers.");
             if ui.small_button("Eject").clicked() {
                 app.actions.push(Action::Eject);
             }

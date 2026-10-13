@@ -67,6 +67,8 @@ curl http://127.0.0.1:1234/v1/chat/completions -H "Content-Type: application/jso
 
 Any OpenAI client works against `http://127.0.0.1:1234/v1`.
 
+**Faster answers for Qwen3.5 models.** Qwen3.5 models have a small prediction head that is not in the GGUF files. In Forge Studio press **Get the prediction head** on the model's card (0.2 to 0.9 GB); on the command line use `tools/fetch_mtp.py Qwen/Qwen3.5-4B mtp.safetensors` and `forge serve model.gguf --mtp mtp.safetensors --depth 3`. On an RTX 4060 this takes the 9B from 46 to about 99 tokens per second.
+
 ## 5. Will it fit?
 
 A rough rule for 4-bit files: the file size plus about 15 % plus the KV cache must fit in video memory for full speed.

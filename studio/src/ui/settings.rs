@@ -107,6 +107,8 @@ fn loading(app: &mut StudioApp, ui: &mut Ui) {
         });
         muted(ui, "The attention memory of a conversation. 8-bit halves it, which is what makes long contexts fit on a small GPU.");
         ui.add_space(4.0);
+        ui.checkbox(&mut app.settings.speculative, "Speculative decoding with the prediction head of Qwen3.5 models, when one is found");
+        muted(ui, "A Qwen3.5 model comes with a small head that guesses the next tokens; the engine checks the guesses in one pass over the weights. About 1.5 to 2 times faster answers; get the head from the model's card in My models.");
         ui.horizontal(|ui| {
             ui.label("Speculative depth");
             ui.add(egui::DragValue::new(&mut app.settings.spec_depth).range(0..=7));

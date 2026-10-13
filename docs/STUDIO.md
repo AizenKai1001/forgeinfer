@@ -23,7 +23,7 @@ Release binaries for Windows, Linux and macOS are attached to the GitHub release
 
 ### My models
 
-Lists every `.gguf` file under the folders in **Model folders** (the app's own `models` folder, LM Studio's folder if it exists) and every model in Ollama's store (`~/.ollama/models`, read through its manifests). Nothing is copied or moved. Each card shows the architecture, parameter count, quantization, file size, trained context, where it came from, and a badge: *fits in video memory*, *runs split between GPU and CPU*, or *too large*. A model the ForgeInfer engine cannot run says why (architecture or tokenizer) when you hover the disabled **Load** button. Drop a `.gguf` file or a folder on the window to add its folder. **Inspect** opens the inspector.
+Lists every `.gguf` file under the folders in **Model folders** (the app's own `models` folder, LM Studio's folder if it exists) and every model in Ollama's store (`~/.ollama/models`, read through its manifests). Nothing is copied or moved. Each card shows the architecture, parameter count, quantization, file size, trained context, where it came from, and a badge: *fits in video memory*, *runs split between GPU and CPU*, or *too large*. A model the ForgeInfer engine cannot run says why (architecture or tokenizer) when you hover the disabled **Load** button. Drop a `.gguf` file or a folder on the window to add its folder. A Qwen3.5 card shows **prediction head: faster answers** when the head file is found, or a **Get the prediction head** button that fetches it (see below). **Inspect** opens the inspector.
 
 ### The inspector
 
@@ -63,6 +63,10 @@ Settings → Engine picks what runs the models:
 | **Connect to a running server** | nothing is started: Studio talks to the address you enter | an OpenAI-compatible server (Ollama on `:11434`, LM Studio on `:1234`, vLLM, the engine on another computer) |
 
 Settings → When a model loads: context length, KV-cache mode (16-bit, 8-bit, 4-bit), speculative depth (Qwen3.5 models draft tokens with their own prediction head; 2 to 3 is fastest), extra engine arguments, "load the last model when the app starts", and **Unload after N idle minutes** (frees the video memory for games; any request to the local server counts as activity).
+
+## Speculative decoding (the prediction head)
+
+Qwen3.5 models answer 1.5 to 2.2 times faster with their prediction head (measurements in [PERFORMANCE.md](PERFORMANCE.md#speculative-decoding-on-the-rtx-4060)). The GGUF files do not contain it. Studio looks for `<model name>-mtp.safetensors` (the name without the quantization: `Qwen3.5-9B-mtp.safetensors` for `Qwen3.5-9B-Q4_K_M.gguf`) beside the model, in an `mtp` folder beside it, in your model folders and in the download folder, and starts the engine with `--mtp FILE --depth 3` when it finds one (Settings > When a model loads has the switch). **Get the prediction head** on a model's card downloads only the `mtp.*` tensors of the original checkpoint on Hugging Face (`Qwen/Qwen3.5-9B` and so on, 0.2 to 0.9 GB) into `<download folder>/mtp/`. If the engine cannot use a head (a file of another model), Studio starts the model again without it. The status bar of the chat shows **speculative** while it is on.
 
 ## Where things are
 
