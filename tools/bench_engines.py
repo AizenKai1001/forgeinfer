@@ -116,7 +116,7 @@ def run(preset):
             r = post("/v1/chat/completions", {"model": "x", "messages": [{"role": "user", "content": prompt}], "max_tokens": mx, "temperature": 0, "seed": 7, "chat_template_kwargs": {"enable_thinking": False}})
             t = r["timings"]
             if label != "warm-up":
-                rows.append({"label": label, "n": t["predicted_n"], "tps": t["predicted_per_second"], "draft_n": t.get("draft_n"), "draft_ok": t.get("draft_n_accepted"), "text": r["choices"][0]["message"]["content"]})
+                rows.append({"label": label, "n": t["predicted_n"], "pn": t.get("prompt_n", 0), "tps": t["predicted_per_second"], "draft_n": t.get("draft_n"), "draft_ok": t.get("draft_n_accepted"), "text": r["choices"][0]["message"]["content"]})
         return {"rows": rows, "ready_s": ready_s, "vram_mib": vram_used() - base_vram}
     finally:
         stop(p, log)
