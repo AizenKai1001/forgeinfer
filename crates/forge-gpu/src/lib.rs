@@ -458,6 +458,9 @@ pub struct GpuModel {
     pub weight_bytes: usize,
     /// of `weight_bytes`: the part in page-locked host memory (the GPU reads it over PCIe, the CPU kernels directly)
     pub host_weight_bytes: usize,
+    /// of `host_weight_bytes`: the feed-forward matrices. A host-resident embedding table is read one row per token and changes nothing about how a prompt is processed; host-resident FFN weights do (a batched call
+    /// reads them over PCIe once), so the prompt paths key on this and not on `host_weight_bytes`.
+    pub host_ffn_bytes: usize,
     /// fp16 weights of a hybrid model, for evaluation only: the prefill path runs, the decode graphs (quantized kernels) are not built
     eval_only: bool,
 }
@@ -556,6 +559,14 @@ fn plan_offload(model: &Model, fmt: Fmt, device_ordinal: usize) -> Result<Upload
     }
     total += 16 << 20; // norms and small tensors
     let mut o = UploadOpts::default();
+    // The embedding table of a model with a separate output matrix is read one row (2 to 4 KB) per token: it lives in page-locked host memory, which gives the card 0.3 to 0.6 GiB back for the KV cache and for the
+    // rows of a speculative pass, at no measurable cost (Qwen3.5 9B decode 46.6 against 46.5 tokens/s, the rows it frees speed up speculation by up to 13 percent). A tied head reads the whole table every token, so that table
+    // stays on the device. FORGE_HOST_EMBED=0 keeps the table on the device too.
+    let embed_bytes = mat_device_bytes(&model.tok_emb, fmt);
+    if model.lm_head.is_some() && (embed_bytes >= (64 << 20) || host_only(&model.tok_emb)) {
+        o.host_embed = true;
+        total = total.saturating_sub(embed_bytes);
+    }
     // tensors in formats only the CPU reads (Q3_K, Q2_K) are in host memory whatever happens: they do not count against the device
     let mut forced = vec![false; c.n_layer];
     let all_bytes = total;
@@ -564,10 +575,6 @@ fn plan_offload(model: &Model, fmt: Fmt, device_ordinal: usize) -> Result<Upload
             forced[i] = true;
             total = total.saturating_sub(ffn_bytes[i]);
         }
-    }
-    if model.lm_head.is_some() && host_only(&model.tok_emb) {
-        o.host_embed = true;
-        total = total.saturating_sub(mat_device_bytes(&model.tok_emb, fmt));
     }
     // Whether a thread that waits for the GPU spins or sleeps is fixed when the device's context is created, so it is decided here, before the device is opened: with FFN layers on the CPU (forced by their
     // format, or because the weights and the session do not fit the card) every core counts and the waiter sleeps.
@@ -944,8 +951,17 @@ impl GpuModel {
         }
         let mut bytes = 0usize;
         let mut host_bytes = 0usize;
-        // the embedding table may live in host memory only when the LM head is a separate matrix (a tied head reads the whole table every token)
-        let tok_emb = upload_mat(&model.tok_emb, fmt, opts.host_embed && model.lm_head.is_some())?;
+        let mut host_ffn_bytes = 0usize;
+        // the embedding table may live in host memory only when the LM head is a separate matrix (a tied head reads the whole table every token); when page-locked memory cannot be had, it stays on the device
+        let want_host_embed = opts.host_embed && model.lm_head.is_some();
+        let tok_emb = match upload_mat(&model.tok_emb, fmt, want_host_embed) {
+            Ok(m) => m,
+            Err(e) if want_host_embed => {
+                eprintln!("[gpu] the embedding table could not go to page-locked host memory ({e}); it stays on the device");
+                upload_mat(&model.tok_emb, fmt, false)?
+            }
+            Err(e) => return Err(e),
+        };
         bytes += tok_emb.bytes();
         host_bytes += tok_emb.split_bytes().1;
         let lm_head = match &model.lm_head {
@@ -1016,7 +1032,9 @@ impl GpuModel {
                 g.cpu = Self::cpu_ffn_of(&g, &cfg);
             }
             bytes += g.w_gate.bytes() + g.w_up.bytes() + g.w_down.bytes();
-            host_bytes += g.w_gate.split_bytes().1 + g.w_up.split_bytes().1 + g.w_down.split_bytes().1;
+            let ffn_host = g.w_gate.split_bytes().1 + g.w_up.split_bytes().1 + g.w_down.split_bytes().1;
+            host_bytes += ffn_host;
+            host_ffn_bytes += ffn_host;
             layers.push(g);
         }
         let mtp = match &model.mtp {
@@ -1064,12 +1082,17 @@ impl GpuModel {
             );
         }
         if host_bytes > 0 {
+            let n_ffn = opts.host_ffn.iter().filter(|b| **b).count();
+            let embed_on_host = tok_emb.is_host();
+            let what = match (host_ffn_bytes > 0, embed_on_host) {
+                (true, true) => format!("{n_ffn} layers' FFN and the embedding table"),
+                (true, false) => format!("{n_ffn} layers' FFN"),
+                (false, _) => "the embedding table".to_string(),
+            };
             eprintln!(
-                "[gpu] weights: {:.2} GiB on the device, {:.2} GiB in page-locked host memory ({} layers' FFN{})",
+                "[gpu] weights: {:.2} GiB on the device, {:.2} GiB in page-locked host memory ({what})",
                 (bytes - host_bytes) as f64 / (1u64 << 30) as f64,
                 host_bytes as f64 / (1u64 << 30) as f64,
-                opts.host_ffn.iter().filter(|b| **b).count(),
-                if opts.host_embed { " + the embedding table" } else { "" }
             );
         }
         Ok(GpuModel {
@@ -1086,6 +1109,7 @@ impl GpuModel {
             mtp,
             weight_bytes: bytes,
             host_weight_bytes: host_bytes,
+            host_ffn_bytes,
             eval_only,
         })
     }
@@ -1607,8 +1631,13 @@ struct PrefillBufs {
     g: DeviceBuffer,   // fp16 [T][F]
     u: DeviceBuffer,   // fp16 [T][F]
     a: DeviceBuffer,   // fp16 [T][F]
-    /// quantized models: the matrix being multiplied, dequantized to fp16
-    wscratch: DeviceBuffer,
+    /// quantized models: a small matrix no fused kernel takes (the 32-row Q8_0 projections of a Gated DeltaNet layer), dequantized to fp16
+    wscratch_small: DeviceBuffer,
+    /// quantized models: a large matrix being multiplied, dequantized to fp16. Taken when the first matrix needs it: where the fused kernels read the quantized blocks directly (always on Ada) it is never
+    /// touched and its 50 to 100 MiB stay free
+    wscratch: std::sync::OnceLock<DeviceBuffer>,
+    /// the size `wscratch` gets when it is taken
+    wscratch_bytes: usize,
     /// the two blocks of rows of a host-resident matrix in flight (FFN size / 8 elements each; tiny when the pipelined path is off)
     wblk: [DeviceBuffer; 2],
     /// hybrid models only
@@ -1663,6 +1692,9 @@ struct HybridBufs {
 
 /// Capacity of the prefill buffers (tokens per chunk at most); `prefill_batched` uses `prefill_chunk_len()` of them.
 pub const PREFILL_CHUNK: usize = 1024;
+
+/// Bytes of the always-present dequantization scratch for small matrices (see `PrefillBufs::wscratch_small`): matrices of up to 2 M weights.
+const WSCRATCH_SMALL: usize = 4 << 20;
 
 /// The chunk length up to which the fused dequantizing GEMMs are used (see `GpuSession::fused_max`). 448 was measured on Turing (RTX 2060 SUPER, T4). On Ada (compute capability 8.9, the RTX 40 series) the fused kernel
 /// won at every length measured on an RTX 4060 (Qwen3.5 4B and 9B, Q4_K_M: +5 to +7 percent at 554 tokens, +17 to +21 at 1,086, +8 to +10 at 2,169), so there it is always used. FORGE_FUSED_MAX overrides.
@@ -1813,7 +1845,7 @@ impl<'m> GpuSession<'m> {
             mrow_max: std::env::var("FORGE_MROW_MAX")
                 .ok()
                 .and_then(|v| v.parse().ok())
-                .unwrap_or(if m.host_weight_bytes > 0 {
+                .unwrap_or(if m.host_ffn_bytes > 0 {
                     if m.layers.iter().any(|l| l.cpu.is_some()) {
                         4
                     } else {
@@ -3209,6 +3241,17 @@ impl<'m> GpuSession<'m> {
     fn wf16<'a>(&'a self, g: &'a GpuMat, rows: usize, cols: usize) -> Result<&'a DeviceBuffer> {
         let Some(qf) = g.qf else { return Ok(&g.w) };
         let pf = self.pf.as_ref().unwrap();
+        let scratch = if rows * cols * 2 <= WSCRATCH_SMALL {
+            &pf.wscratch_small
+        } else {
+            match pf.wscratch.get() {
+                Some(b) => b,
+                None => {
+                    let _ = pf.wscratch.set(DeviceBuffer::alloc(pf.wscratch_bytes)?);
+                    pf.wscratch.get().expect("just set")
+                }
+            }
+        };
         let p = g.ptrs();
         let n8 = rows * cols / 8;
         let blocks = (((n8 + 255) / 256).min(16384)) as u32;
@@ -3229,11 +3272,11 @@ impl<'m> GpuSession<'m> {
                     .ptr(p[1])
                     .ptr(p[2])
                     .ptr(p[3])
-                    .buf(&pf.wscratch)
+                    .buf(scratch)
                     .i32(rows as i32)
                     .i32(cols as i32),
             )?;
-            return Ok(&pf.wscratch);
+            return Ok(scratch);
         }
         self.m.k.dequant_f16.launch(
             (((n8 + 255) / 256).min(16384) as u32, 1, 1),
@@ -3246,11 +3289,11 @@ impl<'m> GpuSession<'m> {
                 .ptr(p[2])
                 .ptr(p[3])
                 .i32(qf as i32)
-                .buf(&pf.wscratch)
+                .buf(scratch)
                 .i32(rows as i32)
                 .i32(cols as i32),
         )?;
-        Ok(&pf.wscratch)
+        Ok(scratch)
     }
 
     /// The dense models' prefill buffers (allocated on first use).
@@ -3271,11 +3314,13 @@ impl<'m> GpuSession<'m> {
                 g: DeviceBuffer::alloc(pfc * f * 2)?,
                 u: DeviceBuffer::alloc(pfc * f * 2)?,
                 a: DeviceBuffer::alloc(pfc * f * 2)?,
-                wscratch: DeviceBuffer::alloc(if m.quantized {
+                wscratch_small: DeviceBuffer::alloc(WSCRATCH_SMALL)?,
+                wscratch: std::sync::OnceLock::new(),
+                wscratch_bytes: if m.quantized {
                     (f * e).max(qd * e).max(kvd * e) * 2
                 } else {
                     16
-                })?,
+                },
                 wblk: [DeviceBuffer::alloc(blk)?, DeviceBuffer::alloc(blk)?],
                 hy: None,
             });
@@ -3318,7 +3363,9 @@ impl<'m> GpuSession<'m> {
                 g: DeviceBuffer::alloc(pfc * f * 2)?,
                 u: DeviceBuffer::alloc(pfc * f * 2)?,
                 a: DeviceBuffer::alloc(pfc * f * 2)?,
-                wscratch: DeviceBuffer::alloc(biggest * 2)?,
+                wscratch_small: DeviceBuffer::alloc(WSCRATCH_SMALL)?,
+                wscratch: std::sync::OnceLock::new(),
+                wscratch_bytes: biggest * 2,
                 wblk: [DeviceBuffer::alloc(blk)?, DeviceBuffer::alloc(blk)?],
                 hy: Some(HybridBufs {
                     mixed: DeviceBuffer::alloc(pfc * conv_dim * 4)?,
@@ -4256,7 +4303,7 @@ impl<'m> GpuSession<'m> {
         );
         self.mtp_fill_pending(tokens[0])?;
         // a few tokens with the FFN on the CPU: groups of rows through the multi-row path (a pass over the host weights costs 0.3 s there, a GEMM chunk 1.1 s whatever its length)
-        let rows_mode = self.m.host_weight_bytes > 0 && self.mrow_max >= 2 && self.mrow_usable() && tokens.len() <= 3 * self.mrow_max;
+        let rows_mode = self.m.host_ffn_bytes > 0 && self.mrow_max >= 2 && self.mrow_usable() && tokens.len() <= 3 * self.mrow_max;
         let mut done = 0;
         while done < tokens.len() {
             let n = if rows_mode { (tokens.len() - done).min(self.mrow_max) } else { (tokens.len() - done).min(prefill_chunk_len()) };

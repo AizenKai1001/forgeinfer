@@ -37,6 +37,76 @@ Reading it: on the 4B and 9B, decode is memory-bound (272 GB/s) and both engines
 
 A first tuning on this card came out of that table: the engine switches between a fused dequantizing GEMM (short chunks) and a two-pass dequantize-then-GEMM (long chunks), and its 448-token threshold was measured on Turing. On the RTX 4060 the fused kernel wins at every length measured (4B, 9B, tokens per second): at 554 tokens 2,246 to 2,379 and 1,271 to 1,360; at 1,086 tokens 2,120 to 2,463 (+16 %) and 1,159 to 1,397 (+21 %); at 2,169 tokens +8 to +10 %. Greedy continuations after 1,000 to 1,400-token prompts are identical with both paths. Ada GPUs (compute capability 8.9) now use the fused path always; `FORGE_FUSED_MAX=N` overrides, `0` restores the two-pass path.
 
+## Against LM Studio's engine and llama.cpp's own speculation
+
+`tools/bench_engines.py` runs the five chat workloads of `tools/pld_bench.py` (a code edit, a JSON array, a summary with quotes, a grammar fix, free prose; 260 to 700 tokens each) against `forge serve`, llama.cpp's `llama-server` (build b11517) and the `llama-server` that ships inside LM Studio 0.4.16 (its CUDA 12 runtime 2.29.1, llama.cpp b10355, started from its own folder with its own libraries; nothing of LM Studio's settings is touched), on the same GGUF file, greedy, thinking off, and reads the generation speed from each server's own timings. RTX 4060 (8 GB), Windows 11, 2026-10-13, tokens per second. Run to run the same engine moves by up to 4 percent with the card's clocks, so read ratios within about 5 percent as ties.
+
+Qwen3.5-9B Q4_K_M:
+
+| engine | code edit | JSON | quotes | grammar fix | prose |
+|---|---|---|---|---|---|
+| LM Studio engine (llama.cpp b10355) | 43.1 | 43.0 | 43.0 | 42.7 | 43.1 |
+| llama.cpp b11517 | 43.7 | 43.2 | 42.6 | 42.8 | 42.8 |
+| llama.cpp b11517 + `--spec-type ngram-simple` (4-token lookup, 16 drafted) | 76.0 | 45.1 | 55.0 | 74.5 | 43.2 |
+| ForgeInfer, no speculation | 46.5 | 46.9 | 46.8 | 47.1 | 47.0 |
+| ForgeInfer, prompt lookup (the default for a model without a head) | 94.8 | 68.2 | 83.2 | 110.7 | 47.0 |
+| ForgeInfer, lookup + the model's prediction head (what Forge Studio does) | 150.7 | 111.0 | 111.7 | 155.4 | 78.6 |
+
+Qwen3.5-4B Q4_K_M (the llama.cpp and ForgeInfer rows are one run; the LM Studio row is from a second run in which llama.cpp b11517 read 72.3 and ForgeInfer without speculation 83, with the head 255, 192, 130, 280 and 134):
+
+| engine | code edit | JSON | quotes | grammar fix | prose |
+|---|---|---|---|---|---|
+| LM Studio engine (llama.cpp b10355) | 76.1 | 76.0 | 75.9 | 76.1 | 75.9 |
+| llama.cpp b11517 | 71.0 | 71.9 | 70.6 | 72.4 | 72.5 |
+| llama.cpp + `ngram-simple`, defaults (12-token lookup, 48 drafted) | 99.9 | 68.2 | 70.2 | 75.6 | 71.8 |
+| llama.cpp + `ngram-mod`, defaults | 88.0 | 72.7 | 73.2 | 72.8 | 72.8 |
+| llama.cpp + `ngram-map-k`, defaults | 95.1 | 70.4 | 71.8 | 70.4 | 72.7 |
+| llama.cpp + `ngram-simple`, 4-token lookup, 16 drafted | 113.0 | 75.1 | 64.2 | 112.8 | 71.6 |
+| ForgeInfer, no speculation | 79.1 | 80.0 | 79.8 | 80.5 | 80.6 |
+| ForgeInfer, prompt lookup | 159.1 | 127.7 | 86.4 | 181.1 | 80.0 |
+| ForgeInfer, lookup + the model's prediction head | 247.9 | 186.4 | 126.6 | 270.7 | 130.8 |
+
+Qwen3.5-0.8B Q4_K_M, no speculation: 324 to 348 tokens/s against 222 for LM Studio's engine and 210 for llama.cpp b11517 (1.5x).
+
+What it says:
+
+- Without speculation the engine is about 5 to 10 percent faster than LM Studio's on the 4B and 9B (decode is memory-bound and every engine sits near the card's bandwidth) and about 1.5x faster on the 0.8B (the decode step is one CUDA graph; launch overhead matters on small models).
+- llama.cpp has n-gram speculation (`--spec-type ngram-*`), off by default. With its default settings it paid on the code edit only (1.2 to 1.4x); with a 4-token lookup and 16 drafted tokens (one setting tried, not a tuned optimum) it reached 1.6 to 1.7x on the code edit and the grammar fix, and lost speed on the 4B quotes (64.2 against 70.6: nothing measures whether drafts pay). The engine's lookup is on by default, reached 2.0 to 2.3x over the engine's own plain decoding on the same two workloads (2.2 to 2.6x over LM Studio's engine on the 9B), and lost no measurable speed on prose.
+- llama.cpp's own head mode (`--spec-type draft-mtp`) refuses these GGUF files: "context type MTP requested but model doesn't contain MTP layers". The standard files do not contain the prediction head; Forge Studio fetches it from the original checkpoint (0.2 to 0.5 GB) and the engine uses it from a separate file.
+- No two engines give the same text for long. Against llama.cpp's greedy answers the engine's differ somewhere in all five workloads (first difference at character 9 to 682 of 628 to 1,548, each time a near-tie between two good words: "Yesterday, me and my friends" against "Yesterday me and my friends", "designer" against "design"), and llama.cpp's own n-gram speculation changes its text in 1 of 5 workloads against its plain decoding, as the engine's speculation does against its own (see below). A cross-engine perplexity comparison has not been run yet.
+
+Prompt reading, from the servers' own timings (a prompt of N tokens, 8 tokens generated, median of five runs; `llama-bench -p 512` reads faster on every engine, 3,497 and 2,166 tokens/s for llama.cpp b11517 on the 4B and 9B, because a server also samples and handles requests):
+
+| model, prompt | LM Studio engine | llama.cpp b11517 | ForgeInfer |
+|---|---|---|---|
+| 0.8B, 592 tokens | 7,060 | 7,875 | **13,611** |
+| 0.8B, 2,226 tokens | 9,679 | 11,160 | **12,554** |
+| 4B, 592 tokens | 2,567 | 2,878 | 2,541 |
+| 4B, 2,226 tokens | 2,969 | 3,341 | 2,598 |
+| 9B, 592 tokens | 1,718 | 1,847 | 1,456 |
+| 9B, 2,226 tokens | 1,924 | 2,073 | 1,466 |
+
+On the 4B and 9B the engine reads prompts 1 to 24 percent slower than LM Studio's (the gap is the int8 path of the [roadmap](ROADMAP.md)); on the 0.8B it is 1.3 to 1.9x faster. First token of the 9B (median of nine, a one-token completion): 30 ms for 12 prompt tokens, 242 ms for 300, 778 ms for 1,100.
+
+## Video memory
+
+Video memory held by the server above what was in use before it started (nvidia-smi, context 4,096, MiB), right after loading. With speculation the engine reserves the rows of its verification pass at the first request, so the last two columns are after one chat:
+
+| model | LM Studio engine | llama.cpp b11517 | ForgeInfer before 2026-10-13 10:30 | ForgeInfer now | now + lookup | now + head |
+|---|---|---|---|---|---|---|
+| Qwen3.5-9B | 5,238 | 5,266 | 6,178 | 5,521 to 5,551 | 6,154 | 6,477 |
+| Qwen3.5-4B | 2,954 | 2,973 | 3,423 | 3,377 | | 4,224 |
+| Qwen3.5-0.8B | 691 | 708 | 849 | 819 to 839 | | 1,052 |
+
+Two things changed the first column of ForgeInfer into the second:
+
+- **The embedding table of a model with its own output matrix lives in page-locked host memory** (Qwen3.5-9B, Llama, Qwen3-8B and larger; a tied output matrix reads the whole table every token and keeps it on the device). One row of 2 to 4 KB is read per token, so it costs nothing measurable: Qwen3.5-9B decodes at 46.6 against 46.5 tokens/s, the first token takes the same 30 / 242 / 778 ms, and the answers are identical (5 of 5 workloads, plain and with the head, on the RTX 4060; on an RTX 2060 SUPER under Linux a short and a 1,153-token prompt give identical answers and the card holds 544 MiB less). llama.cpp keeps the table in host memory too (its log for the 9B: `CPU_Mapped model buffer size = 545.62 MiB`, `CUDA0 model buffer size = 4861.28 MiB`, KV cache 128 MiB, recurrent state 50 MiB, compute buffer 108 MiB). The memory it frees lets the speculative pass reserve 12 verification rows instead of 8 on the 9B (the memory check wants 200 MiB to stay free: with the table on the device 12 rows were refused and, with a little less memory free, 8 as well), which made the head-assisted answers up to 10 percent faster (grammar fix 155 to 170 tokens/s). `FORGE_HOST_EMBED=0` keeps the table on the device; a failed allocation of page-locked memory falls back to the device by itself.
+- **The fp16 dequantization scratch of the prompt path** (50 to 100 MiB) is taken when a large matrix needs it, not at load: the fused kernels read the quantized blocks directly and on Ada never use it. A 4 MiB buffer serves the small matrices that have no fused kernel (the 32-row Q8_0 projections of a Gated DeltaNet layer).
+
+What is left over llama.cpp (0.3 to 0.4 GiB) is mostly the buffers of a 1,024-token prompt chunk (280 to 350 MiB; chunks of 512 tokens save 128 MiB and cost 1 to 5 percent of prompt speed, chunks of 256 save 190 MiB and cost 6 to 10 percent, so they stay at 1,024) and, with speculation, one recurrent state per verified row (about 50 MB each).
+
+Ready to answer after the process starts, model file in the page cache: 9B 4.4 s for the engine (6.9 s with the head), 4.5 s for LM Studio's engine and 3.0 s for llama.cpp b11517; 4B 2.9 s, 2.1 s and 2.0 s.
+
 ## Speculative decoding on the RTX 4060
 
 Qwen3.5 models ship a small prediction head (multi-token prediction, `mtp.*` tensors in the original checkpoint, not in the GGUF files). With it the engine drafts 2 or 3 tokens ahead and the main model checks them all in one pass over the weights; when decode is limited by memory bandwidth, that pass costs about the same as one token, so every accepted guess is free. Measured on the PC (a 128-token continuation of English prose, 128 tokens, median of four runs, Q4_K_M files, `--depth 3`):
@@ -130,6 +200,8 @@ Method notes that saved time: compare *mean and median* over 48 or more runs (12
 ## Reproducing
 
 ```bash
+python tools/bench_engines.py Qwen3.5-9B-Q4_K_M llama forge-plain forge-lookup forge-head   # five chat workloads, tokens/s, video memory, time to ready
+python tools/bench_engines.py --prefill 2100 Qwen3.5-9B-Q4_K_M llama forge-plain            # prompt reading speed from the servers' timings
 tools/bench_vs_llama.sh        # forge vs llama.cpp on the same files (needs llama.cpp's llama-bench)
 forge gpu-bench ...            # decode microbenchmarks;  forge prefill-bench ...
 forge ppl / eval-*             # perplexity and KL against a reference, HellaSwag and friends

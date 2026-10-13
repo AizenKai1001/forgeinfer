@@ -116,8 +116,8 @@ impl<'m> GpuSession<'m> {
     pub fn prefill_batched_min(&self) -> usize {
         if self.mrow_usable() && self.mrow_max >= 2 {
             2
-        } else if self.m.host_weight_bytes > 0 {
-            // weights in host memory: one batched call reads them over PCIe once (about 1.5 s on the 27B), token after token costs a decode step each (0.4 s)
+        } else if self.m.host_ffn_bytes > 0 {
+            // FFN weights in host memory: one batched call reads them over PCIe once (about 1.5 s on the 27B), token after token costs a decode step each (0.4 s)
             5
         } else {
             16
