@@ -23,7 +23,7 @@ Tagged versions get release archives for Windows (Studio and the CUDA engine), L
 
 ### My models
 
-Lists every `.gguf` file under the folders in **Model folders** (the app's own `models` folder, LM Studio's folder if it exists) and every model in Ollama's store (`~/.ollama/models`, read through its manifests). Nothing is copied or moved. Each card shows the architecture, parameter count, quantization, file size, trained context, where it came from, and a badge: *fits in video memory*, *runs split between GPU and CPU*, or *too large*. A model the ForgeInfer engine cannot run says why (architecture or tokenizer) when you hover the disabled **Load** button. Drop a `.gguf` file or a folder on the window to add its folder. A Qwen3.5 card shows **prediction head: faster answers** when the head file is found, or a **Get the prediction head** button that fetches it (see below). **Inspect** opens the inspector.
+Lists every `.gguf` file under the folders in **Model folders** (the app's own `models` folder, LM Studio's folder if it exists) and every model in Ollama's store (`~/.ollama/models`, read through its manifests). Nothing is copied or moved. Each card shows the architecture, parameter count, quantization, file size, trained context, where it came from, and a badge: *fits in video memory*, *runs split between GPU and CPU*, or *too large*. A model the ForgeInfer engine cannot run says why (architecture or tokenizer) when you hover the disabled **Load** button. Drop a `.gguf` file or a folder on the window to add its folder. A Qwen3.5 card shows **prediction head: faster answers** when the head file is found, or a **Get the prediction head** button that fetches it (see below). **Inspect** opens the inspector; **Delete** removes a `.gguf` file from the disk after a second press (a loaded model must be ejected first). A video-memory figure in the status bar turns orange under 700 MiB free (on Windows the driver pages then and every GPU program slows down).
 
 ### The inspector
 
@@ -111,7 +111,7 @@ forge-studio --screen library|chat|discover|server|hardware|logs|settings
 | `chats.rs`, `settings.rs` | files on disk |
 | `ui/` | one file per screen |
 
-Tests: `cd studio && cargo test --lib` (31 unit tests, including a synthetic GGUF file for the scanner and inspector). `cargo test --lib live_ -- --ignored` runs a network test that searches, lists, downloads and resumes a 1.2 MB model from Hugging Face.
+Tests: `cd studio && cargo test --lib` (41 unit tests, including a synthetic GGUF file for the scanner and inspector). `cargo test --lib live_ -- --ignored` runs a network test that searches, lists, downloads and resumes a 1.2 MB model from Hugging Face.
 
 ## Platform notes
 

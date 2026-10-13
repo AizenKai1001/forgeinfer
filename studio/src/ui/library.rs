@@ -115,6 +115,19 @@ fn model_card(app: &mut StudioApp, ui: &mut Ui, e: &ModelEntry) {
                 if ui.button("Inspect").on_hover_text("Layer map, formats, metadata and tensors").clicked() {
                     app.actions.push(Action::Inspect(e.path.clone()));
                 }
+                if crate::util::is_gguf_file(&e.path) {
+                    if app.confirm_delete.as_ref() == Some(&e.path) {
+                        if danger_button(ui, &format!("Delete {} for good", human_bytes(e.size))).clicked() {
+                            app.actions.push(Action::DeleteModel(e.path.clone()));
+                            app.confirm_delete = None;
+                        }
+                        if ui.button("Keep").clicked() {
+                            app.confirm_delete = None;
+                        }
+                    } else if ui.button("Delete").on_hover_text("Remove this file from the disk (asks once more)").clicked() {
+                        app.confirm_delete = Some(e.path.clone());
+                    }
+                }
                 let issue = if app.settings.engine == EngineKind::Forge { e.forge_issue() } else if e.projector { Some("a vision projector goes with a model, it is not a model".to_string()) } else { e.error.clone() };
                 let loadable = issue.is_none();
                 let r = primary_enabled(ui, loadable, "Load");

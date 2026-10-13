@@ -72,6 +72,8 @@ pub enum Action {
     DeleteMessage(usize),
     RenameChat(String, String),
     RemoveAttachment(usize),
+    /// Remove a model file from the disk (asked twice in the library).
+    DeleteModel(PathBuf),
     /// Edit user message `i` to this text, drop the conversation after it and ask again.
     EditResend(usize, String),
     LoadModel(PathBuf),
@@ -219,6 +221,8 @@ pub struct StudioApp {
     pub scroll_to_bottom: bool,
     pub show_params: bool,
     pub last_speed: Option<f32>,
+    /// The model card whose Delete button was pressed once (the second press deletes).
+    pub confirm_delete: Option<PathBuf>,
     /// Text files dropped on the window, for the next message.
     pub attachments: Vec<crate::chats::Attachment>,
     /// The search box above the chat list.
@@ -298,6 +302,7 @@ impl StudioApp {
             scroll_to_bottom: false,
             show_params: false,
             last_speed: None,
+            confirm_delete: None,
             attachments: Vec::new(),
             chat_filter: String::new(),
             renaming: None,
@@ -824,6 +829,28 @@ impl StudioApp {
         self.chat_list = self.store.list();
     }
 
+    /// Remove a `.gguf` file from the disk (never a folder, never a model that is loaded).
+    pub fn delete_model(&mut self, path: &std::path::Path) {
+        if !crate::util::is_gguf_file(path) {
+            return;
+        }
+        if self.engine.current().is_some_and(|l| l.model == path) {
+            self.toast("Eject the model first: it is loaded.");
+            return;
+        }
+        let name = path
+            .file_name()
+            .map(|s| s.to_string_lossy().to_string())
+            .unwrap_or_default();
+        match std::fs::remove_file(path) {
+            Ok(()) => {
+                self.toast(format!("Deleted {name}."));
+                self.rescan();
+            }
+            Err(e) => self.toast(format!("Could not delete {name}: {e}")),
+        }
+    }
+
     pub fn rename_chat(&mut self, id: &str, title: &str) {
         if self.opts.demo {
             return;
@@ -1165,6 +1192,7 @@ impl StudioApp {
                 Action::Stop => self.stop_generation(),
                 Action::Regenerate => self.regenerate(),
                 Action::RenameChat(id, title) => self.rename_chat(&id, &title),
+                Action::DeleteModel(p) => self.delete_model(&p),
                 Action::RemoveAttachment(i) => {
                     if i < self.attachments.len() {
                         self.attachments.remove(i);

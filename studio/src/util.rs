@@ -232,6 +232,14 @@ pub fn human_secs(s: f64) -> String {
     }
 }
 
+/// A `.gguf` file that exists (what the library may delete: never a folder, never another kind of file).
+pub fn is_gguf_file(path: &std::path::Path) -> bool {
+    path.extension()
+        .and_then(|e| e.to_str())
+        .is_some_and(|e| e.eq_ignore_ascii_case("gguf"))
+        && path.is_file()
+}
+
 /// The text of a file for attaching to a message: UTF-8 (a byte-order mark is dropped), no NUL bytes, at most `max` bytes.
 pub fn read_text_file(path: &std::path::Path, max: u64) -> Result<String, String> {
     let name = path
@@ -279,6 +287,22 @@ mod tests {
         let a = new_id();
         let b = new_id();
         assert_ne!(a, b);
+    }
+
+    #[test]
+    fn only_gguf_files_count_as_deletable_models() {
+        let dir = std::env::temp_dir().join(format!("forge-studio-test-gguf-{}", new_id()));
+        std::fs::create_dir_all(dir.join("folder.gguf")).unwrap();
+        std::fs::write(dir.join("a.GGUF"), b"x").unwrap();
+        std::fs::write(dir.join("b.txt"), b"x").unwrap();
+        assert!(is_gguf_file(&dir.join("a.GGUF")));
+        assert!(!is_gguf_file(&dir.join("b.txt")));
+        assert!(
+            !is_gguf_file(&dir.join("folder.gguf")),
+            "a folder with that name is not a model file"
+        );
+        assert!(!is_gguf_file(&dir.join("missing.gguf")));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
