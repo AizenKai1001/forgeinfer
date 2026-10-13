@@ -123,14 +123,14 @@ fn get_text(url: &str) -> Result<Option<String>, String> {
     resp.body_mut().read_to_string().map(Some).map_err(|e| e.to_string())
 }
 
-struct Piece {
-    name: String,
-    dtype: String,
-    shape: Value,
-    url: String,
-    base: u64,
-    b0: u64,
-    b1: u64,
+pub struct Piece {
+    pub name: String,
+    pub dtype: String,
+    pub shape: Value,
+    pub url: String,
+    pub base: u64,
+    pub b0: u64,
+    pub b1: u64,
 }
 
 /// Assemble a safetensors file from tensors held in memory: `(name, dtype, shape, bytes)`, sorted by name.
@@ -158,11 +158,8 @@ pub fn write_safetensors(out: &Path, tensors: &[(String, String, Value, Vec<u8>)
     std::fs::rename(&tmp, out)
 }
 
-/// Download the `mtp.*` tensors of `repo` into the safetensors file `out`. Blocks; run it on a thread. `progress.total` is set once the sizes are known.
-pub fn fetch_head(repo: &str, out: &Path, progress: &Progress) -> Result<(), String> {
-    if let Some(dir) = out.parent() {
-        std::fs::create_dir_all(dir).map_err(|e| format!("cannot create {}: {e}", dir.display()))?;
-    }
+/// What a head consists of: the `mtp.*` tensors of `repo` and where their bytes are (only the index and the safetensors headers are read: a few kilobytes).
+pub fn plan_head(repo: &str) -> Result<Vec<Piece>, String> {
     let index = get_text(&format!("{API}/{repo}/resolve/main/model.safetensors.index.json"))?;
     // which shard files hold mtp tensors (None: the checkpoint is one file)
     let files: Vec<String> = match index {
@@ -198,6 +195,15 @@ pub fn fetch_head(repo: &str, out: &Path, progress: &Progress) -> Result<(), Str
         return Err(format!("{repo} has no prediction head (no mtp.* tensors)"));
     }
     pieces.sort_by(|a, b| a.name.cmp(&b.name));
+    Ok(pieces)
+}
+
+/// Download the `mtp.*` tensors of `repo` into the safetensors file `out`. Blocks; run it on a thread. `progress.total` is set once the sizes are known.
+pub fn fetch_head(repo: &str, out: &Path, progress: &Progress) -> Result<(), String> {
+    if let Some(dir) = out.parent() {
+        std::fs::create_dir_all(dir).map_err(|e| format!("cannot create {}: {e}", dir.display()))?;
+    }
+    let pieces = plan_head(repo)?;
     progress.total.store(pieces.iter().map(|p| p.b1 - p.b0).sum(), Ordering::Relaxed);
     progress.done.store(0, Ordering::Relaxed);
     let mut tensors = Vec::with_capacity(pieces.len());
@@ -262,5 +268,39 @@ mod tests {
         let st = forge_gguf::SafeTensors::open(&out).unwrap();
         assert!(st.tensors.iter().any(|t| t.name == "mtp.a"));
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Needs the network and a head file made earlier by tools/fetch_mtp.py: `FORGE_MTP_REFERENCE=file cargo test --lib live_ -- --ignored`. Only the index and the headers are fetched.
+    #[test]
+    #[ignore]
+    fn live_plan_matches_a_head_fetched_by_the_python_tool() {
+        let Ok(reference) = std::env::var("FORGE_MTP_REFERENCE") else { return };
+        let repo = std::env::var("FORGE_MTP_REPO").unwrap_or_else(|_| "Qwen/Qwen3.5-4B".to_string());
+        let plan = plan_head(&repo).expect("plan");
+        let data = std::fs::read(&reference).unwrap();
+        let n = u64::from_le_bytes(data[..8].try_into().unwrap()) as usize;
+        let header: Value = serde_json::from_slice(&data[8..8 + n]).unwrap();
+        let names: Vec<&String> = header.as_object().unwrap().keys().filter(|k| k.as_str() != "__metadata__").collect();
+        assert_eq!(names.len(), plan.len());
+        for p in &plan {
+            let t = &header[p.name.as_str()];
+            let (b0, b1) = (t["data_offsets"][0].as_u64().unwrap(), t["data_offsets"][1].as_u64().unwrap());
+            assert_eq!(b1 - b0, p.b1 - p.b0, "{}", p.name);
+            assert_eq!(t["dtype"].as_str().unwrap(), p.dtype, "{}", p.name);
+            assert_eq!(&t["shape"], &p.shape, "{}", p.name);
+        }
+    }
+
+    /// Needs the network: fetches the 41 MB head of Qwen3.5-0.8B (`FORGE_MTP_OUT=file cargo test --lib live_fetch -- --ignored`).
+    #[test]
+    #[ignore]
+    fn live_fetch_of_a_small_head() {
+        let Ok(out) = std::env::var("FORGE_MTP_OUT") else { return };
+        let out = PathBuf::from(out);
+        let progress = Progress::default();
+        fetch_head("Qwen/Qwen3.5-0.8B", &out, &progress).expect("fetch");
+        assert_eq!(progress.done.load(Ordering::Relaxed), progress.total.load(Ordering::Relaxed));
+        let st = forge_gguf::SafeTensors::open(&out).unwrap();
+        assert!(st.tensors.len() >= 10 && st.tensors.iter().all(|t| t.name.starts_with("mtp.")));
     }
 }
