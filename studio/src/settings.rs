@@ -265,9 +265,14 @@ pub fn settings_path() -> PathBuf {
 }
 
 impl Settings {
+    /// The text of a settings file; Windows editors (Notepad, PowerShell 5) put a byte-order mark in front of it.
+    pub fn parse(text: &str) -> serde_json::Result<Settings> {
+        serde_json::from_str(text.trim_start_matches('\u{feff}'))
+    }
+
     pub fn load() -> Settings {
         match std::fs::read_to_string(settings_path()) {
-            Ok(text) => match serde_json::from_str(&text) {
+            Ok(text) => match Settings::parse(&text) {
                 Ok(settings) => settings,
                 Err(_) => {
                     // keep what the user had: the next save would overwrite it
@@ -375,6 +380,13 @@ mod tests {
         let partial: Settings = serde_json::from_str(r#"{"port": 4321}"#).unwrap();
         assert_eq!(partial.port, 4321);
         assert_eq!(partial.context_len, 8192);
+    }
+
+    #[test]
+    fn a_byte_order_mark_in_front_of_the_file_is_fine() {
+        let s = Settings::parse("\u{feff}{\"port\": 4321}").unwrap();
+        assert_eq!(s.port, 4321);
+        assert!(Settings::parse("not json").is_err());
     }
 
     #[test]
