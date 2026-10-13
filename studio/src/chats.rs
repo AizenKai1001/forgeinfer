@@ -34,6 +34,13 @@ pub struct Stats {
     pub finish: String,
 }
 
+/// A text file attached to a message: its text goes to the model in front of the message.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+pub struct Attachment {
+    pub name: String,
+    pub text: String,
+}
+
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct Message {
     pub id: String,
@@ -52,6 +59,9 @@ pub struct Message {
     /// Seconds spent in the reasoning part (measured while it streamed).
     #[serde(default)]
     pub thought_secs: f32,
+    /// Files attached to a user message.
+    #[serde(default)]
+    pub attachments: Vec<Attachment>,
 }
 
 impl Message {
@@ -65,8 +75,31 @@ impl Message {
             error: None,
             streaming: false,
             thought_secs: 0.0,
+            attachments: Vec::new(),
         }
     }
+
+    /// What the model reads: the attached files (each between `<file name=...>` tags), then the text.
+    pub fn prompt_text(&self) -> String {
+        if self.attachments.is_empty() {
+            return self.content.clone();
+        }
+        let mut s = String::new();
+        for a in &self.attachments {
+            s.push_str(&format!(
+                "<file name=\"{}\">\n{}\n</file>\n\n",
+                a.name,
+                a.text.trim_end()
+            ));
+        }
+        s.push_str(&self.content);
+        s
+    }
+}
+
+/// A rough size of a text in tokens (3 characters per token: code and other languages are denser than English prose).
+pub fn estimate_tokens(chars: usize) -> usize {
+    chars / 3 + 1
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -138,8 +171,11 @@ impl Chat {
         if i == 0 && self.title == auto_title(&self.messages[0].content) {
             self.title = NEW_TITLE.to_string();
         }
+        let attachments = std::mem::take(&mut self.messages[i].attachments);
         self.messages.truncate(i);
-        self.messages.push(Message::new(Role::User, text));
+        let mut msg = Message::new(Role::User, text);
+        msg.attachments = attachments;
+        self.messages.push(msg);
         self.retitle();
         true
     }
@@ -159,7 +195,7 @@ impl Chat {
             if m.error.is_some() || (m.role == Role::Assistant && m.content.trim().is_empty()) {
                 continue;
             }
-            out.push((m.role, m.content.clone()));
+            out.push((m.role, m.prompt_text()));
         }
         out
     }
@@ -172,6 +208,9 @@ impl Chat {
                 Role::Assistant => "Assistant",
                 Role::System => "System",
             };
+            for a in &m.attachments {
+                s.push_str(&format!("*attached: {}*\n\n", a.name));
+            }
             s.push_str(&format!("**{who}**\n\n{}\n\n", m.content));
         }
         s
@@ -333,6 +372,31 @@ mod tests {
         // a long title is cut
         assert!(d.set_title(&"x".repeat(200)));
         assert!(d.title.chars().count() <= 81);
+    }
+
+    #[test]
+    fn attached_files_go_in_front_of_the_text_and_survive_an_edit() {
+        let mut c = Chat::new();
+        let mut m = Message::new(Role::User, "Add type hints.");
+        m.attachments.push(Attachment {
+            name: "a.py".into(),
+            text: "def f(x):\n    return x\n\n".into(),
+        });
+        c.messages.push(m);
+        c.messages.push(Message::new(Role::Assistant, "done"));
+        let p = c.api_messages("");
+        assert_eq!(
+            p[0].1,
+            "<file name=\"a.py\">\ndef f(x):\n    return x\n</file>\n\nAdd type hints."
+        );
+        assert!(estimate_tokens(p[0].1.chars().count()) > 10);
+        assert!(c.replace_from(0, "Add docstrings."));
+        assert_eq!(c.messages[0].attachments.len(), 1);
+        assert!(c.api_messages("")[0].1.ends_with("Add docstrings."));
+        // a chat file of an older version has no attachments field
+        let old = r#"{"id":"x","title":"t","created":1,"updated":1,"messages":[{"id":"m","role":"user","content":"hi"}]}"#;
+        let back: Chat = serde_json::from_str(old).unwrap();
+        assert!(back.messages[0].attachments.is_empty());
     }
 
     #[test]

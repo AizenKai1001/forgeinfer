@@ -472,12 +472,25 @@ fn message_view(app: &mut StudioApp, ui: &mut Ui, i: usize, last: bool) {
                     .inner_margin(Margin::symmetric(14, 10))
                     .show(ui, |ui| {
                         ui.set_max_width(width * 0.82);
-                        ui.add(
-                            egui::Label::new(
-                                RichText::new(&m.content).size(15.0).color(theme::TEXT),
-                            )
-                            .wrap(),
-                        );
+                        ui.vertical(|ui| {
+                            for a in &m.attachments {
+                                ui.label(
+                                    RichText::new(format!(
+                                        "attached: {} \u{00B7} {}",
+                                        a.name,
+                                        human_bytes(a.text.len() as u64)
+                                    ))
+                                    .small()
+                                    .color(theme::MUTED),
+                                );
+                            }
+                            ui.add(
+                                egui::Label::new(
+                                    RichText::new(&m.content).size(15.0).color(theme::TEXT),
+                                )
+                                .wrap(),
+                            );
+                        });
                     });
             });
             ui.with_layout(Layout::right_to_left(Align::Min), |ui| {
@@ -633,6 +646,24 @@ fn input_box(app: &mut StudioApp, ui: &mut Ui) {
     centered(ui, COLUMN, |ui| {
         Frame::new().fill(theme::CARD).corner_radius(CornerRadius::same(14)).stroke(Stroke::new(1.0, theme::BORDER)).inner_margin(Margin::symmetric(12, 8)).show(ui, |ui| {
             ui.set_width(ui.available_width());
+            if !app.attachments.is_empty() {
+                ui.horizontal_wrapped(|ui| {
+                    let mut remove = None;
+                    for (i, a) in app.attachments.iter().enumerate() {
+                        let label = format!("{} \u{00B7} {}", truncate(&a.name, 28), human_bytes(a.text.len() as u64));
+                        Frame::new().fill(theme::CARD_HOVER).corner_radius(CornerRadius::same(8)).inner_margin(Margin::symmetric(8, 3)).show(ui, |ui| {
+                            ui.label(RichText::new(label).small().color(theme::TEXT));
+                            if ui.add(egui::Button::new(RichText::new("\u{00D7}").color(theme::MUTED)).frame(false)).on_hover_text("Remove this file").clicked() {
+                                remove = Some(i);
+                            }
+                        });
+                    }
+                    if let Some(i) = remove {
+                        app.actions.push(Action::RemoveAttachment(i));
+                    }
+                });
+                ui.add_space(4.0);
+            }
             ui.horizontal(|ui| {
                 let button_w = 92.0 + 78.0;
                 let edit_w = (ui.available_width() - button_w - 12.0).max(120.0);
@@ -644,7 +675,11 @@ fn input_box(app: &mut StudioApp, ui: &mut Ui) {
                     .show(ui, |ui| {
                         ui.add(
                             TextEdit::multiline(&mut app.input)
-                                .hint_text("Message the model ...   (Enter sends, Shift+Enter adds a line)")
+                                .hint_text(if app.attachments.is_empty() {
+                                    "Message the model ...   (Enter sends, Shift+Enter adds a line, drop a file here to attach it)"
+                                } else {
+                                    "What should the model do with the file?   (Enter sends)"
+                                })
                                 .desired_rows(1)
                                 .desired_width(edit_w)
                                 .frame(Frame::NONE)

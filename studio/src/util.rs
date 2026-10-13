@@ -259,3 +259,25 @@ mod tests {
         assert_ne!(a, b);
     }
 }
+
+/// The text of a file for attaching to a message: UTF-8 (a byte-order mark is dropped), no NUL bytes, at most `max` bytes.
+pub fn read_text_file(path: &std::path::Path, max: u64) -> Result<String, String> {
+    let name = path
+        .file_name()
+        .map(|s| s.to_string_lossy().to_string())
+        .unwrap_or_default();
+    let meta = std::fs::metadata(path).map_err(|e| format!("{name}: {e}"))?;
+    if meta.len() > max {
+        return Err(format!(
+            "{name} is {} and the limit is {}: attach a smaller file.",
+            human_bytes(meta.len()),
+            human_bytes(max)
+        ));
+    }
+    let bytes = std::fs::read(path).map_err(|e| format!("{name}: {e}"))?;
+    if bytes.contains(&0) {
+        return Err(format!("{name} is not a text file."));
+    }
+    let text = String::from_utf8(bytes).map_err(|_| format!("{name} is not UTF-8 text."))?;
+    Ok(text.trim_start_matches('\u{feff}').to_string())
+}

@@ -71,6 +71,7 @@ pub enum Action {
     Regenerate,
     DeleteMessage(usize),
     RenameChat(String, String),
+    RemoveAttachment(usize),
     /// Edit user message `i` to this text, drop the conversation after it and ask again.
     EditResend(usize, String),
     LoadModel(PathBuf),
@@ -174,6 +175,8 @@ pub struct StartupOpts {
     pub edit_msg: Option<usize>,
     /// Start with the newest chat of the list being renamed (screenshots).
     pub rename_first: bool,
+    /// Text files attached to the first message (tests and screenshots; the same as dropping them on the window).
+    pub attach: Vec<PathBuf>,
 }
 
 pub struct ShotState {
@@ -216,6 +219,8 @@ pub struct StudioApp {
     pub scroll_to_bottom: bool,
     pub show_params: bool,
     pub last_speed: Option<f32>,
+    /// Text files dropped on the window, for the next message.
+    pub attachments: Vec<crate::chats::Attachment>,
     /// The search box above the chat list.
     pub chat_filter: String,
     /// A chat being renamed in the list: (id, text, first frame).
@@ -293,6 +298,7 @@ impl StudioApp {
             scroll_to_bottom: false,
             show_params: false,
             last_speed: None,
+            attachments: Vec::new(),
             chat_filter: String::new(),
             renaming: None,
             editing: None,
@@ -328,6 +334,18 @@ impl StudioApp {
         if let Some(i) = opts.edit_msg {
             if let Some(m) = app.chat.messages.get(i) {
                 app.editing = Some((i, m.content.clone(), true));
+            }
+        }
+        for p in &opts.attach {
+            match crate::util::read_text_file(p, 2 << 20) {
+                Ok(text) => app.attachments.push(crate::chats::Attachment {
+                    name: p
+                        .file_name()
+                        .map(|s| s.to_string_lossy().to_string())
+                        .unwrap_or_else(|| "file".into()),
+                    text,
+                }),
+                Err(e) => eprintln!("--attach: {e}"),
             }
         }
         if opts.rename_first {
@@ -693,7 +711,24 @@ impl StudioApp {
             self.toast("Load a model first (pick one in the bar above, or in My models).");
             return;
         };
-        self.chat.messages.push(Message::new(Role::User, text));
+        let mut msg = Message::new(Role::User, text);
+        msg.attachments = self.attachments.clone();
+        // the whole conversation has to fit into the context the model was loaded with
+        let mut probe = self.chat.clone();
+        probe.messages.push(msg.clone());
+        let chars: usize = probe
+            .api_messages(&self.settings.system_prompt)
+            .iter()
+            .map(|(_, t)| t.chars().count())
+            .sum();
+        let tokens = crate::chats::estimate_tokens(chars);
+        let ctx = self.settings.context_len as usize;
+        if !self.attachments.is_empty() && tokens + 300 > ctx {
+            self.toast(format!("The conversation with the attached files is about {tokens} tokens and the context is {ctx}: raise the context length in Settings (it applies when a model loads) or attach less."));
+            return;
+        }
+        self.attachments.clear();
+        self.chat.messages.push(msg);
         self.input.clear();
         self.chat.retitle();
         self.begin_answer(ep, model);
@@ -759,6 +794,7 @@ impl StudioApp {
     pub fn new_chat(&mut self) {
         self.generation_cancel();
         self.editing = None;
+        self.attachments.clear();
         self.save_chat();
         self.chat = Chat::new();
         self.input.clear();
@@ -1002,6 +1038,31 @@ impl StudioApp {
                 .collect()
         });
         for p in dropped {
+            // a text file (not a model) is attached to the next message
+            let is_model = p.is_dir()
+                || p.extension()
+                    .and_then(|e| e.to_str())
+                    .is_some_and(|e| e.eq_ignore_ascii_case("gguf"));
+            if !is_model {
+                match crate::util::read_text_file(&p, 2 << 20) {
+                    Ok(text) => {
+                        let name = p
+                            .file_name()
+                            .map(|s| s.to_string_lossy().to_string())
+                            .unwrap_or_else(|| "file".into());
+                        if self.attachments.iter().all(|a| a.name != name) {
+                            self.attachments.push(crate::chats::Attachment {
+                                name: name.clone(),
+                                text,
+                            });
+                        }
+                        self.screen = Screen::Chat;
+                        self.focus_input = true;
+                    }
+                    Err(e) => self.toast(e),
+                }
+                continue;
+            }
             let dir = if p.is_dir() {
                 p.clone()
             } else {
@@ -1104,6 +1165,11 @@ impl StudioApp {
                 Action::Stop => self.stop_generation(),
                 Action::Regenerate => self.regenerate(),
                 Action::RenameChat(id, title) => self.rename_chat(&id, &title),
+                Action::RemoveAttachment(i) => {
+                    if i < self.attachments.len() {
+                        self.attachments.remove(i);
+                    }
+                }
                 Action::EditResend(i, text) => self.edit_and_resend(i, &text),
                 Action::DeleteMessage(i) => {
                     if i < self.chat.messages.len() && self.generation.is_none() {
