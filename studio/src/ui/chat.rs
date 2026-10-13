@@ -751,6 +751,37 @@ fn params(app: &mut StudioApp, ui: &mut Ui) {
     heading(ui, "Parameters");
     muted(ui, "Used for the next message.");
     ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
+        section(ui, "Preset");
+        ui.horizontal(|ui| {
+            let current = if app.settings.preset.is_empty() { "none".to_string() } else { app.settings.preset.clone() };
+            let mut apply: Option<String> = None;
+            egui::ComboBox::from_id_salt("preset_pick").selected_text(current).show_ui(ui, |ui| {
+                for p in &app.settings.presets {
+                    if ui.selectable_label(p.name == app.settings.preset, &p.name).clicked() {
+                        apply = Some(p.name.clone());
+                    }
+                }
+                if app.settings.presets.is_empty() {
+                    ui.label(RichText::new("No presets yet: type a name below and save.").color(theme::MUTED));
+                }
+            });
+            if let Some(n) = apply {
+                app.settings.apply_preset(&n);
+            }
+            if !app.settings.preset.is_empty() && ui.small_button("Delete").on_hover_text("Delete this preset").clicked() {
+                let n = app.settings.preset.clone();
+                app.settings.delete_preset(&n);
+            }
+        });
+        ui.horizontal(|ui| {
+            ui.add(TextEdit::singleline(&mut app.preset_name).hint_text("Name for a new preset").desired_width(150.0));
+            if ui.small_button("Save").on_hover_text("Keep the system prompt and the sampler settings under this name (the same name replaces)").clicked() {
+                let n = std::mem::take(&mut app.preset_name);
+                if !app.settings.save_preset(&n) {
+                    app.preset_name = n;
+                }
+            }
+        });
         let g = &mut app.settings.gen;
         section(ui, "Sampling");
         ui.add(egui::Slider::new(&mut g.temperature, 0.0..=2.0).text("Temperature"));

@@ -179,6 +179,8 @@ pub struct StartupOpts {
     pub rename_first: bool,
     /// Text files attached to the first message (tests and screenshots; the same as dropping them on the window).
     pub attach: Vec<PathBuf>,
+    /// Start with the parameters panel open (screenshots).
+    pub show_params: bool,
 }
 
 pub struct ShotState {
@@ -221,6 +223,8 @@ pub struct StudioApp {
     pub scroll_to_bottom: bool,
     pub show_params: bool,
     pub last_speed: Option<f32>,
+    /// The name typed in the parameters panel for a new preset.
+    pub preset_name: String,
     /// The model card whose Delete button was pressed once (the second press deletes).
     pub confirm_delete: Option<PathBuf>,
     /// Text files dropped on the window, for the next message.
@@ -302,6 +306,7 @@ impl StudioApp {
             scroll_to_bottom: false,
             show_params: false,
             last_speed: None,
+            preset_name: String::new(),
             confirm_delete: None,
             attachments: Vec::new(),
             chat_filter: String::new(),
@@ -353,6 +358,7 @@ impl StudioApp {
                 Err(e) => eprintln!("--attach: {e}"),
             }
         }
+        app.show_params = opts.show_params;
         if opts.rename_first {
             if let Some(m) = app.chat_list.first() {
                 app.renaming = Some((m.id.clone(), m.title.clone(), true));

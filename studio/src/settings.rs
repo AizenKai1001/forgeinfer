@@ -153,6 +153,14 @@ impl Default for GenParams {
     }
 }
 
+/// A named set of sampler settings and a system prompt (the parameters panel applies and saves them).
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+pub struct Preset {
+    pub name: String,
+    pub system_prompt: String,
+    pub gen: GenParams,
+}
+
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 #[serde(default)]
 pub struct Settings {
@@ -185,6 +193,9 @@ pub struct Settings {
     pub api_key: String,
     pub gen: GenParams,
     pub system_prompt: String,
+    /// Saved presets, and the name of the one applied last (shown in the parameters panel).
+    pub presets: Vec<Preset>,
+    pub preset: String,
     pub last_model: String,
     pub auto_load_last: bool,
     /// Unload the model after this many idle minutes (0 = never): frees the GPU for games and other programs.
@@ -223,6 +234,8 @@ impl Default for Settings {
             api_key: String::new(),
             gen: GenParams::default(),
             system_prompt: String::new(),
+            presets: Vec::new(),
+            preset: String::new(),
             last_model: String::new(),
             auto_load_last: false,
             idle_eject_minutes: 0,
@@ -318,6 +331,43 @@ impl Settings {
         std::fs::rename(&tmp, &path)
     }
 
+    /// Save the current system prompt and sampler settings under `name` (an existing preset of that name is replaced). False when the name is empty.
+    pub fn save_preset(&mut self, name: &str) -> bool {
+        let name = name.split_whitespace().collect::<Vec<_>>().join(" ");
+        if name.is_empty() {
+            return false;
+        }
+        let p = Preset {
+            name: name.clone(),
+            system_prompt: self.system_prompt.clone(),
+            gen: self.gen.clone(),
+        };
+        match self.presets.iter_mut().find(|x| x.name == name) {
+            Some(x) => *x = p,
+            None => self.presets.push(p),
+        }
+        self.preset = name;
+        true
+    }
+
+    /// Make a saved preset the current settings.
+    pub fn apply_preset(&mut self, name: &str) -> bool {
+        let Some(p) = self.presets.iter().find(|x| x.name == name).cloned() else {
+            return false;
+        };
+        self.system_prompt = p.system_prompt;
+        self.gen = p.gen;
+        self.preset = p.name;
+        true
+    }
+
+    pub fn delete_preset(&mut self, name: &str) {
+        self.presets.retain(|x| x.name != name);
+        if self.preset == name {
+            self.preset.clear();
+        }
+    }
+
     pub fn dirs(&self) -> Vec<PathBuf> {
         self.model_dirs
             .iter()
@@ -408,6 +458,42 @@ mod tests {
         let s = Settings::parse("\u{feff}{\"port\": 4321}").unwrap();
         assert_eq!(s.port, 4321);
         assert!(Settings::parse("not json").is_err());
+    }
+
+    #[test]
+    fn presets_are_saved_applied_replaced_and_deleted() {
+        let mut s = Settings::default();
+        s.system_prompt = "Answer like a pirate.".into();
+        s.gen.temperature = 1.1;
+        assert!(!s.save_preset("   "));
+        assert!(s.save_preset("  Pirate   mode "));
+        assert_eq!(s.preset, "Pirate mode");
+        s.system_prompt = "Be terse.".into();
+        s.gen.temperature = 0.2;
+        assert!(s.save_preset("Terse"));
+        assert_eq!(s.presets.len(), 2);
+        assert!(s.apply_preset("Pirate mode"));
+        assert_eq!(s.system_prompt, "Answer like a pirate.");
+        assert_eq!(s.gen.temperature, 1.1);
+        assert_eq!(s.preset, "Pirate mode");
+        // the same name again replaces
+        s.gen.temperature = 0.5;
+        assert!(s.save_preset("Pirate mode"));
+        assert_eq!(s.presets.len(), 2);
+        assert!(s.apply_preset("Terse") && s.apply_preset("Pirate mode"));
+        assert_eq!(s.gen.temperature, 0.5);
+        assert!(!s.apply_preset("nothing"));
+        s.delete_preset("Pirate mode");
+        assert_eq!(s.presets.len(), 1);
+        assert!(s.preset.is_empty());
+        // they survive a round trip through the settings file, and an old file without them loads
+        let text = serde_json::to_string(&s).unwrap();
+        let back: Settings = Settings::parse(&text).unwrap();
+        assert_eq!(back.presets.len(), 1);
+        assert!(Settings::parse(r#"{"port": 1}"#)
+            .unwrap()
+            .presets
+            .is_empty());
     }
 
     #[test]
