@@ -29,11 +29,13 @@ On the PC (RTX 4060, 8 GB, Windows 11, 2026-10-13): llama.cpp b11517 CUDA build 
 
 | model | decode forge | decode llama.cpp | ratio | prefill forge | prefill llama.cpp | ratio |
 |---|---|---|---|---|---|---|
-| Qwen3.5-0.8B | 332.5 | 265.3 | **1.25x** | 13,770 | 12,273 | 1.12x |
-| Qwen3.5-4B | 79.6 | 73.4 | 1.08x | 2,246 | 3,473 | **0.65x** |
-| Qwen3.5-9B | 45.2 | 43.7 | 1.03x | 1,271 | 2,112 | **0.60x** |
+| Qwen3.5-0.8B | 332.8 | 265.3 | **1.25x** | 13,473 | 12,273 | 1.10x |
+| Qwen3.5-4B | 79.6 | 73.4 | 1.08x | 2,379 | 3,473 | **0.68x** |
+| Qwen3.5-9B | 45.2 | 43.7 | 1.03x | 1,360 | 2,112 | **0.64x** |
 
 Reading it: on the 4B and 9B, decode is memory-bound (272 GB/s) and both engines sit near the roofline, so the gain is a few percent; the engine's edge is largest on small models where launch overhead matters (the whole decode step is one CUDA graph). **Prefill on the 4B and 9B is where the engine loses on this card**: llama.cpp reads the quantized blocks with int8 tensor cores, while the engine dequantizes into fp16 tiles and uses the fp16 tensor cores; an int8 path is the first item of the prefill work in the [roadmap](ROADMAP.md).
+
+A first tuning on this card came out of that table: the engine switches between a fused dequantizing GEMM (short chunks) and a two-pass dequantize-then-GEMM (long chunks), and its 448-token threshold was measured on Turing. On the RTX 4060 the fused kernel wins at every length measured (4B, 9B, tokens per second): at 554 tokens 2,246 to 2,379 and 1,271 to 1,360; at 1,086 tokens 2,120 to 2,463 (+16 %) and 1,159 to 1,397 (+21 %); at 2,169 tokens +8 to +10 %. Greedy continuations after 1,000 to 1,400-token prompts are identical with both paths. Ada GPUs (compute capability 8.9) now use the fused path always; `FORGE_FUSED_MAX=N` overrides, `0` restores the two-pass path.
 
 ## A 27B model on an 8 GB card
 

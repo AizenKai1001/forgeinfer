@@ -1648,6 +1648,16 @@ struct HybridBufs {
 /// Capacity of the prefill buffers (tokens per chunk at most); `prefill_batched` uses `prefill_chunk_len()` of them.
 pub const PREFILL_CHUNK: usize = 1024;
 
+/// The chunk length up to which the fused dequantizing GEMMs are used (see `GpuSession::fused_max`). 448 was measured on Turing (RTX 2060 SUPER, T4). On Ada (compute capability 8.9, the RTX 40 series) the fused kernel
+/// won at every length measured on an RTX 4060 (Qwen3.5 4B and 9B, Q4_K_M: +5 to +7 percent at 554 tokens, +17 to +21 at 1,086, +8 to +10 at 2,169), so there it is always used. FORGE_FUSED_MAX overrides.
+fn default_fused_max(cc_major: i32, cc_minor: i32) -> usize {
+    if (cc_major, cc_minor) == (8, 9) {
+        1 << 20
+    } else {
+        448
+    }
+}
+
 /// Tokens per prefill chunk: 1024 (longer chunks were measured: 2048 is +2 % on the 4B and -4 % on the 9B, so the buffers stay at 1024). FORGE_PREFILL_CHUNK can lower it.
 pub fn prefill_chunk_len() -> usize {
     std::env::var("FORGE_PREFILL_CHUNK")
@@ -1777,7 +1787,7 @@ impl<'m> GpuSession<'m> {
                 std::env::var("FORGE_FUSED_MAX")
                     .ok()
                     .and_then(|v| v.parse().ok())
-                    .unwrap_or(448)
+                    .unwrap_or_else(|| default_fused_max(m.dev.info.cc_major, m.dev.info.cc_minor))
             },
             resid_in: None,
             resid_out: None,

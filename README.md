@@ -65,7 +65,7 @@ forge tokenize model.gguf "any text"             # token ids from the file's own
 - **Memory**: KV-cache compression (`--kv int8|int4`), quantized weights read as they are (no conversion to fp16), a CPU/GPU split planner for models bigger than video memory.
 - **Speculative decoding** with the model's own multi-token-prediction head (Qwen3.5) and prefix reuse across chat turns, including state snapshots for the recurrent layers.
 
-On a desktop RTX 4060 (8 GB, Windows, 4-bit files) decode is 333, 80 and 45 tokens/s for Qwen3.5 0.8B, 4B and 9B against llama.cpp's 265, 73 and 44; prefill is 1.12x, 0.65x and 0.60x of llama.cpp's (see [PERFORMANCE.md](docs/PERFORMANCE.md)).
+On a desktop RTX 4060 (8 GB, Windows, 4-bit files) decode is 333, 80 and 45 tokens/s for Qwen3.5 0.8B, 4B and 9B against llama.cpp's 265, 73 and 44; prefill is 1.10x, 0.68x and 0.64x of llama.cpp's (see [PERFORMANCE.md](docs/PERFORMANCE.md)).
 
 ## Also in this repository
 

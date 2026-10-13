@@ -44,6 +44,17 @@ fn find_tokenizer(model: &Path, explicit: Option<&str>) -> PathBuf {
         .join("tokenizer.json")
 }
 
+/// The tokenizer of a model: the given file, else a `tokenizer.json` beside it, else (for a GGUF file) the tokenizer inside the GGUF.
+fn load_tokenizer(model: &Path, explicit: Option<&str>) -> Tokenizer {
+    let path = find_tokenizer(model, explicit);
+    if explicit.is_none() && !path.exists() && model.extension().map_or(false, |e| e.eq_ignore_ascii_case("gguf")) {
+        if let Ok(t) = Gguf::open(model).and_then(|g| Tokenizer::from_gguf(&g)) {
+            return t;
+        }
+    }
+    Tokenizer::from_file(&path).unwrap_or_else(|e| panic!("cannot load the tokenizer {}: {e}", path.display()))
+}
+
 /// A text file; invalid UTF-8 (a cut in the middle of a multi-byte character) becomes U+FFFD instead of an error.
 fn read_text(path: &str) -> String {
     String::from_utf8_lossy(
@@ -410,8 +421,7 @@ fn quantize_model(
 
 pub fn ppl(args: &[String]) -> i32 {
     let model_path = PathBuf::from(args.get(1).expect("usage: forge ppl <model> --tokenizer FILE --text FILE[,FILE..] [--native|--q8] [--ctx N] [--max-tokens N] [--dump-ref FILE[,..]] [--ref FILE[,..]]"));
-    let tok = Tokenizer::from_file(find_tokenizer(&model_path, flag(args, "--tokenizer")))
-        .expect("cannot load the tokenizer");
+    let tok = load_tokenizer(&model_path, flag(args, "--tokenizer"));
     let texts: Vec<&str> = flag(args, "--text")
         .expect("--text is required")
         .split(',')
@@ -653,8 +663,7 @@ pub fn ppl(args: &[String]) -> i32 {
 /// square of the activation that multiplies it over a calibration text (the model runs unquantized, in fp16). The file feeds `forge ppl --quant-like ... --weighting importance --imatrix FILE`.
 pub fn imatrix(args: &[String]) -> i32 {
     let model_path = PathBuf::from(args.get(1).expect("usage: forge imatrix <model> --text FILE --out FILE [--tokenizer FILE] [--native] [--ctx N] [--max-tokens N]"));
-    let tok = Tokenizer::from_file(find_tokenizer(&model_path, flag(args, "--tokenizer")))
-        .expect("cannot load the tokenizer");
+    let tok = load_tokenizer(&model_path, flag(args, "--tokenizer"));
     let text = read_text(flag(args, "--text").expect("--text is required"));
     let out = flag(args, "--out").expect("--out is required");
     let ctx: usize = flag(args, "--ctx")
@@ -718,8 +727,7 @@ pub fn imatrix(args: &[String]) -> i32 {
 /// calibration text with the unquantized fp16 model.
 pub fn hessian(args: &[String]) -> i32 {
     let model_path = PathBuf::from(args.get(1).expect("usage: forge hessian <model> --text FILE --out FILE [--tokenizer FILE] [--ctx N] [--max-tokens N]"));
-    let tok = Tokenizer::from_file(find_tokenizer(&model_path, flag(args, "--tokenizer")))
-        .expect("cannot load the tokenizer");
+    let tok = load_tokenizer(&model_path, flag(args, "--tokenizer"));
     let text = read_text(flag(args, "--text").expect("--text is required"));
     let out = flag(args, "--out").expect("--out is required");
     let ctx: usize = flag(args, "--ctx")
@@ -1227,8 +1235,7 @@ fn quantize_gguf(
 /// that drift apart. Also printed: how often the draft and the main model hit the text's actual token.
 pub fn mtp_agree(args: &[String]) -> i32 {
     let model_path = PathBuf::from(args.get(1).expect("usage: forge mtp-agree <model> --text FILE [--tokenizer F] [--mtp DIR|FILE] [--native] [--ctx N] [--max-tokens N]"));
-    let tok = Tokenizer::from_file(find_tokenizer(&model_path, flag(args, "--tokenizer")))
-        .expect("cannot load the tokenizer");
+    let tok = load_tokenizer(&model_path, flag(args, "--tokenizer"));
     let text = read_text(flag(args, "--text").expect("--text is required"));
     let ctx: usize = flag(args, "--ctx")
         .and_then(|v| v.parse().ok())
