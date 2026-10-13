@@ -232,6 +232,28 @@ pub fn human_secs(s: f64) -> String {
     }
 }
 
+/// The text of a file for attaching to a message: UTF-8 (a byte-order mark is dropped), no NUL bytes, at most `max` bytes.
+pub fn read_text_file(path: &std::path::Path, max: u64) -> Result<String, String> {
+    let name = path
+        .file_name()
+        .map(|s| s.to_string_lossy().to_string())
+        .unwrap_or_default();
+    let meta = std::fs::metadata(path).map_err(|e| format!("{name}: {e}"))?;
+    if meta.len() > max {
+        return Err(format!(
+            "{name} is {} and the limit is {}: attach a smaller file.",
+            human_bytes(meta.len()),
+            human_bytes(max)
+        ));
+    }
+    let bytes = std::fs::read(path).map_err(|e| format!("{name}: {e}"))?;
+    if bytes.contains(&0) {
+        return Err(format!("{name} is not a text file."));
+    }
+    let text = String::from_utf8(bytes).map_err(|_| format!("{name} is not UTF-8 text."))?;
+    Ok(text.trim_start_matches('\u{feff}').to_string())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -258,26 +280,34 @@ mod tests {
         let b = new_id();
         assert_ne!(a, b);
     }
-}
 
-/// The text of a file for attaching to a message: UTF-8 (a byte-order mark is dropped), no NUL bytes, at most `max` bytes.
-pub fn read_text_file(path: &std::path::Path, max: u64) -> Result<String, String> {
-    let name = path
-        .file_name()
-        .map(|s| s.to_string_lossy().to_string())
-        .unwrap_or_default();
-    let meta = std::fs::metadata(path).map_err(|e| format!("{name}: {e}"))?;
-    if meta.len() > max {
-        return Err(format!(
-            "{name} is {} and the limit is {}: attach a smaller file.",
-            human_bytes(meta.len()),
-            human_bytes(max)
-        ));
+    #[test]
+    fn text_files_are_read_for_attaching_and_binary_ones_are_refused() {
+        let dir = std::env::temp_dir().join(format!("forge-studio-test-attach-{}", new_id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let w = |name: &str, bytes: &[u8]| {
+            let p = dir.join(name);
+            std::fs::write(&p, bytes).unwrap();
+            p
+        };
+        // a byte-order mark is dropped
+        let mut with_bom = vec![0xEF, 0xBB, 0xBF];
+        with_bom.extend_from_slice(b"hello world");
+        assert_eq!(
+            read_text_file(&w("a.txt", &with_bom), 1024).unwrap(),
+            "hello world"
+        );
+        // binary data, invalid UTF-8 and files over the limit are refused with a reason that names the file
+        assert!(read_text_file(&w("b.bin", &[0x4D, 0x5A, 0x00, 0x01]), 1024)
+            .unwrap_err()
+            .contains("b.bin is not a text file"));
+        assert!(read_text_file(&w("c.txt", &[0xff, 0xfe, 0x41]), 1024)
+            .unwrap_err()
+            .contains("not UTF-8"));
+        assert!(read_text_file(&w("d.txt", &[b'x'; 2000]), 1024)
+            .unwrap_err()
+            .contains("limit"));
+        assert!(read_text_file(&dir.join("missing.txt"), 1024).is_err());
+        let _ = std::fs::remove_dir_all(&dir);
     }
-    let bytes = std::fs::read(path).map_err(|e| format!("{name}: {e}"))?;
-    if bytes.contains(&0) {
-        return Err(format!("{name} is not a text file."));
-    }
-    let text = String::from_utf8(bytes).map_err(|_| format!("{name} is not UTF-8 text."))?;
-    Ok(text.trim_start_matches('\u{feff}').to_string())
 }
