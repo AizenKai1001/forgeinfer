@@ -52,6 +52,8 @@ pub struct Launch {
     pub depth: u32,
     /// The prediction head of a Qwen3.5 model (speculative decoding); `forge serve` only.
     pub mtp: Option<PathBuf>,
+    /// Prompt-lookup drafting (`forge serve` only; on by default in the engine).
+    pub lookup: bool,
     pub api_key: String,
     pub extra: Vec<String>,
 }
@@ -104,6 +106,9 @@ pub fn command_args(l: &Launch) -> Vec<String> {
             }
             if l.depth > 0 {
                 a.extend([s("--depth"), l.depth.to_string()]);
+            }
+            if !l.lookup {
+                a.push(s("--no-lookup"));
             }
             if !l.api_key.is_empty() {
                 a.extend([s("--api-key"), l.api_key.clone()]);
@@ -352,6 +357,7 @@ mod tests {
             kv: KvMode::Int8,
             depth: 3,
             mtp: Some(PathBuf::from("head.safetensors")),
+            lookup: true,
             api_key: "k".into(),
             extra: vec!["--threads".into(), "6".into()],
         }
@@ -361,6 +367,14 @@ mod tests {
     fn forge_command_line() {
         let a = command_args(&launch(EngineKind::Forge));
         assert_eq!(a.join(" "), "serve m.gguf --host 127.0.0.1 --port 1234 --ctx 8192 --alias m --kv int8 --mtp head.safetensors --depth 3 --api-key k --threads 6");
+    }
+
+    #[test]
+    fn the_lookup_can_be_switched_off() {
+        let mut l = launch(EngineKind::Forge);
+        l.lookup = false;
+        let a = command_args(&l).join(" ");
+        assert!(a.contains("--depth 3 --no-lookup --api-key k"), "{a}");
     }
 
     #[test]

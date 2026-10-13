@@ -1037,6 +1037,58 @@ impl<'m> GpuSession<'m> {
         }
     }
 
+    /// Allocate the buffers of a verification of `k` rows now (otherwise the first `verify_rows` of that size does it, and a failure there ends the request): an Err means the memory is not there
+    /// (a hybrid model keeps a recurrent state per row but the last), and the caller can ask for fewer rows.
+    ///
+    /// The buffers are only taken when at least FORGE_VERIFY_MARGIN_MIB (default 200) plus `headroom` bytes of device memory (as `cuMemGetInfo` counts it) stay free afterwards: on a Windows GPU that is
+    /// nearly full the driver starts to page and every kernel slows down by 2 to 3 times. Measured on an 8 GB card with the 9B model and its head, free memory left after the buffers: 367 MiB (8 rows) and
+    /// 260 MiB (10 rows) no loss, 157 MiB (12 rows) 63 ms per sweep instead of 26. `headroom`: memory the caller expects to need next.
+    pub fn reserve_verify_rows(&mut self, k: usize, headroom: usize) -> Result<()> {
+        if !self.can_verify_rows(k) {
+            return Err(Error::unsupported(format!("no verification of {k} rows here")));
+        }
+        let missing = self.verify_bufs_missing(k);
+        if missing > 0 {
+            let margin = std::env::var("FORGE_VERIFY_MARGIN_MIB")
+                .ok()
+                .and_then(|v| v.parse::<usize>().ok())
+                .unwrap_or(200)
+                << 20;
+            let (free, _) = self.m.dev.mem_info()?;
+            if free < missing + margin + headroom {
+                return Err(Error::unsupported(format!(
+                    "a verification of {k} rows needs {} MiB more device memory and only {} MiB are free",
+                    missing >> 20,
+                    free >> 20
+                )));
+            }
+        }
+        self.ensure_verify_bufs(k)
+    }
+
+    /// The bytes of device memory a verification of `k` rows would still have to allocate (0: its buffers exist).
+    fn verify_bufs_missing(&self, k: usize) -> usize {
+        let c = &self.m.cfg;
+        let v = c.vocab;
+        let kk = MM_T[MM_T.iter().position(|&x| x >= k).unwrap_or(3)];
+        let mb = self.mb.as_ref();
+        let len = |f: &dyn Fn(&MrowBufs) -> usize| mb.map(f).unwrap_or(0);
+        let mut need = 0usize;
+        if len(&|b| b.vlogits.len()) < kk * v * 4 {
+            need += kk * v * 4 + 2 * kk * ARGMAX_BLOCKS as usize * 4 + kk * 4;
+        }
+        if len(&|b| b.part.len()) < 4 * kk * v * 4 {
+            need += 4 * kk * v * 4;
+        }
+        if len(&|b| b.tune.len()) < kk * v * 4 {
+            need += kk * v * 4;
+        }
+        if c.delta.is_some() && len(&|b| b.side_s.len()) < (k - 1) * self.dn_s.len() {
+            need += (k - 1) * (self.dn_s.len() + self.dn_conv.len());
+        }
+        need
+    }
+
     /// Can `verify_rows` take `k` rows here: the multi-row kernels exist for every matrix, and weights in host memory (the CPU kernels) take at most 4 rows per sweep.
     pub fn can_verify_rows(&self, k: usize) -> bool {
         (2..=VERIFY_ROWS_MAX).contains(&k) && self.mrow_usable() && (self.cpu.is_none() || k <= 4)

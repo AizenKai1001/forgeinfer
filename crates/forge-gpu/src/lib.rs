@@ -4592,7 +4592,8 @@ impl<'m> GpuSession<'m> {
 
     /// Copy the recurrent state (hybrid models) so that a later request can continue from this position. Only meaningful for models with Gated DeltaNet layers.
     pub fn snapshot_state(&self) -> Result<StateSnapshot> {
-        let host = self.m.host_weight_bytes > 0;
+        // page-locked host memory (a 9B snapshot is 50 MB, copied in 4 ms at the boundary of a message): device memory is the scarce resource of an 8 GB card, FORGE_SNAP_DEVICE=1 keeps them there
+        let host = self.m.host_weight_bytes > 0 || std::env::var_os("FORGE_SNAP_DEVICE").is_none();
         let snap = StateSnapshot {
             pos: self.pos,
             s: SnapBuf::alloc(self.dn_s.len(), host)?,

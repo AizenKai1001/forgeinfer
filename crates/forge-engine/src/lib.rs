@@ -4,6 +4,7 @@
 //! rendered (chat template of the model family) and tokenized, the longest prefix shared with the tokens already in the KV cache is kept (prefix reuse), the rest is prefilled (tensor-core GEMM path
 //! for long prompts), then tokens are sampled one by one; the text goes through a UTF-8 safe detokenizer, a stop-string matcher and the reasoning / tool-call parser, and comes out as `Event`s.
 
+pub mod pld;
 pub mod text;
 
 use forge_chat::{CallFormat, ChatFormat, Event as ParseEvent, OutputParser};
@@ -498,6 +499,7 @@ fn engine_main(
     };
     let _ = ready.send(Ok((info, chat)));
     let speculate = cfg.speculate && gpu.has_mtp();
+    let lookup = cfg.speculate;
     let stop_ids: Vec<u32> = ["<|im_end|>", "<|endoftext|>", "<|end_of_text|>", "<|eot_id|>", "</s>"]
         .iter()
         .filter_map(|s| tok.token_id(s))
@@ -514,6 +516,7 @@ fn engine_main(
                 &stop_ids,
                 &cfg.defaults,
                 speculate,
+                lookup,
                 &job,
                 &stats,
             )
@@ -940,6 +943,7 @@ fn run_job(
     stop_ids: &[u32],
     defaults: &SamplingParams,
     speculate: bool,
+    lookup: bool,
     job: &Job,
     stats: &Mutex<Stats>,
 ) -> Result<()> {
@@ -1076,14 +1080,16 @@ fn run_job(
     };
     let t_decode = Instant::now();
     let mut spec = SpecStats::default();
-    let reason = generate(sess, slot, &mut sampler, &mut out, speculate, &mut spec)?;
-    if speculate && std::env::var("FORGE_SPEC_STATS").is_ok() && spec.cycles > 0 {
+    let reason = generate(sess, slot, &mut sampler, &mut out, speculate, lookup, &mut spec)?;
+    if std::env::var("FORGE_SPEC_STATS").is_ok() && spec.cycles > 0 {
         eprintln!(
-            "[spec] {} cycles, {} drafts accepted ({:.2} per cycle), by position in the chain {:?}; ms per cycle: draft {:.1}, verify sweep {:.1}, sampling {:.1}, cache update {:.1}",
+            "[spec] {} cycles ({} by lookup, {} of their drafts right), {} drafts accepted ({:.2} per cycle), by position in the chain {:?}; ms per cycle: draft {:.1}, verify sweep {:.1}, sampling {:.1}, cache update {:.1}",
             spec.cycles,
+            spec.pld_cycles,
+            spec.pld_accepted,
             spec.accepted,
             spec.accepted as f64 / spec.cycles as f64,
-            &spec.by_depth[..4],
+            &spec.by_depth[..7],
             spec.t_phase[0] / spec.cycles as f64 * 1e3,
             spec.t_phase[1] / spec.cycles as f64 * 1e3,
             spec.t_phase[2] / spec.cycles as f64 * 1e3,
@@ -1145,6 +1151,9 @@ struct SpecStats {
     by_depth: [usize; 8],
     /// wall time of the phases of the cycles, seconds (FORGE_SPEC_STATS=1 prints the mean per cycle): drafting, the verification sweep, sampling the tokens, the head's cache updates
     t_phase: [f64; 4],
+    /// cycles whose drafts came from the text itself (prompt lookup), and the drafts of them that were right
+    pld_cycles: usize,
+    pld_accepted: usize,
 }
 
 /// What happens to every token the generation loop accepts: the stop checks, the repetition-penalty history, detokenization, stop strings, the reasoning / tool-call parser and the events.
@@ -1231,12 +1240,15 @@ fn generate(
     sampler: &mut Sampler,
     out: &mut Output,
     speculate: bool,
+    lookup: bool,
     spec: &mut SpecStats,
 ) -> Result<FinishReason> {
     // a chain of drafts needs the multi-row verification: as many rows as the model's weights allow (4 with weights in host memory), one of them the pending token
     let depth: usize = std::env::var("FORGE_SPEC_DEPTH").ok().and_then(|v| v.parse().ok()).unwrap_or(1).min(7).min(sess.max_verify_rows().saturating_sub(1));
-    if speculate && depth >= 2 {
-        return generate_deep(sess, slot, sampler, out, depth, spec);
+    let mut pld = pld::Pld::from_env(speculate, sess.max_verify_rows());
+    pld.on &= lookup;
+    if (speculate && depth >= 2) || pld.on {
+        return generate_deep(sess, slot, sampler, out, depth, spec, speculate, pld);
     }
     let job = out.job;
     let mut delta = 10.0f32;
@@ -1296,10 +1308,47 @@ fn generate(
     }
 }
 
-/// The decoding loop with a CHAIN of drafts (FORGE_SPEC_DEPTH = 2 or more): the head drafts the token after the pending one `y`, then (applied to its own output) the one after that, and so on up to
-/// `depth` tokens; the main model runs `y` and all the drafts through the network in ONE sweep of the weights (`verify_rows`), and the tokens it chooses itself are compared with the drafts one
-/// after the other: the first row whose own token differs ends the cycle (its token is the next pending one), the drafts before it were right and cost nothing. As in `generate`, every emitted
-/// token is a sample of the main model's distribution given the text before it.
+/// The lookup's verification rows need their buffers (a hybrid model keeps a recurrent state per row, 50 MB each on the 4B): take them now, with fewer rows when the memory is not there (see
+/// `reserve_verify_rows`).
+fn reserve_lookup_rows(sess: &mut GpuSession, pld: &mut pld::Pld, head_rows: usize) {
+    let headroom = 0usize;
+    let mut rows = 1 + pld.max_draft;
+    // (rows the head's own chain verifies anyway need no new decision)
+    while rows >= 3 && rows > head_rows {
+        match sess.reserve_verify_rows(rows, headroom) {
+            Ok(()) => break,
+            Err(e) => {
+                if std::env::var("FORGE_SPEC_STATS").is_ok() {
+                    eprintln!("[pld] {rows} rows: {e}");
+                }
+                rows /= 2;
+            }
+        }
+    }
+    rows = rows.max(head_rows.min(1 + pld.max_draft));
+    if rows >= 3 {
+        pld.max_draft = rows - 1;
+    } else {
+        pld.on = false;
+    }
+    if std::env::var("FORGE_SPEC_STATS").is_ok() {
+        eprintln!(
+            "[pld] {}",
+            if pld.on {
+                format!("lookup drafts up to {} tokens per cycle", pld.max_draft)
+            } else {
+                "off (no memory for the verification rows)".to_string()
+            }
+        );
+    }
+}
+
+/// The decoding loop with a CHAIN of drafts (FORGE_SPEC_DEPTH = 2 or more) and/or drafts looked up in the text (FORGE_PLD=1, see `pld`): the head drafts the token after the pending one `y`, then (applied to
+/// its own output) the one after that, and so on up to `depth` tokens; or a run of tokens that followed the same words earlier in the text is proposed. The main model runs `y` and all the drafts through the
+/// network in ONE sweep of the weights (`verify_rows`), and the tokens it chooses itself are compared with the drafts one after the other: the first row whose own token differs ends the cycle (its token is
+/// the next pending one), the drafts before it were right and cost nothing. As in `generate`, every emitted token is a sample of the main model's distribution given the text before it, whoever drafted.
+/// `speculate`: the model has an MTP head (its cache is kept in step through every cycle, also the lookup ones).
+#[allow(clippy::too_many_arguments)]
 fn generate_deep(
     sess: &mut GpuSession,
     slot: &mut Vec<u32>,
@@ -1307,10 +1356,16 @@ fn generate_deep(
     out: &mut Output,
     depth: usize,
     spec: &mut SpecStats,
+    speculate: bool,
+    mut pld: pld::Pld,
 ) -> Result<FinishReason> {
     let job = out.job;
     let mut delta = 10.0f32;
     let mut token = next_token(sess, LogitsSrc::Main, sampler, &out.history, &mut delta)?;
+    if pld.on {
+        // (after the first token: the free memory is what is left of the request's own buffers)
+        reserve_lookup_rows(sess, &mut pld, if speculate { depth + 1 } else { 0 });
+    }
     loop {
         if job.cancel.load(Ordering::SeqCst) {
             return Ok(FinishReason::Cancelled);
@@ -1321,14 +1376,41 @@ fn generate_deep(
         if sess.pos + 1 >= sess.max_ctx() {
             return Ok(FinishReason::Length);
         }
+        pld.tick();
         let room = sess.max_ctx() - sess.pos - 1; // rows after the pending token that still fit
-        if sess.mtp_ready() && room >= 1 {
+        let head_ok = speculate && sess.mtp_ready();
+        // drafts from the text itself first: a run that repeats earlier words costs no head steps at all
+        let mut drafts: Vec<u32> = Vec::new();
+        let mut lookup_n = 0usize;
+        if pld.on && room >= 1 {
+            slot.push(token);
+            if let Some((n, d)) = pld.propose(slot, room) {
+                drafts = d;
+                lookup_n = n;
+            }
+            slot.pop();
+        }
+        let from_lookup = !drafts.is_empty();
+        if !from_lookup && !(head_ok && room >= 1) {
+            sess.advance(token)?;
+            slot.push(token);
+            token = next_token(sess, LogitsSrc::Main, sampler, &out.history, &mut delta)?;
+            continue;
+        }
+        let pos = sess.pos;
+        let t_a = std::time::Instant::now();
+        let mut rows: Vec<u32> = Vec::with_capacity(drafts.len().max(depth) + 1);
+        rows.push(token);
+        if from_lookup {
+            rows.extend_from_slice(&drafts);
+            if head_ok {
+                // the head's entry for the position before the pending token (a head cycle writes it while drafting)
+                let hidden = sess.hidden();
+                sess.mtp_step(token, hidden, pos - 1, false)?;
+            }
+        } else {
             let n_draft = depth.min(room);
-            let pos = sess.pos;
             let hidden = sess.hidden();
-            let t_a = std::time::Instant::now();
-            let mut rows: Vec<u32> = Vec::with_capacity(n_draft + 1);
-            rows.push(token);
             rows.push(sess.mtp_step(token, hidden, pos - 1, true)?.expect("the draft was requested"));
             let filled = sess.mtp_filled;
             for j in 1..n_draft {
@@ -1337,46 +1419,51 @@ fn generate_deep(
             }
             // (the chain wrote provisional entries for positions the main model has not seen: only what the verification confirms is real)
             sess.mtp_filled = filled;
-            let t_b = std::time::Instant::now();
-            sess.verify_rows(&rows)?;
-            let t_c = std::time::Instant::now();
-            slot.push(token);
-            spec.cycles += 1;
-            let mut keep = 1usize;
-            let mut z = next_token(sess, LogitsSrc::Rows(0), sampler, &out.history, &mut delta)?;
-            let mut fin = None;
-            while keep < rows.len() && z == rows[keep] {
-                spec.accepted += 1;
-                spec.by_depth[(keep - 1).min(7)] += 1;
-                slot.push(rows[keep]);
-                let hit = out.take(z);
-                keep += 1;
-                if hit.is_some() {
-                    fin = hit;
-                    break;
-                }
-                z = next_token(sess, LogitsSrc::Rows(keep - 1), sampler, &out.history, &mut delta)?;
+        }
+        let t_b = std::time::Instant::now();
+        sess.verify_rows(&rows)?;
+        let t_c = std::time::Instant::now();
+        slot.push(token);
+        spec.cycles += 1;
+        let mut keep = 1usize;
+        let mut z = next_token(sess, LogitsSrc::Rows(0), sampler, &out.history, &mut delta)?;
+        let mut fin = None;
+        while keep < rows.len() && z == rows[keep] {
+            spec.accepted += 1;
+            spec.by_depth[(keep - 1).min(7)] += 1;
+            slot.push(rows[keep]);
+            let hit = out.take(z);
+            keep += 1;
+            if hit.is_some() {
+                fin = hit;
+                break;
             }
-            let t_d = std::time::Instant::now();
-            sess.accept_rows(keep)?;
+            z = next_token(sess, LogitsSrc::Rows(keep - 1), sampler, &out.history, &mut delta)?;
+        }
+        if from_lookup {
+            spec.pld_cycles += 1;
+            spec.pld_accepted += keep - 1;
+            pld.record(lookup_n, keep - 1);
+        } else if pld.on && head_ok {
+            pld.record_head(keep - 1);
+        }
+        let t_d = std::time::Instant::now();
+        sess.accept_rows(keep)?;
+        if head_ok {
             // the head's cache entries for the confirmed positions need the token after each of them
             for j in 0..keep - 1 {
                 let h = sess.rows_hidden(j);
                 sess.mtp_step(rows[j + 1], h, pos + j, false)?;
             }
-            let t_e = std::time::Instant::now();
-            spec.t_phase[0] += (t_b - t_a).as_secs_f64();
-            spec.t_phase[1] += (t_c - t_b).as_secs_f64();
-            spec.t_phase[2] += (t_d - t_c).as_secs_f64();
-            spec.t_phase[3] += (t_e - t_d).as_secs_f64();
-            if let Some(r) = fin {
-                return Ok(r);
-            }
-            token = z;
-        } else {
-            sess.advance(token)?;
-            slot.push(token);
-            token = next_token(sess, LogitsSrc::Main, sampler, &out.history, &mut delta)?;
         }
+        let t_e = std::time::Instant::now();
+        spec.t_phase[0] += (t_b - t_a).as_secs_f64();
+        spec.t_phase[1] += (t_c - t_b).as_secs_f64();
+        spec.t_phase[2] += (t_d - t_c).as_secs_f64();
+        spec.t_phase[3] += (t_e - t_d).as_secs_f64();
+        if let Some(r) = fin {
+            return Ok(r);
+        }
+        token = z;
     }
 }

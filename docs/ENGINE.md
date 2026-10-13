@@ -71,6 +71,7 @@ forge-serve   the HTTP server (std only, one thread per connection)
 - **KV-cache compression** (`--kv`): keys and values are stored as 8-bit or 4-bit groups with per-group scales, inside the attention kernels.
 - **CPU/GPU split** for models bigger than the card: the planner keeps attention, the recurrent layers, the embeddings and the output head on the GPU and moves the feed-forward layers that do not fit into page-locked system memory; AVX2 kernels multiply them *inside the CUDA graph* while the GPU works on its own layers. Decode of such a model is limited by system-memory bandwidth, so `docs/PERFORMANCE.md` is mostly about reading fewer bytes per token.
 - **Speculative decoding** with the multi-token-prediction head that Qwen3.5 models ship: the head drafts 2 or 3 tokens, the main model verifies them in one pass over the weights (one sweep reads the weights once instead of three times, which is why it helps most when decode is bandwidth-bound).
+- **Prompt lookup** (any model, on by default): tokens that repeat earlier text are drafted from the text itself and verified in one pass, up to 2x on code edits, quotes and structured output; a guard and a memory check keep it out of the way elsewhere (`docs/PERFORMANCE.md`, `--no-lookup`).
 - **Chat caching**: the prompt prefix of the previous turn is reused; the recurrent state of hybrid models is snapshotted at the message boundary (right after the assistant header) so a follow-up turn only processes the new text.
 
 ## Recipes: mixing quantizations without re-quantizing

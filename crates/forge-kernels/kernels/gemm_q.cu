@@ -220,6 +220,16 @@ __device__ __forceinline__ void gemm_q_impl(const half* __restrict__ A, const QP
         for (int i = 0; i < 4; i++) ldsm_x4(fa[i], sa + a_ld + i * FRAG);
 #pragma unroll
         for (int j = 0; j < 2; j++) ldsm_x4(fb[j], sb + b_ld + j * FRAG);
+#if __CUDA_ARCH__ >= 800
+        // sm_80+: one m16n8k16 instead of two m16n8k8 (the k8 form runs at half the tensor-core rate on Ampere and Ada; the fragments loaded above are already k16 ones)
+#pragma unroll
+        for (int i = 0; i < 4; i++)
+#pragma unroll
+            for (int j = 0; j < 2; j++) {
+                gemm80::mma16(acc[i][2 * j], fa[i], fb[j][0], fb[j][1]);
+                gemm80::mma16(acc[i][2 * j + 1], fa[i], fb[j][2], fb[j][3]);
+            }
+#else
 #pragma unroll
         for (int s = 0; s < 2; s++)
 #pragma unroll
@@ -229,6 +239,7 @@ __device__ __forceinline__ void gemm_q_impl(const half* __restrict__ A, const QP
                     mma_k8(acc[i][2 * j], fa[i][2 * s], fa[i][2 * s + 1], fb[j][s]);
                     mma_k8(acc[i][2 * j + 1], fa[i][2 * s], fa[i][2 * s + 1], fb[j][2 + s]);
                 }
+#endif
         __syncthreads();
     }
     store_acc<EPI>(acc, Cv, M, N, ldc, alpha, nullptr, 0, 0.f, m0, n0, wm, wn, lane);

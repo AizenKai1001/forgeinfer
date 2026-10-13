@@ -3,9 +3,11 @@
 //!   forge serve <model> [--native | --q8 | --f16] [--tokenizer FILE] [--host H] [--port P] [--ctx N] [--alias NAME]
 //!                       [--chat chatml|smollm2|qwen3|qwen35|qwen35-think] [--api-key KEY] [--queue N]
 //!                       [--temp T] [--top-k K] [--top-p P] [--min-p P] [--repeat-penalty R] [--device D]
-//!                       [--mtp DIR|FILE] [--no-speculate]
+//!                       [--mtp DIR|FILE] [--no-speculate] [--no-lookup] [--lookup-draft N]
 //!                       [--kv fp16|int8|int4|k8v4] [--depth N] [--chunk N] [--threads N] [--host-ffn LAYERS|all] [--vram-reserve MIB]
 //!   --kv           quantized KV cache (int8 halves its memory with a negligible loss); --depth: drafted tokens per step of the MTP head (2 or 3 is best); --chunk: prompt tokens per prefill pass;
+//!   --no-lookup    no prompt-lookup drafting (on by default, any model: tokens that repeat earlier text are drafted from the text itself and verified in one sweep; --lookup-draft: at most N of them, default 7);
+//!   --no-speculate no speculative decoding at all (neither the MTP head nor the lookup);
 //!   --threads      CPU threads for the feed-forward layers kept in host memory; --host-ffn: force those layers (default: chosen automatically when the model does not fit the GPU);
 //!   --vram-reserve MiB of GPU memory left free for other programs.
 
@@ -115,10 +117,14 @@ pub fn serve(args: &[String]) -> i32 {
         ("--threads", "FORGE_CPU_THREADS"),
         ("--host-ffn", "FORGE_HOST_FFN"),
         ("--vram-reserve", "FORGE_VRAM_RESERVE_MIB"),
+        ("--lookup-draft", "FORGE_PLD_DRAFT"),
     ] {
         if let Some(v) = flag(args, name) {
             std::env::set_var(var, v);
         }
+    }
+    if args.iter().any(|a| a == "--no-lookup") {
+        std::env::set_var("FORGE_PLD", "0");
     }
     let t0 = std::time::Instant::now();
     let engine = match Engine::load(cfg) {

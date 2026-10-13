@@ -157,6 +157,8 @@ pub struct Settings {
     pub spec_depth: u32,
     /// Use a Qwen3.5 model's prediction head for speculative decoding when one is found next to the model (the ForgeInfer engine only).
     pub speculative: bool,
+    /// Prompt-lookup drafting of the ForgeInfer engine: tokens that repeat earlier text are drafted from the text itself (any model; up to twice as fast code edits, quotes, structured output).
+    pub lookup: bool,
     /// Port of the local server (the default is the one LM Studio uses, so tools that know it just work).
     pub port: u16,
     /// Listen on every network interface instead of this computer only.
@@ -197,6 +199,7 @@ impl Default for Settings {
             kv_cache: KvMode::Fp16,
             spec_depth: 0,
             speculative: true,
+            lookup: true,
             port: 1234,
             serve_on_lan: false,
             api_key: String::new(),

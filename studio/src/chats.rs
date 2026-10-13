@@ -86,6 +86,12 @@ pub struct Chat {
 
 pub const NEW_TITLE: &str = "New chat";
 
+/// The title a chat gets from its first message: one line, at most 42 characters.
+pub fn auto_title(text: &str) -> String {
+    let one_line: String = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    truncate(&one_line, 42)
+}
+
 impl Chat {
     pub fn new() -> Chat {
         let now = unix_secs();
@@ -104,12 +110,38 @@ impl Chat {
     pub fn retitle(&mut self) {
         if self.title == NEW_TITLE {
             if let Some(m) = self.messages.iter().find(|m| m.role == Role::User) {
-                let one_line: String = m.content.split_whitespace().collect::<Vec<_>>().join(" ");
-                if !one_line.is_empty() {
-                    self.title = truncate(&one_line, 42);
+                let title = auto_title(&m.content);
+                if !title.is_empty() {
+                    self.title = title;
                 }
             }
         }
+    }
+
+    /// A title typed by the user: one line of at most 80 characters. False (and nothing changes) when it is empty.
+    pub fn set_title(&mut self, title: &str) -> bool {
+        let one_line: String = title.split_whitespace().collect::<Vec<_>>().join(" ");
+        if one_line.is_empty() {
+            return false;
+        }
+        self.title = truncate(&one_line, 80);
+        true
+    }
+
+    /// The edit of user message `i`: it gets the new text and everything after it is dropped (the conversation is asked again from there).
+    /// False (and nothing changes) when `i` is not a user message or the text is empty.
+    pub fn replace_from(&mut self, i: usize, text: &str) -> bool {
+        let text = text.trim();
+        if text.is_empty() || !matches!(self.messages.get(i), Some(m) if m.role == Role::User) {
+            return false;
+        }
+        if i == 0 && self.title == auto_title(&self.messages[0].content) {
+            self.title = NEW_TITLE.to_string();
+        }
+        self.messages.truncate(i);
+        self.messages.push(Message::new(Role::User, text));
+        self.retitle();
+        true
     }
 
     /// The conversation as the server wants it: the system prompt, then every finished message (an answer that is empty or failed is left out).
@@ -261,6 +293,46 @@ mod tests {
         store.delete(&c.id);
         assert!(store.load(&c.id).is_none());
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn renaming_and_editing_a_chat() {
+        let mut c = Chat::new();
+        for (role, text) in [
+            (Role::User, "first question"),
+            (Role::Assistant, "answer"),
+            (Role::User, "second"),
+            (Role::Assistant, "answer 2"),
+        ] {
+            c.messages.push(Message::new(role, text));
+        }
+        c.retitle();
+        assert_eq!(c.title, "first question");
+        assert!(!c.set_title("   "));
+        assert_eq!(c.title, "first question");
+        assert!(c.set_title("My\n  project   notes"));
+        assert_eq!(c.title, "My project notes");
+        // editing the second user message drops what follows it and keeps a title the user chose
+        assert!(c.replace_from(2, "  second, better  "));
+        assert_eq!(c.messages.len(), 3);
+        assert_eq!(c.messages[2].content, "second, better");
+        assert_eq!(c.title, "My project notes");
+        // an answer, an empty text and a missing message are refused
+        assert!(!c.replace_from(1, "x"));
+        assert!(!c.replace_from(2, "  "));
+        assert!(!c.replace_from(9, "x"));
+        assert_eq!(c.messages.len(), 3);
+        // editing the first message of a chat with an automatic title renames it too
+        let mut d = Chat::new();
+        d.messages.push(Message::new(Role::User, "old question"));
+        d.messages.push(Message::new(Role::Assistant, "a"));
+        d.retitle();
+        assert!(d.replace_from(0, "new question"));
+        assert_eq!(d.title, "new question");
+        assert_eq!(d.messages.len(), 1);
+        // a long title is cut
+        assert!(d.set_title(&"x".repeat(200)));
+        assert!(d.title.chars().count() <= 81);
     }
 
     #[test]

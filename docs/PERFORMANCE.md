@@ -55,6 +55,31 @@ Two practical points:
 - The head is 0.24 GB for the 4B and 0.49 GB for the 9B. Forge Studio fetches it with HTTP range requests (only the `mtp.*` tensors of the original checkpoint, no multi-gigabyte download) from the model's card in My models, and uses it automatically; `tools/fetch_mtp.py` does the same from a shell, and `--mtp FILE --depth 3` passes it to `forge serve`.
 - **A window that redraws on every streamed token slows the engine down.** The first Studio build repainted for each token and measured 34.6 tokens/s with the head on, against 78 to 82 through the HTTP API alone: on Windows the graphics and the compute work of one GPU take turns, and speculative decoding makes many short steps. Studio now spaces repaints by 50 ms and measures 79.3 tokens/s in the window. (Without the head the loss had been smaller: 41.3 against 45.3.)
 
+## Prompt lookup: speculation for every model, up to 2x on edits
+
+The prediction head helps only Qwen3.5. **Prompt lookup** needs no head and no second model: when the last few tokens of the text (3 to 6 of them) also occur earlier, in the prompt or in the answer so far, the tokens that followed them there are proposed as drafts, and the main model verifies the whole run in one pass over the weights, exactly as it verifies the head's drafts. Code edits, quoted passages, corrections of a pasted text, lists and JSON repeat themselves, and then 4 to 8 tokens are confirmed per pass instead of 1. It is on by default (`--no-lookup` or `FORGE_PLD=0` switch it off, `--lookup-draft N` sets the longest run, default 7; `--no-speculate` turns off every kind of speculation).
+
+Measured with `tools/pld_bench.py` (a 45-line Python file to type-annotate, a JSON array to generate, a five-bullet summary with quotes, a grammar fix, and a free-prose explanation; 260 to 700 tokens each; the server's own timings), tokens per second without and with the lookup:
+
+| model, GPU | code edit | JSON | quotes | grammar fix | prose |
+|---|---|---|---|---|---|
+| Qwen3.5-4B, no head, RTX 4060 (greedy) | 79.5 to **156.7** (1.97x) | 80.3 to **128.0** (1.59x) | 80.2 to 86.7 (1.08x) | 81.0 to **170.3** (2.10x) | 81.0 to 80.3 |
+| Qwen3.5-4B, no head, RTX 4060 (T 0.7) | 78.9 to **155.5** (1.97x) | 79.8 to **122.8** (1.54x) | 79.7 to 89.7 (1.13x) | 80.4 to **167.8** (2.09x) | 80.2 to 80.3 |
+| Qwen3-4B (dense), no head, RTX 2060 SUPER (greedy) | 112.1 to **194.3** (1.73x) | 123.8 to 135.4 (1.09x) | 116.4 to **170.7** (1.47x) | 122.2 to **258.9** (2.12x) | 125.2 to 127.4 |
+| Qwen3.5-9B + head, RTX 4060 (greedy, 12 rows) | 106.5 to **144.5** (1.36x) | 108.3 to 108.5 | 93.9 to 114.3 (1.22x) | 116.4 to **162.4** (1.40x) | 76.1 to 75.9 |
+| Qwen3.5-9B + head, RTX 4060 (T 0.7, 8 rows) | 106.8 to **136.8** (1.28x) | 106.7 to 106.1 | 81.4 to 78.6 | 109.6 to **148.4** (1.35x) | 75.0 to 75.4 |
+| Qwen3.5-0.8B + head, RTX 4060 (T 0.7) | 480.9 to 588.0 (1.22x) | 596.5 to 649.5 | 467.5 to 488.0 | 602.4 to **814.1** (1.35x) | 327.1 to 326.2 |
+
+Free prose is unchanged (a lookup cycle is only used when its measured payoff beats the alternative), and a model that already has a head gains less because the head predicts copied text well too (the 9B drafts 2.6 accepted tokens per pass on the code edit even without the lookup).
+
+How it stays safe:
+
+- **The output is the model's own sample.** Every position of a verification pass is sampled from the main model's distribution (same sampler, same random stream), and a draft only saves time when it equals that sample. With a head (9B, 0.8B) every answer was word-for-word identical with and without the lookup, greedy and sampled with the same seed: the head's own cycles already verify through the multi-row kernels, so the numbers are the same. Without a head the multi-row kernels replace the single-token ones for the whole answer, which round slightly differently, and 6 of 15 answers matched exactly (4B greedy 3 of 5, 4B sampled 1 of 5, Qwen3-4B 2 of 5); the others diverged at a near-tie between two good words ("a machine riders propelled by their feet" against "a wooden running machine"), as speculative decoding with a head does.
+- **A guard measures instead of assuming.** The drafts accepted per lookup cycle are averaged per length of the matched n-gram and compared with the break-even point against the alternative (the head's own running average, or one plain step); a length that does badly is dropped and retried after a while.
+- **Memory is checked first.** A hybrid model (Qwen3.5) keeps one recurrent state per verified row (50 MB each on the 4B). The engine reserves the verification buffers once, only when `cuMemGetInfo` shows at least 200 MiB left afterwards (`FORGE_VERIFY_MARGIN_MIB`), and drops to fewer rows otherwise. This matters on a Windows GPU: with 12 verification rows on the 9B in 8 GB the free memory fell to 157 MiB and every sweep took 63 ms instead of 26 (the driver pages), while 8 rows (367 MiB left) and 10 rows (260 MiB) showed no loss. The snapshots of hybrid models at message boundaries now live in page-locked host memory (50 MB, 4 ms to copy) to leave room for the rows; `FORGE_SNAP_DEVICE=1` keeps them on the GPU.
+
+A smaller finding from the same session: the fused dequantizing prefill GEMM used the `m16n8k8` tensor-core instruction on every GPU; on sm_80 and newer it now uses `m16n8k16`, which is worth about 2 % of prefill on the RTX 4060. The kernel was already at roughly 85 % of the card's fp16 tensor-core peak (24 to 27 TFLOPs on the Q4_K shapes), so the remaining prefill gap to llama.cpp is the int8 path described in the [roadmap](ROADMAP.md).
+
 ## A 27B model on an 8 GB card
 
 Qwen3.5-27B has 64 layers; a 4-bit file is 16 to 17 GB. The engine keeps the attention and recurrent layers, the embeddings, the head and the KV cache on the card and runs the feed-forward layers that do not fit (62 of 64) from page-locked system memory with AVX2 kernels inside the CUDA graph. Decode is then bounded by system-memory bandwidth (about 40 GB/s of weights per token set), not by the GPU.

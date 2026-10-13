@@ -70,6 +70,9 @@ pub enum Action {
     Stop,
     Regenerate,
     DeleteMessage(usize),
+    RenameChat(String, String),
+    /// Edit user message `i` to this text, drop the conversation after it and ask again.
+    EditResend(usize, String),
     LoadModel(PathBuf),
     Eject,
     Rescan,
@@ -167,6 +170,10 @@ pub struct StartupOpts {
     pub stop_after: Option<f32>,
     /// Open the newest saved chat instead of an empty one.
     pub open_last: bool,
+    /// Start with the editor open on this message (screenshots of the editor).
+    pub edit_msg: Option<usize>,
+    /// Start with the newest chat of the list being renamed (screenshots).
+    pub rename_first: bool,
 }
 
 pub struct ShotState {
@@ -209,6 +216,12 @@ pub struct StudioApp {
     pub scroll_to_bottom: bool,
     pub show_params: bool,
     pub last_speed: Option<f32>,
+    /// The search box above the chat list.
+    pub chat_filter: String,
+    /// A chat being renamed in the list: (id, text, first frame).
+    pub renaming: Option<(String, String, bool)>,
+    /// A user message being edited: (index, text, first frame).
+    pub editing: Option<(usize, String, bool)>,
 
     pub hf_query: String,
     pub hf_results: Vec<Repo>,
@@ -280,6 +293,9 @@ impl StudioApp {
             scroll_to_bottom: false,
             show_params: false,
             last_speed: None,
+            chat_filter: String::new(),
+            renaming: None,
+            editing: None,
             hf_query: opts.hf_query.clone().unwrap_or_default(),
             hf_results: Vec::new(),
             hf_busy: false,
@@ -308,6 +324,16 @@ impl StudioApp {
         };
         if opts.demo {
             app.chat = demo_chat();
+        }
+        if let Some(i) = opts.edit_msg {
+            if let Some(m) = app.chat.messages.get(i) {
+                app.editing = Some((i, m.content.clone(), true));
+            }
+        }
+        if opts.rename_first {
+            if let Some(m) = app.chat_list.first() {
+                app.renaming = Some((m.id.clone(), m.title.clone(), true));
+            }
         }
         app.detect_hardware();
         app.rescan();
@@ -547,6 +573,7 @@ impl StudioApp {
                 self.settings.spec_depth
             },
             mtp,
+            lookup: self.settings.lookup,
             api_key: self.settings.api_key.clone(),
             extra: self
                 .settings
@@ -691,6 +718,7 @@ impl StudioApp {
     }
 
     fn begin_answer(&mut self, ep: Endpoint, model: String) {
+        self.editing = None;
         let mut reply = Message::new(Role::Assistant, "");
         reply.streaming = true;
         let messages = self.chat.api_messages(&self.settings.system_prompt);
@@ -730,6 +758,7 @@ impl StudioApp {
 
     pub fn new_chat(&mut self) {
         self.generation_cancel();
+        self.editing = None;
         self.save_chat();
         self.chat = Chat::new();
         self.input.clear();
@@ -741,6 +770,7 @@ impl StudioApp {
             return;
         }
         self.generation_cancel();
+        self.editing = None;
         self.save_chat();
         if let Some(c) = self.store.load(id) {
             self.chat = c;
@@ -752,9 +782,39 @@ impl StudioApp {
         self.store.delete(id);
         if self.chat.id == id {
             self.generation_cancel();
+            self.editing = None;
             self.chat = Chat::new();
         }
         self.chat_list = self.store.list();
+    }
+
+    pub fn rename_chat(&mut self, id: &str, title: &str) {
+        if self.opts.demo {
+            return;
+        }
+        if self.chat.id == id {
+            if self.chat.set_title(title) && !self.chat.messages.is_empty() {
+                let _ = self.store.save(&self.chat);
+            }
+        } else if let Some(mut c) = self.store.load(id) {
+            if c.set_title(title) {
+                let _ = self.store.save(&c);
+            }
+        }
+        self.chat_list = self.store.list();
+    }
+
+    pub fn edit_and_resend(&mut self, i: usize, text: &str) {
+        if self.generation.is_some() {
+            return;
+        }
+        let Some((ep, model)) = self.active_endpoint() else {
+            self.toast("Load a model first (pick one in the bar above, or in My models).");
+            return;
+        };
+        if self.chat.replace_from(i, text) {
+            self.begin_answer(ep, model);
+        }
     }
 
     fn handle(&mut self, m: Msg) {
@@ -1043,6 +1103,8 @@ impl StudioApp {
                 Action::Send => self.send(),
                 Action::Stop => self.stop_generation(),
                 Action::Regenerate => self.regenerate(),
+                Action::RenameChat(id, title) => self.rename_chat(&id, &title),
+                Action::EditResend(i, text) => self.edit_and_resend(i, &text),
                 Action::DeleteMessage(i) => {
                     if i < self.chat.messages.len() && self.generation.is_none() {
                         self.chat.messages.remove(i);

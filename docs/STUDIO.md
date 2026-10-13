@@ -16,9 +16,9 @@ Tagged versions get release archives for Windows (Studio and the CUDA engine), L
 - Pick a model in the bar at the top; **Load** starts the engine on it. The bar shows the load time when it is ready.
 - Answers stream in. Markdown is rendered: headings, bold and italic, inline code, fenced code blocks (with a Copy button), lists (nested), tables, quotes, links (click to open). A reply that is still streaming is rendered as it grows; an unclosed code fence is a code block up to the end.
 - Thinking models (Qwen3, Qwen3.5) show a folded **Thought for N s** block above the answer; it is open while the model is still thinking. The switch is in **Parameters**.
-- Under each answer: tokens, tokens per second (the server's own figure when it reports one), time to first token; **Copy**, **Regenerate**, **Delete**.
+- Under each answer: tokens, tokens per second (the server's own figure when it reports one), time to first token; **Copy**, **Regenerate**, **Delete**. Under your own messages: **Edit** (change the text, **Save and resend** drops everything after it and asks again), **Copy**, **Delete**.
 - **Parameters** (the button at the top right): temperature, top P, top K, min P, repeat penalty, max tokens, thinking (*model default*, always, or answer directly: the small Qwen3.5 models answer directly by default, the bigger ones think), the system prompt (global, and one for this chat only).
-- Chats are saved after every answer, one JSON file each in the data folder; the list on the left opens, deletes and starts chats. **Copy chat** puts the conversation on the clipboard as Markdown.
+- Chats are saved after every answer, one JSON file each in the data folder; the list on the left opens, deletes and starts chats; double-click a title to rename it; with more than four chats a search box filters the list by title. **Copy chat** puts the conversation on the clipboard as Markdown.
 - Enter sends, Shift+Enter adds a line, **Stop** cancels (the engine stops generating as soon as the connection closes). Under the input box: how much of the loaded context the conversation uses.
 
 ### My models
@@ -63,6 +63,10 @@ Settings → Engine picks what runs the models:
 | **Connect to a running server** | nothing is started: Studio talks to the address you enter | an OpenAI-compatible server (Ollama on `:11434`, LM Studio on `:1234`, vLLM, the engine on another computer) |
 
 Settings → When a model loads: context length, KV-cache mode (16-bit, 8-bit, 4-bit), speculative depth (Qwen3.5 models draft tokens with their own prediction head; 2 to 3 is fastest), extra engine arguments, "load the last model when the app starts", and **Unload after N idle minutes** (frees the video memory for games; any request to the local server counts as activity).
+
+## Prompt lookup (any model)
+
+Settings > When a model loads > **Prompt lookup** (on by default, ForgeInfer engine): when an answer repeats words from the prompt or from earlier in the answer (code edits, quotes, corrected text, lists, JSON), the engine proposes the next tokens from there and verifies them in one pass over the weights. Measured up to 2x faster on such answers with models that have no prediction head at all, and no cost on free prose (see [PERFORMANCE.md](PERFORMANCE.md#prompt-lookup-speculation-for-every-model-up-to-2x-on-edits)). It adds `--no-lookup` to the engine's command line when you switch it off.
 
 ## Speculative decoding (the prediction head)
 

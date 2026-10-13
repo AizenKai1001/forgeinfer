@@ -8,6 +8,7 @@
 //!   --search TEXT      run a Hugging Face search at start     --inspect PATH  open the inspector on a GGUF file
 //!   --shot PATH        save a screenshot as PNG and quit       --shot-delay S  wait S seconds first       --shot-after-reply
 //!   --stop-after S     press Stop S seconds after a reply starts (tests)
+//!   --edit-msg N       open the editor on message N        --rename-first  start renaming the newest chat of the list (screenshots)
 //!   --size WxH         window size in points
 
 #![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
@@ -60,6 +61,14 @@ fn parse_args() -> Result<StartupOpts, String> {
             }
             "--demo" => o.demo = true,
             "--open-last" => o.open_last = true,
+            "--edit-msg" => {
+                o.edit_msg = Some(
+                    value("--edit-msg")?
+                        .parse()
+                        .map_err(|_| "--edit-msg needs a number".to_string())?,
+                )
+            }
+            "--rename-first" => o.rename_first = true,
             "--load" => o.load = Some(value("--load")?.into()),
             "--select" => o.select_model = Some(value("--select")?),
             "--send" => o.send = Some(value("--send")?),

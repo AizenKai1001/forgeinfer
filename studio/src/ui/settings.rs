@@ -162,6 +162,11 @@ fn loading(app: &mut StudioApp, ui: &mut Ui) {
             "Speculative decoding with the prediction head of Qwen3.5 models, when one is found",
         );
         muted(ui, "A Qwen3.5 model comes with a small head that guesses the next tokens; the engine checks the guesses in one pass over the weights. About 1.5 to 2 times faster answers; get the head from the model's card in My models.");
+        ui.checkbox(
+            &mut app.settings.lookup,
+            "Prompt lookup: draft repeated text from the conversation itself (any model)",
+        );
+        muted(ui, "When the answer repeats words from the prompt or from earlier in the answer (code edits, quotes, lists, JSON), the engine proposes the next tokens from there and checks them in one pass over the weights. Up to twice as fast on such answers, no cost elsewhere; the text is the same a model would write without it.");
         ui.horizontal(|ui| {
             ui.label("Speculative depth");
             ui.add(egui::DragValue::new(&mut app.settings.spec_depth).range(0..=7));

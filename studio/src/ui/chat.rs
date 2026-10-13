@@ -64,7 +64,18 @@ fn chat_list(app: &mut StudioApp, ui: &mut Ui) {
     if primary_button(ui, "+  New chat").clicked() {
         app.actions.push(Action::NewChat);
     }
-    ui.add_space(8.0);
+    ui.add_space(6.0);
+    if app.chat_list.len() > 4 {
+        ui.add(
+            TextEdit::singleline(&mut app.chat_filter)
+                .hint_text("Search chats")
+                .desired_width(f32::INFINITY),
+        );
+    } else {
+        app.chat_filter.clear();
+    }
+    ui.add_space(6.0);
+    let query = app.chat_filter.trim().to_lowercase();
     ScrollArea::vertical()
         .auto_shrink([false, false])
         .show(ui, |ui| {
@@ -78,10 +89,45 @@ fn chat_list(app: &mut StudioApp, ui: &mut Ui) {
                 if m.id == current {
                     shown_current = true;
                 }
+                if !query.is_empty() && !m.title.to_lowercase().contains(&query) {
+                    continue;
+                }
+                let renaming_this = matches!(&app.renaming, Some((rid, _, _)) if *rid == m.id);
                 let (rect, resp) = ui.allocate_exact_size(
                     egui::vec2(ui.available_width(), 28.0),
-                    egui::Sense::click(),
+                    if renaming_this {
+                        egui::Sense::hover()
+                    } else {
+                        egui::Sense::click()
+                    },
                 );
+                if renaming_this {
+                    let mut commit = None;
+                    let mut cancel = false;
+                    if let Some((_, buf, fresh)) = app.renaming.as_mut() {
+                        let place = rect.shrink2(egui::vec2(2.0, 1.0));
+                        let te = ui.put(
+                            place,
+                            TextEdit::singleline(buf).desired_width(place.width()),
+                        );
+                        if *fresh {
+                            te.request_focus();
+                            *fresh = false;
+                        }
+                        if ui.input(|i| i.key_pressed(Key::Escape)) {
+                            cancel = true;
+                        } else if te.lost_focus() {
+                            commit = Some(buf.clone());
+                        }
+                    }
+                    if let Some(title) = commit {
+                        app.actions.push(Action::RenameChat(m.id.clone(), title));
+                        app.renaming = None;
+                    } else if cancel {
+                        app.renaming = None;
+                    }
+                    continue;
+                }
                 let selected = m.id == current;
                 let fill = if selected {
                     theme::CARD_HOVER
@@ -117,8 +163,11 @@ fn chat_list(app: &mut StudioApp, ui: &mut Ui) {
                         },
                     );
                 }
+                resp.clone().on_hover_text("Double-click to rename");
                 if x_resp.clicked() {
                     app.actions.push(Action::DeleteChat(m.id.clone()));
+                } else if resp.double_clicked() {
+                    app.renaming = Some((m.id.clone(), m.title.clone(), true));
                 } else if resp.clicked() {
                     app.actions.push(Action::OpenChat(m.id.clone()));
                 }
@@ -365,6 +414,56 @@ fn message_view(app: &mut StudioApp, ui: &mut Ui, i: usize, last: bool) {
     let m = app.chat.messages[i].clone();
     let width = ui.available_width();
     match m.role {
+        Role::User | Role::System if matches!(&app.editing, Some((idx, _, _)) if *idx == i) => {
+            let mut save = None;
+            let mut cancel = false;
+            ui.with_layout(Layout::right_to_left(Align::Min), |ui| {
+                Frame::new()
+                    .fill(theme::USER_BUBBLE)
+                    .corner_radius(CornerRadius::same(14))
+                    .inner_margin(Margin::symmetric(14, 10))
+                    .show(ui, |ui| {
+                        let w = (width * 0.82 - 28.0).max(240.0);
+                        ui.set_width(w);
+                        // the frame inherits the right-to-left layout of its row: stack the editor and its buttons explicitly
+                        ui.vertical(|ui| {
+                            if let Some((_, buf, fresh)) = app.editing.as_mut() {
+                                let te = ui.add(
+                                    TextEdit::multiline(buf)
+                                        .desired_width(w)
+                                        .desired_rows(2)
+                                        .font(egui::FontId::proportional(15.0)),
+                                );
+                                if *fresh {
+                                    te.request_focus();
+                                    *fresh = false;
+                                }
+                                ui.add_space(4.0);
+                                ui.horizontal(|ui| {
+                                    if primary_button(ui, "Save and resend").clicked() {
+                                        save = Some(buf.clone());
+                                    }
+                                    if ui.button("Cancel").clicked() {
+                                        cancel = true;
+                                    }
+                                    ui.label(
+                                        RichText::new(
+                                            "The answers after this message are dropped.",
+                                        )
+                                        .small()
+                                        .color(theme::MUTED),
+                                    );
+                                });
+                            }
+                        });
+                    });
+            });
+            if let Some(text) = save {
+                app.actions.push(Action::EditResend(i, text));
+            } else if cancel || ui.input(|i| i.key_pressed(Key::Escape)) {
+                app.editing = None;
+            }
+        }
         Role::User | Role::System => {
             ui.with_layout(Layout::right_to_left(Align::Min), |ui| {
                 Frame::new()
@@ -400,6 +499,17 @@ fn message_view(app: &mut StudioApp, ui: &mut Ui, i: usize, last: bool) {
                     .clicked()
                 {
                     ui.ctx().copy_text(m.content.clone());
+                }
+                if m.role == Role::User
+                    && !app.is_generating()
+                    && ui
+                        .add(
+                            egui::Button::new(RichText::new("Edit").small().color(theme::MUTED))
+                                .frame(false),
+                        )
+                        .clicked()
+                {
+                    app.editing = Some((i, m.content.clone(), true));
                 }
             });
         }
