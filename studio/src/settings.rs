@@ -315,7 +315,32 @@ pub fn settings_path() -> PathBuf {
 impl Settings {
     /// The text of a settings file; Windows editors (Notepad, PowerShell 5) put a byte-order mark in front of it.
     pub fn parse(text: &str) -> serde_json::Result<Settings> {
-        serde_json::from_str(text.trim_start_matches('\u{feff}'))
+        let mut s: Settings = serde_json::from_str(text.trim_start_matches('\u{feff}'))?;
+        s.sanitize();
+        Ok(s)
+    }
+
+    /// A file edited by hand may hold values that no engine can use: bring them into range.
+    pub fn sanitize(&mut self) {
+        self.context_len = self.context_len.clamp(512, 4_194_304);
+        if self.port < 1024 {
+            self.port = 1234;
+        }
+        let d = GenParams::default();
+        let fix = |v: &mut f32, lo: f32, hi: f32, default: f32| {
+            *v = if v.is_finite() {
+                v.clamp(lo, hi)
+            } else {
+                default
+            };
+        };
+        fix(&mut self.gen.temperature, 0.0, 5.0, d.temperature);
+        fix(&mut self.gen.top_p, 0.0, 1.0, d.top_p);
+        fix(&mut self.gen.min_p, 0.0, 1.0, d.min_p);
+        fix(&mut self.gen.repeat_penalty, 0.5, 3.0, d.repeat_penalty);
+        self.gen.top_k = self.gen.top_k.min(100_000);
+        self.spec_depth = self.spec_depth.min(7);
+        fix(&mut self.zoom, 0.7, 2.0, 1.0);
     }
 
     pub fn load() -> Settings {
@@ -472,6 +497,27 @@ mod tests {
         let s = Settings::parse("\u{feff}{\"port\": 4321}").unwrap();
         assert_eq!(s.port, 4321);
         assert!(Settings::parse("not json").is_err());
+    }
+
+    #[test]
+    fn values_that_no_engine_can_use_are_brought_into_range() {
+        let s = Settings::parse(r#"{"context_len": 0, "port": 80, "spec_depth": 99, "zoom": 50.0, "gen": {"temperature": 99.0, "top_p": -1.0, "repeat_penalty": 0.0, "top_k": 4000000000}}"#).unwrap();
+        assert_eq!(s.context_len, 512);
+        assert_eq!(s.port, 1234);
+        assert_eq!(s.spec_depth, 7);
+        assert_eq!(s.zoom, 2.0);
+        assert_eq!(s.gen.temperature, 5.0);
+        assert_eq!(s.gen.top_p, 0.0);
+        assert_eq!(s.gen.repeat_penalty, 0.5);
+        assert_eq!(s.gen.top_k, 100_000);
+        // sensible values stay as they are
+        let t =
+            Settings::parse(r#"{"context_len": 16384, "port": 4321, "gen": {"temperature": 0.3}}"#)
+                .unwrap();
+        assert_eq!(
+            (t.context_len, t.port, t.gen.temperature),
+            (16384, 4321, 0.3)
+        );
     }
 
     #[test]
