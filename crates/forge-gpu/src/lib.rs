@@ -1804,7 +1804,7 @@ impl<'m> GpuSession<'m> {
         let mut sin = vec![0f32; max_ctx * half];
         for p in 0..max_ctx {
             for i in 0..half {
-                let inv = (c.rope_theta as f64).powf(-((2 * i) as f64) / c.rotary_dim as f64);
+                let inv = (c.rope_theta as f64).powf(-((2 * i) as f64) / c.rotary_dim as f64) / c.rope_factors.as_ref().map_or(1.0, |f| f[i] as f64);
                 let a = p as f64 * inv;
                 cos[p * half + i] = a.cos() as f32;
                 sin[p * half + i] = a.sin() as f32;

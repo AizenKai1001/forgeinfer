@@ -70,6 +70,9 @@ pub struct Config {
     pub vocab: usize,
     pub rms_eps: f32,
     pub rope_theta: f32,
+    /// per rotation pair (rotary_dim / 2 entries): the divisor of its frequency (Llama 3.1 and 3.2 stretch the slow pairs: llama.cpp's converter stores them as the tensor `rope_freqs.weight`, a Hugging Face
+    /// config describes them as `rope_scaling` of type llama3). None: all 1.
+    pub rope_factors: Option<Vec<f32>>,
     pub max_ctx: usize,
     pub qk_norm: bool,
     /// the query, key and value projections carry a bias (Qwen2)
@@ -202,6 +205,7 @@ impl Config {
                 .get_f64(&format!("{a}.attention.layer_norm_rms_epsilon"))
                 .unwrap_or(1e-5) as f32,
             rope_theta: g.get_f64(&format!("{a}.rope.freq_base")).unwrap_or(10000.0) as f32,
+            rope_factors: None,
             max_ctx: g.get_u64(&format!("{a}.context_length")).unwrap_or(4096) as usize,
             qk_norm: arch.has_qk_norm(),
             qkv_bias: arch == Arch::Qwen2,
@@ -229,8 +233,10 @@ impl Config {
         if arch == Arch::Qwen2 && c["use_sliding_window"].as_bool().unwrap_or(false) {
             return Err(Error::unsupported("Qwen2 with sliding-window attention (use_sliding_window)"));
         }
-        if !c["rope_scaling"].is_null() {
-            eprintln!("[model] note: config.json has rope_scaling, which is not implemented: positions use plain RoPE");
+        let scaling = &c["rope_scaling"];
+        let scaling_type = scaling["rope_type"].as_str().or_else(|| scaling["type"].as_str()).unwrap_or("");
+        if !scaling.is_null() && scaling_type != "llama3" {
+            eprintln!("[model] note: config.json has rope_scaling of type {scaling_type:?}, which is not implemented: positions use plain RoPE");
         }
         // the multimodal Qwen3.5 repositories nest the text model
         let t = if arch == Arch::Qwen35 && !c["text_config"].is_null() {
@@ -272,6 +278,15 @@ impl Config {
                 tiled_v: false,
             });
         }
+        let rope_factors = if scaling_type == "llama3" {
+            let sc = |k: &str| scaling[k].as_f64();
+            match (sc("factor"), sc("low_freq_factor"), sc("high_freq_factor"), sc("original_max_position_embeddings")) {
+                (Some(f), Some(lo), Some(hi), Some(orig)) => Some(llama3_rope_factors(rope_theta, rotary_dim, f, lo, hi, orig)),
+                _ => return Err(Error::format("config.json: rope_scaling of type llama3 without its factor, low_freq_factor, high_freq_factor and original_max_position_embeddings")),
+            }
+        } else {
+            None
+        };
         Ok(Config {
             arch,
             n_layer: g("num_hidden_layers")?,
@@ -283,6 +298,7 @@ impl Config {
             vocab: g("vocab_size")?,
             rms_eps: t["rms_norm_eps"].as_f64().unwrap_or(1e-5) as f32,
             rope_theta: rope_theta as f32,
+            rope_factors,
             max_ctx: t["max_position_embeddings"].as_usize().unwrap_or(4096),
             qk_norm: arch.has_qk_norm(),
             qkv_bias: arch == Arch::Qwen2,
@@ -298,9 +314,57 @@ impl Config {
     }
 }
 
+/// The frequency divisors of Llama 3.1 / 3.2 ("llama3" rope scaling, as llama.cpp's converter computes them for `rope_freqs.weight`): pairs whose wavelength is shorter than original / high_freq_factor keep their
+/// frequency, those longer than original / low_freq_factor are divided by `factor`, the ones in between are interpolated.
+pub fn llama3_rope_factors(theta: f64, rotary_dim: usize, factor: f64, low_freq_factor: f64, high_freq_factor: f64, original_ctx: f64) -> Vec<f32> {
+    let low_wavelen = original_ctx / low_freq_factor;
+    let high_wavelen = original_ctx / high_freq_factor;
+    (0..rotary_dim / 2)
+        .map(|i| {
+            let freq = theta.powf(-((2 * i) as f64) / rotary_dim as f64);
+            let wavelen = 2.0 * std::f64::consts::PI / freq;
+            let f = if wavelen < high_wavelen {
+                1.0
+            } else if wavelen > low_wavelen {
+                factor
+            } else {
+                let smooth = (original_ctx / wavelen - low_freq_factor) / (high_freq_factor - low_freq_factor);
+                1.0 / ((1.0 - smooth) / factor + smooth)
+            };
+            f as f32
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Llama-3.2-1B: theta 500000, 64-wide heads, factor 32, low 1, high 4, original context 8192. The first pairs (wavelength 6.3 ...) keep their frequency, the slowest (3.4 million) are divided by 32, and the
+    /// factors in between fall monotonically from 1 to 32.
+    #[test]
+    fn llama3_factors_have_the_documented_shape() {
+        let f = llama3_rope_factors(500000.0, 64, 32.0, 1.0, 4.0, 8192.0);
+        assert_eq!(f.len(), 32);
+        assert_eq!(f[0], 1.0);
+        assert_eq!(f[31], 32.0);
+        assert!(f.windows(2).all(|w| w[1] >= w[0]), "{f:?}");
+        // wavelengths: pair 0 6.28 (< 2048 keeps 1), pair 31 3.4e6 (> 8192 gets 32); the smoothed pairs lie strictly between
+        let mid: Vec<f32> = f.iter().copied().filter(|&v| v > 1.0 && v < 32.0).collect();
+        assert!(!mid.is_empty() && mid.iter().all(|&v| v > 1.0 && v < 32.0));
+        // the independent formula of Hugging Face's _compute_llama3_parameters, evaluated per pair
+        for (i, &fac) in f.iter().enumerate() {
+            let inv = 500000f64.powf(-((2 * i) as f64) / 64.0);
+            let wavelen = 2.0 * std::f64::consts::PI / inv;
+            let mut inv_llama = if wavelen > 8192.0 { inv / 32.0 } else { inv };
+            let smooth = (8192.0 / wavelen - 1.0) / (4.0 - 1.0);
+            let smoothed = (1.0 - smooth) * inv_llama / 32.0 + smooth * inv_llama;
+            if !(wavelen < 8192.0 / 4.0) && !(wavelen > 8192.0 / 1.0) {
+                inv_llama = smoothed;
+            }
+            assert!(((inv / fac as f64) - inv_llama).abs() <= 1e-6 * inv, "pair {i}: {} against {}", inv / fac as f64, inv_llama);
+        }
+    }
 
     const GOOD: &str = r#"{"model_type":"llama","hidden_size":64,"num_attention_heads":4,"num_hidden_layers":2,"intermediate_size":128,"vocab_size":100}"#;
 

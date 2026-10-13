@@ -21,7 +21,7 @@ Forge Studio's **My models** shows a model's architecture and tokenizer type; **
 | Qwen2.5-0.5B-Instruct (Q4_K_M: Q5_0, Q8_0, Q4_K and Q6_K tensors, 14 query heads over 2 key/value heads) | the GPU logits agree with the f32 reference of the same file (cosine 0.9993 to 0.9999 on three prompts, decode and prompt paths); against llama.cpp b11517 the chat template renders the same prompt tokens in 8 of 8 conversations, 3 of 8 greedy answers are identical and, with llama.cpp's answers fed through the engine, the engine picks the same next token at 97.8 percent of 920 positions (every disagreement a near-tie, at most 0.23 nats); tool calls parse |
 | Qwen3.5 0.8B, 4B, 9B, 27B | greedy output identical to llama.cpp on the 4B and 9B for the first 40 tokens; the 27B runs through the CPU/GPU split on an 8 GB card; speculative decoding with the prediction head |
 | tokenizers from the GGUF file | the tokenizer built from a GGUF agrees with Hugging Face's `tokenizer.json` on all 475 recorded cases per model family (SmolLM2, Qwen3, Qwen3.5) and on an extra set of awkward strings (Unicode, digits, code, whitespace, special tokens) |
-| Llama 3 | the tokenizer pattern and the chat format are implemented and unit-tested, **not yet checked against real Llama 3 weights** |
+| Llama 3 | the tokenizer pattern, the chat format and the Llama 3.1 / 3.2 rope scaling (the `rope_freqs.weight` tensor of a GGUF file, or `rope_scaling` of type llama3 in a Hugging Face config: unit-tested against the Hugging Face formula) are implemented, **not yet checked against real Llama 3 weights** |
 
 Other sizes of these families (for example Qwen3.5-2B) should load, but the author has not run them: reports are welcome.
 

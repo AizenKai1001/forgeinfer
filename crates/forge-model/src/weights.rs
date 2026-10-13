@@ -546,7 +546,15 @@ impl Model {
             Ok(m)
         } else {
             let g = Gguf::open(path)?;
-            let cfg = Config::from_gguf(&g)?;
+            let mut cfg = Config::from_gguf(&g)?;
+            // Llama 3.1 / 3.2 files carry the frequency divisors of their rope scaling as a tensor
+            if g.tensor_info("rope_freqs.weight").is_some() {
+                let f = g.tensor_f32("rope_freqs.weight")?;
+                if f.len() != cfg.rotary_dim / 2 {
+                    return Err(Error::format(format!("rope_freqs.weight has {} values, expected {}", f.len(), cfg.rotary_dim / 2)));
+                }
+                cfg.rope_factors = Some(f);
+            }
             let permuted = cfg.arch == Arch::Llama; // llama-architecture GGUFs carry the permuted Q/K layout
             let overrides = load_recipe(cfg.n_layer)?;
             let src = Source {
