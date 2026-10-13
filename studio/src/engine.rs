@@ -133,6 +133,8 @@ pub struct EngineManager {
     shared: Arc<Mutex<Shared>>,
     child: Option<Child>,
     launch: Option<Launch>,
+    /// when the process was seen to have ended: its last lines of output are still on their way through the reader threads
+    exited: Option<(Instant, std::process::ExitStatus)>,
 }
 
 impl Default for EngineManager {
@@ -144,6 +146,7 @@ impl Default for EngineManager {
             })),
             child: None,
             launch: None,
+            exited: None,
         }
     }
 }
@@ -252,6 +255,7 @@ impl EngineManager {
             since,
         });
         self.child = Some(child);
+        self.exited = None;
         self.launch = Some(launch.clone());
 
         // watcher: ask the server for its model list until it answers
@@ -288,13 +292,25 @@ impl EngineManager {
         let Some(child) = self.child.as_mut() else {
             return;
         };
-        if let Ok(Some(status)) = child.try_wait() {
+        if self.exited.is_none() {
+            if let Ok(Some(status)) = child.try_wait() {
+                self.exited = Some((Instant::now(), status));
+            }
+        }
+        // the reader threads still carry the last lines (the reason of a failure is usually the last one): look again a moment later
+        if let Some((at, status)) = self
+            .exited
+            .filter(|(at, _)| at.elapsed() >= Duration::from_millis(400))
+        {
+            let _ = at;
+            self.exited = None;
             self.child = None;
             let log = self.log();
             let tail: Vec<&String> = log
                 .iter()
                 .rev()
-                .filter(|l| !l.trim().is_empty())
+                // the first line of the log is the command line (`$ forge serve ...`): that is not a reason
+                .filter(|l| !l.trim().is_empty() && !l.starts_with("$ "))
                 .take(3)
                 .collect();
             let message = if tail.is_empty() {
@@ -324,6 +340,7 @@ impl EngineManager {
     }
 
     pub fn stop(&mut self) {
+        self.exited = None;
         if let Ok(mut s) = self.shared.lock() {
             s.generation += 1;
         }

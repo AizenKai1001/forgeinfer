@@ -64,6 +64,12 @@ Settings → Engine picks what runs the models:
 
 Settings → When a model loads: context length, KV-cache mode (16-bit, 8-bit, 4-bit), speculative depth (Qwen3.5 models draft tokens with their own prediction head; 2 to 3 is fastest), extra engine arguments, "load the last model when the app starts", and **Unload after N idle minutes** (frees the video memory for games; any request to the local server counts as activity).
 
+## When something does not work
+
+- **"Failed to load" with `CUDA_ERROR_NO_DEVICE` or `cuInit`**: the ForgeInfer engine needs an NVIDIA GPU and a current driver. Studio says so in the chat and offers the Settings: choose the llama.cpp server (any GPU, or the CPU) or a server that is already running. The reason is the engine's own last line of output (hover it for the whole text; Logs has everything).
+- **Answers suddenly slow while the video memory figure in the status bar is orange**: under about 700 MiB free the Windows driver pages video memory. Close other programs, lower the context length, or turn on the 8-bit KV cache in Settings.
+- **The model loads but the first answer thinks for a minute**: a Qwen3.5 model of 4B or more reasons first; the Think switch beside Send turns that off.
+
 ## Prompt lookup (any model)
 
 Settings > When a model loads > **Prompt lookup** (on by default, ForgeInfer engine): when an answer repeats words from the prompt or from earlier in the answer (code edits, quotes, corrected text, lists, JSON), the engine proposes the next tokens from there and verifies them in one pass over the weights. Measured up to 2x faster on such answers with models that have no prediction head at all, and no cost on free prose (see [PERFORMANCE.md](PERFORMANCE.md#prompt-lookup-speculation-for-every-model-up-to-2x-on-edits)). It adds `--no-lookup` to the engine's command line when you switch it off.

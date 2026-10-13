@@ -1040,10 +1040,11 @@ impl StudioApp {
             self.handle(m);
         }
         self.engine.poll();
-        if let (EngineState::Failed { .. }, Some(l)) =
+        if let (EngineState::Failed { message, .. }, Some(l)) =
             (self.engine.state(), self.engine.current().cloned())
         {
-            if l.mtp.is_some() {
+            // only a failure that names the head is one to retry without it (a machine without a CUDA device fails the same way with and without)
+            if l.mtp.is_some() && message.to_lowercase().contains("mtp") {
                 // the prediction head did not load (a head of another model, a broken file): run without it
                 self.no_head.insert(l.model.clone());
                 self.toast("The prediction head could not be used: starting the model without speculative decoding.");

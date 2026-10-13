@@ -311,15 +311,19 @@ fn model_picker(app: &mut StudioApp, ui: &mut Ui) {
             }
         }
         EngineState::Failed { message, .. } => {
-            ui.add(
-                egui::Label::new(
-                    RichText::new(truncate(&message, 90))
-                        .small()
-                        .color(theme::BAD),
-                )
-                .truncate(),
-            )
-            .on_hover_text(message);
+            // the reason fits between the picker and the buttons on the right
+            let w = (ui.available_width() - 230.0).max(60.0);
+            ui.allocate_ui_with_layout(
+                egui::vec2(w, 20.0),
+                Layout::left_to_right(Align::Center),
+                |ui| {
+                    ui.add(
+                        egui::Label::new(RichText::new(&message).small().color(theme::BAD))
+                            .truncate(),
+                    )
+                    .on_hover_text(&message);
+                },
+            );
         }
         EngineState::Idle => {}
     }
@@ -380,6 +384,19 @@ fn empty_state(app: &mut StudioApp, ui: &mut Ui) {
                 app.screen = crate::app::Screen::Settings;
             }
             ui.add_space(10.0);
+        }
+        if let EngineState::Failed { message, .. } = app.engine.state() {
+            let m = message.to_lowercase();
+            if m.contains("no_device") || m.contains("cuinit") || m.contains("nvcuda") || m.contains("no cuda") {
+                ui.allocate_ui_with_layout(egui::vec2(560.0, 0.0), Layout::top_down(Align::Min), |ui| {
+                    banner(ui, "The ForgeInfer engine needs an NVIDIA graphics card with an up-to-date driver, and none was found. In Settings the engine can be the llama.cpp server (any GPU, or the CPU) or a server that is already running.", theme::WARN, theme::CARD)
+                });
+                ui.add_space(8.0);
+                if primary_button(ui, "Open Settings").clicked() {
+                    app.screen = crate::app::Screen::Settings;
+                }
+                ui.add_space(10.0);
+            }
         }
         if ready {
             ui.label(RichText::new("Ask anything below.").color(theme::TEXT));

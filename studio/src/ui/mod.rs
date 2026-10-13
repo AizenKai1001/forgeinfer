@@ -224,7 +224,19 @@ fn status_bar(app: &mut StudioApp, ui: &mut Ui) {
             .color(theme::TEXT),
         );
         if let EngineState::Failed { message, .. } = app.engine.state() {
-            ui.add(egui::Label::new(RichText::new(message).small().color(theme::BAD)).truncate());
+            // the reason fits between the state and the figures on the right, whatever its length
+            let w = (ui.available_width() - 360.0).max(60.0);
+            ui.allocate_ui_with_layout(
+                egui::vec2(w, 20.0),
+                Layout::left_to_right(Align::Center),
+                |ui| {
+                    ui.add(
+                        egui::Label::new(RichText::new(&message).small().color(theme::BAD))
+                            .truncate(),
+                    )
+                    .on_hover_text(&message);
+                },
+            );
         }
         right_to_left(ui, app);
     });
