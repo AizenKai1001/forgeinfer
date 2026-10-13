@@ -651,6 +651,10 @@ fn host_only(m: &Mat) -> bool {
     matches!(m.raw.as_ref().map(|r| r.dtype), Some(forge_gguf::DType::Q3_K) | Some(forge_gguf::DType::Q2_K))
 }
 
+/// Load-time accounting (FORGE_LOAD_TRACE=1 prints it): nanoseconds spent repacking blocks into planes and copying the planes to the device.
+static REPACK_NS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+static COPY_NS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
 fn upload_native(m: &Mat, host: bool) -> Result<GpuMat> {
     if let Some(raw) = &m.raw {
         let qf = QFmt::from_dtype(raw.dtype)
@@ -661,8 +665,13 @@ fn upload_native(m: &Mat, host: bool) -> Result<GpuMat> {
                 qf.name()
             )));
         }
+        let t = std::time::Instant::now();
         let planes = repack(qf, &raw.bytes)?;
-        return GpuMat::from_planes(qf, &planes, host);
+        REPACK_NS.fetch_add(t.elapsed().as_nanos() as u64, std::sync::atomic::Ordering::Relaxed);
+        let t = std::time::Instant::now();
+        let g = GpuMat::from_planes(qf, &planes, host);
+        COPY_NS.fetch_add(t.elapsed().as_nanos() as u64, std::sync::atomic::Ordering::Relaxed);
+        return g;
     }
     upload_mat(m, Fmt::Q8_0, host)
 }
@@ -1047,6 +1056,13 @@ impl GpuModel {
             }
             None => None,
         };
+        if std::env::var_os("FORGE_LOAD_TRACE").is_some() {
+            eprintln!(
+                "[load] repacking {:.2} s, copying to the device {:.2} s",
+                REPACK_NS.load(std::sync::atomic::Ordering::Relaxed) as f64 / 1e9,
+                COPY_NS.load(std::sync::atomic::Ordering::Relaxed) as f64 / 1e9
+            );
+        }
         if host_bytes > 0 {
             eprintln!(
                 "[gpu] weights: {:.2} GiB on the device, {:.2} GiB in page-locked host memory ({} layers' FFN{})",

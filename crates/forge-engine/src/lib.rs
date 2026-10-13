@@ -426,6 +426,13 @@ fn engine_main(
     ready: Sender<std::result::Result<(ModelInfo, ChatFormat), String>>,
     stats: Arc<Mutex<Stats>>,
 ) {
+    let trace = std::env::var_os("FORGE_LOAD_TRACE").is_some();
+    let t_load = Instant::now();
+    let step = |what: &str, t: Instant| {
+        if trace {
+            eprintln!("[load] {what}: {:.2} s (total {:.2} s)", t.elapsed().as_secs_f64(), t_load.elapsed().as_secs_f64());
+        }
+    };
     let loaded = (|| -> std::result::Result<(Model,), String> {
         let m = if cfg.weights == WeightMode::Native {
             Model::load_native(&cfg.model)
@@ -433,6 +440,7 @@ fn engine_main(
             Model::load(&cfg.model)
         };
         let mut m = m.map_err(|e| format!("model {}: {e}", cfg.model.display()))?;
+        step("model file read and unpacked", t_load);
         if let Some(p) = &cfg.mtp {
             if m.mtp.is_none() {
                 m.load_mtp(
@@ -464,6 +472,7 @@ fn engine_main(
     };
     let n_params = model.cfg.approx_params();
     let vocab = model.cfg.vocab;
+    let t_up = Instant::now();
     let gpu = match GpuModel::upload(&model, fmt, cfg.device) {
         Ok(g) => g,
         Err(e) => {
@@ -472,6 +481,8 @@ fn engine_main(
         }
     };
     drop(model);
+    step("weights on the GPU", t_up);
+    let t_sess = Instant::now();
     let mut sess = match GpuSession::new(&gpu, cfg.n_ctx) {
         Ok(s) => s,
         Err(e) => {
@@ -481,10 +492,13 @@ fn engine_main(
     };
     // The working memory of the first request is taken now: the batched prefill's buffers and, for a hybrid model, the state snapshots (50 MB each on the 9B) are made on first use, and on a nearly full
     // GPU (the 9B on an 8 GB card next to another process) the first answer failed in the middle. Now the engine does not start at all and says why.
+    step("session", t_sess);
+    let t_warm = Instant::now();
     if let Err(e) = warm_up(&mut sess) {
         let _ = ready.send(Err(format!("GPU warm-up: {e}")));
         return;
     }
+    step("warm-up", t_warm);
     let n_ctx = sess.max_ctx();
     let info = ModelInfo {
         alias: cfg.alias.clone(),

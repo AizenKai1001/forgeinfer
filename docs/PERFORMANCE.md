@@ -80,6 +80,10 @@ How it stays safe:
 
 A smaller finding from the same session: the fused dequantizing prefill GEMM used the `m16n8k8` tensor-core instruction on every GPU; on sm_80 and newer it now uses `m16n8k16`, which is worth about 2 % of prefill on the RTX 4060. The kernel was already at roughly 85 % of the card's fp16 tensor-core peak (24 to 27 TFLOPs on the Q4_K shapes), so the remaining prefill gap to llama.cpp is the int8 path described in the [roadmap](ROADMAP.md).
 
+## Loading a model
+
+`FORGE_LOAD_TRACE=1` prints where the seconds of a load go. Repacking the GGUF blocks into the planar layouts of the kernels ran on one thread and took 7.5 of the 9.1 seconds of loading the 9B; it is cut into runs of blocks that go through all cores now (the result is byte-identical, a test compares it with the one-thread version for every format). Ready to chat on the RTX 4060 (file in the page cache, with the prediction head): 0.8B 1.3 s, 4B 4.1 to **3.4 s**, 9B 9.1 to **6.0 s**. What is left of the 9B's 6 seconds: about 1 s each for repacking and the copy to the device, 1 s of warm-up, the head.
+
 ## A 27B model on an 8 GB card
 
 Qwen3.5-27B has 64 layers; a 4-bit file is 16 to 17 GB. The engine keeps the attention and recurrent layers, the embeddings, the head and the KV cache on the card and runs the feed-forward layers that do not fit (62 of 64) from page-locked system memory with AVX2 kernels inside the CUDA graph. Decode is then bounded by system-memory bandwidth (about 40 GB/s of weights per token set), not by the GPU.
