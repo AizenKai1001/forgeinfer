@@ -88,7 +88,7 @@ The engine grew out of a from-scratch research stack: the same repository contai
 - SentencePiece tokenizers (Llama 2, Mistral 7B v0.1, Gemma) and IQ-quantizations are not supported by the engine.
 - The Llama 3 chat format and tokenizer are implemented and unit-tested but have not been checked against real Llama 3 weights yet.
 - Prefill (reading a prompt) is slower than llama.cpp on the 4B and 9B models (0.6 to 0.85 times at 512 tokens on the measured cards); decode is as fast or faster.
-- Forge Studio is new. The author ran it on Windows 11 with an RTX 4060; CI builds and unit-tests it on Windows, Linux and macOS, but nobody has run the window on a Mac or a Linux desktop yet: reports are welcome.
+- Forge Studio is new. The author ran it on Windows 11 with an RTX 4060 and on Ubuntu 24.04 (X11, RTX 2060 SUPER, chat with the CUDA engine verified); CI builds and unit-tests it on Windows, Linux and macOS, but nobody has run the window on a Mac yet: reports are welcome.
 
 ## License
 

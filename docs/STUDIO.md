@@ -116,5 +116,5 @@ Tests: `cd studio && cargo test --lib` (31 unit tests, including a synthetic GGU
 ## Platform notes
 
 - **Windows**: tested on Windows 11. Release builds have no console window.
-- **Linux**: built and unit-tested by CI and compile-checked on Ubuntu 24.04 (X11 and Wayland through `winit`, OpenGL through `glutin`, no system libraries needed to build); needs a working OpenGL driver at run time. The window has not been run on a Linux desktop by the author.
+- **Linux**: built and unit-tested by CI and compile-checked on Ubuntu 24.04 (X11 and Wayland through `winit`, OpenGL through `glutin`, no system libraries needed to build); needs a working OpenGL driver at run time. **Run on a Linux desktop (Ubuntu 24.04, X11, RTX 2060 SUPER, 2026-10-13):** the window renders as on Windows (Markdown, code blocks, tables, live GPU memory in the status bar), a Qwen3.5-4B chat through the Linux `forge` engine streamed at 111 tokens/s, and the engine process ended with the app. Wayland and other GPUs are untested.
 - **macOS**: built and unit-tested by the CI workflow (Apple silicon), the window itself has not been run by the author. The default engine there is llama.cpp's `llama-server` (the ForgeInfer engine needs CUDA); or connect to a running server.
