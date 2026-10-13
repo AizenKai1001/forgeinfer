@@ -1,16 +1,22 @@
 name: release
 
-# Push a tag such as v0.1.0 to build Forge Studio for Windows, Linux and macOS and attach the archives to a GitHub release.
+# Push a tag such as v0.1.0 to build Forge Studio for Windows, Linux and macOS and the ForgeInfer engine (CUDA) for Windows and Linux, and to attach the
+# archives to a GitHub release. A push to the branch `release-dry-run` does everything except the release itself.
 on:
   push:
     tags: ["v*"]
+    branches: ["release-dry-run"]
 
 permissions:
   contents: write
 
 jobs:
+  engine:
+    uses: ./.github/workflows/engine.yml
+
   studio:
     strategy:
+      fail-fast: false
       matrix:
         include:
           - os: windows-latest
@@ -32,24 +38,72 @@ jobs:
       - name: build
         working-directory: studio
         run: cargo build --release
-      - name: package
-        shell: bash
-        run: |
-          mkdir -p dist
-          cp studio/target/release/${{ matrix.bin }} dist/
-          cp LICENSE NOTICE dist/
-          cd dist
-          if [ "${{ matrix.os }}" = "windows-latest" ]; then
-            7z a ../forge-studio-${{ github.ref_name }}-${{ matrix.name }}.zip .
-          else
-            tar czf ../forge-studio-${{ github.ref_name }}-${{ matrix.name }}.tar.gz .
-          fi
-      - uses: softprops/action-gh-release@v2
+      - uses: actions/upload-artifact@v4
         with:
-          files: |
-            forge-studio-*.zip
-            forge-studio-*.tar.gz
+          name: studio-${{ matrix.name }}
+          path: studio/target/release/${{ matrix.bin }}
+
+  publish:
+    needs: [engine, studio]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+      - name: package
+        run: |
+          set -e
+          ref="${GITHUB_REF_NAME//\//-}"
+          mkdir -p out
+          readme() {
+            cat > "$1/README.txt" <<EOF
+          Forge Studio $ref
+
+          forge-studio   the desktop app: start it
+          forge          the ForgeInfer engine (NVIDIA GPU, GTX 16xx / RTX 20xx or newer, current driver); Forge Studio finds it next to itself
+          (a folder named "data" next to the program keeps settings, chats and downloads there)
+
+          Models: open Discover in the app, or put .gguf files in a folder and add it under My models.
+          Source and documentation: https://github.com/AizenKai1001/forgeinfer
+          EOF
+          }
+          # Windows
+          mkdir win
+          cp artifacts/studio-windows-x86_64/forge-studio.exe artifacts/forge-windows-x86_64/forge.exe LICENSE NOTICE win/
+          readme win
+          (cd win && zip -qr "../out/forge-studio-$ref-windows-x86_64.zip" .)
+          # Linux
+          mkdir linux
+          cp artifacts/studio-linux-x86_64/forge-studio artifacts/forge-linux-x86_64/forge LICENSE NOTICE linux/
+          chmod +x linux/forge-studio linux/forge
+          readme linux
+          tar czf "out/forge-studio-$ref-linux-x86_64.tar.gz" -C linux .
+          # macOS (no CUDA there: Forge Studio drives llama.cpp's llama-server or a running server)
+          mkdir mac
+          cp artifacts/studio-macos-arm64/forge-studio LICENSE NOTICE mac/
+          chmod +x mac/forge-studio
+          cat > mac/README.txt <<EOF
+          Forge Studio $ref (macOS, Apple silicon)
+
+          forge-studio   the desktop app. Start it from a terminal the first time (unsigned binary: allow it in System Settings > Privacy & Security).
+          The ForgeInfer engine needs CUDA and does not run on a Mac: in Settings choose "llama.cpp server" (install llama-server) or "Connect to a running server".
+          Source and documentation: https://github.com/AizenKai1001/forgeinfer
+          EOF
+          tar czf "out/forge-studio-$ref-macos-arm64.tar.gz" -C mac .
+          ls -la out
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-archives
+          path: out/*
+      - uses: softprops/action-gh-release@v2
+        if: startsWith(github.ref, 'refs/tags/v')
+        with:
+          files: out/*
+          prerelease: true
           body: |
-            Forge Studio ${{ github.ref_name }}: the desktop app, built from the tagged source. It runs models through the ForgeInfer engine (build it from source: see docs/GETTING_STARTED.md), llama.cpp's llama-server, or any OpenAI-compatible server.
+            Forge Studio ${{ github.ref_name }} (pre-release): the desktop app for Windows, Linux and macOS, and the ForgeInfer engine (CUDA) for Windows and Linux, built by GitHub Actions from the tagged source.
+
+            Unsigned binaries. The window has been run on Windows 11 with an RTX 4060; Linux and macOS builds are compiled and unit-tested by CI but nobody has run the window there yet: bug reports are welcome. Documentation: docs/GETTING_STARTED.md.
 
             Developed with Claude Code (Anthropic).
