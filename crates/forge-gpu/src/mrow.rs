@@ -181,7 +181,7 @@ impl<'m> GpuSession<'m> {
             Ok(b)
         };
         let ns_max = (self.max_ctx + AS_CH - 1) / AS_CH;
-        let split = c.delta.is_some() && self.max_ctx > AS_MAX_SINGLE;
+        let split = self.attn_split || (c.delta.is_some() && self.max_ctx > AS_MAX_SINGLE);
         self.mb = Some(MrowBufs {
             xq_e: zeroed(16 * e)?,
             xd_e: zeroed(16 * e / 32 * 4)?,
@@ -847,24 +847,62 @@ impl<'m> GpuSession<'m> {
                             .ptr(bk)
                             .ptr(bv),
                     )?;
-                    k.attention_q.launch(
-                        (nh as u32, n as u32, 1),
-                        (128, 1, 1),
-                        self.attention_smem(),
-                        st,
-                        &Args::new()
-                            .buf(&mb.qout)
-                            .ptr(kc)
-                            .ptr(vc)
-                            .buf(&mb.xq_a)
-                            .buf(&mb.xd_a)
-                            .buf(&mb.xs_a)
-                            .ptr(st_ptr)
-                            .i32(nh as i32)
-                            .i32(nkv as i32)
-                            .i32(hd as i32)
-                            .i32(self.max_ctx as i32),
-                    )?;
+                    if self.attn_split {
+                        let ns_max = (self.max_ctx + AS_CH - 1) / AS_CH;
+                        k.attn_split.launch(
+                            (nh as u32, ns_max as u32, n as u32),
+                            (128, 1, 1),
+                            0,
+                            st,
+                            &Args::new()
+                                .buf(&mb.qout)
+                                .ptr(kc)
+                                .ptr(vc)
+                                .buf(&mb.as_m)
+                                .buf(&mb.as_l)
+                                .buf(&mb.as_o)
+                                .ptr(st_ptr)
+                                .i32(nh as i32)
+                                .i32(nkv as i32)
+                                .i32(hd as i32)
+                                .i32(ns_max as i32),
+                        )?;
+                        k.attn_merge_q.launch(
+                            (nh as u32, n as u32, 1),
+                            (128, 1, 1),
+                            0,
+                            st,
+                            &Args::new()
+                                .buf(&mb.as_m)
+                                .buf(&mb.as_l)
+                                .buf(&mb.as_o)
+                                .buf(&mb.xq_a)
+                                .buf(&mb.xd_a)
+                                .buf(&mb.xs_a)
+                                .ptr(st_ptr)
+                                .i32(ns_max as i32)
+                                .i32(hd as i32),
+                        )?;
+                    } else {
+                        k.attention_q.launch(
+                            (nh as u32, n as u32, 1),
+                            (128, 1, 1),
+                            self.attention_smem(),
+                            st,
+                            &Args::new()
+                                .buf(&mb.qout)
+                                .ptr(kc)
+                                .ptr(vc)
+                                .buf(&mb.xq_a)
+                                .buf(&mb.xd_a)
+                                .buf(&mb.xs_a)
+                                .ptr(st_ptr)
+                                .i32(nh as i32)
+                                .i32(nkv as i32)
+                                .i32(hd as i32)
+                                .i32(self.max_ctx as i32),
+                        )?;
+                    }
                     self.kv_post(li, None, n, st_ptr)?;
                 }
                 (qd, &l.wo)

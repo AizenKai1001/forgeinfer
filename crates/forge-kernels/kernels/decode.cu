@@ -381,6 +381,139 @@ extern "C" __global__ void attention_g_kernel(const float* __restrict__ q, const
     attention_impl<true, true>(q, k_cache, v_cache, nullptr, oq, od, os, st, n_head, n_kv, hd, t_max, gate, gate_stride);
 }
 
+
+// ---- split-KV decode attention for long contexts (dense models) ------------------------------------------------------------------------------------------------------------------------------------
+// attention_impl keeps every score of the head in shared memory (t_max floats: 48 KB = about 11k positions). Here every (head, split, token) block handles AS_CH positions with its own softmax
+// statistics and writes (max, sum, unnormalised output); attn_merge_kernel combines the splits of a head exactly (rescaling by exp(m_s - M)) and writes the output, either fp32 or quantized for the next
+// matvec (int8 per 32 values: the arrays of decode_q.cu). The same blocks give the long contexts more parallelism than one block per head. Head width 64 or 128 (hd / 8 lanes per position, 128 / (hd / 8)
+// positions per round), 128 threads; the partial outputs are 256 floats apart (the layout of the hybrid kernels in decode_h.cu, whose buffers they share).
+#ifndef AS_CH
+#define AS_CH 1024
+#endif
+extern "C" __global__ void __launch_bounds__(128) attn_split_kernel(const float* __restrict__ q, const half* __restrict__ k_cache, const half* __restrict__ v_cache, float* __restrict__ pm, float* __restrict__ pl,
+                                                                    float* __restrict__ po, const StepState* __restrict__ st, int n_head, int n_kv, int hd, int ns_max) {
+    __shared__ float scores[AS_CH];
+    __shared__ float qs[256];
+    __shared__ float part[1024];               // NGRP * hd = (128 / (hd / 8)) * hd = 1024
+    __shared__ float red[32];
+    const int hh = blockIdx.x, split = blockIdx.y, tt = blockIdx.z, tid = threadIdx.x;
+    const int T = st->pos + 1 + tt;            // keys visible to the query of token tt of a multi-token step
+    const int t0 = split * AS_CH;
+    const size_t pidx = ((size_t)tt * n_head + hh) * ns_max + split;
+    if (t0 >= T) {
+        if (tid == 0) {
+            pm[pidx] = -INFINITY;
+            pl[pidx] = 0.f;
+        }
+        return;
+    }
+    const int tn = min(AS_CH, T - t0);
+    const int LPP = hd / 8, NGRP = 128 / LPP;
+    const int kvh = hh / (n_head / n_kv);
+    const size_t kv_dim = (size_t)n_kv * hd;
+    const int sub = tid % LPP, grp = tid / LPP;
+    for (int d = tid; d < hd; d += 128) qs[d] = q[(size_t)tt * n_head * hd + hh * hd + d];
+    __syncthreads();
+    const float scale = rsqrtf((float)hd);
+    float qv[8];
+#pragma unroll
+    for (int j = 0; j < 8; j++) qv[j] = qs[sub * 8 + j];
+    const int tn_up = (tn + NGRP - 1) / NGRP * NGRP;      // every thread runs the same number of rounds: the shuffles involve whole warps
+#pragma unroll 4
+    for (int i0 = 0; i0 < tn_up; i0 += NGRP) {
+        const int i = i0 + grp;
+        const bool valid = i < tn;
+        uint4 kraw = make_uint4(0u, 0u, 0u, 0u);
+        if (valid) kraw = __ldg(reinterpret_cast<const uint4*>(k_cache + (size_t)(t0 + i) * kv_dim + kvh * hd) + sub);
+        float kf[8];
+        unpack8(kraw, kf);
+        float acc = 0.f;
+#pragma unroll
+        for (int j = 0; j < 8; j++) acc += qv[j] * kf[j];
+        for (int o = LPP >> 1; o > 0; o >>= 1) acc += __shfl_xor_sync(0xffffffffu, acc, o);
+        if (valid && sub == 0) scores[i] = acc * scale;
+    }
+    __syncthreads();
+    float mx = -INFINITY;
+    for (int i = tid; i < tn; i += 128) mx = fmaxf(mx, scores[i]);
+    mx = block_max(mx, red);
+    float sum = 0.f;
+    for (int i = tid; i < tn; i += 128) {
+        const float e = __expf(scores[i] - mx);
+        scores[i] = e;
+        sum += e;
+    }
+    sum = block_sum(sum, red);
+    float o[8];
+#pragma unroll
+    for (int j = 0; j < 8; j++) o[j] = 0.f;
+#pragma unroll 4
+    for (int i = grp; i < tn; i += NGRP) {
+        const uint4 vraw = __ldg(reinterpret_cast<const uint4*>(v_cache + (size_t)(t0 + i) * kv_dim + kvh * hd) + sub);
+        float vf[8];
+        unpack8(vraw, vf);
+        const float p = scores[i];
+#pragma unroll
+        for (int j = 0; j < 8; j++) o[j] += p * vf[j];
+    }
+#pragma unroll
+    for (int j = 0; j < 8; j++) part[grp * hd + sub * 8 + j] = o[j];
+    __syncthreads();
+    if (tid < hd) {
+        float s = 0.f;
+        for (int g = 0; g < NGRP; g++) s += part[g * hd + tid];
+        po[pidx * 256 + tid] = s;
+    }
+    if (tid == 0) {
+        pm[pidx] = mx;
+        pl[pidx] = sum;
+    }
+}
+
+// grid (n_head, tokens), 128 threads (one per output dimension, hd <= 128): the exact combination of the splits; QOUT writes the quantized activation as attention_impl does
+template <bool QOUT>
+__device__ __forceinline__ void attn_merge_impl(const float* __restrict__ pm, const float* __restrict__ pl, const float* __restrict__ po, float* __restrict__ out, int8_t* __restrict__ oq, float* __restrict__ od,
+                                                int* __restrict__ os, const StepState* __restrict__ st, int ns_max, int hd) {
+    const int hh = blockIdx.x, tt = blockIdx.y, tid = threadIdx.x, n_head = gridDim.x;
+    if (tid >= hd) return;                     // hd is a multiple of 32: whole warps leave together
+    const int ns = (st->pos + 1 + tt + AS_CH - 1) / AS_CH;
+    const size_t pbase = ((size_t)tt * n_head + hh) * ns_max;
+    float M = -INFINITY;
+    for (int s = 0; s < ns; s++) M = fmaxf(M, pm[pbase + s]);
+    float L = 0.f, acc = 0.f;
+    for (int s = 0; s < ns; s++) {
+        const float w = __expf(pm[pbase + s] - M);
+        L += pl[pbase + s] * w;
+        acc += po[(pbase + s) * 256 + tid] * w;
+    }
+    const float v = acc / L;
+    if (QOUT) {
+        const float amax = warp_max(fabsf(v));
+        const float d = amax * (1.f / 127.f);
+        const float id = d != 0.f ? 1.f / d : 0.f;
+        const int qi = (int)roundf(v * id);
+        int sum = qi;
+#pragma unroll
+        for (int o2 = 16; o2 > 0; o2 >>= 1) sum += __shfl_xor_sync(0xffffffffu, sum, o2);
+        oq[(size_t)tt * n_head * hd + hh * hd + tid] = (int8_t)qi;
+        if ((tid & 31) == 0) {
+            od[(size_t)tt * (n_head * hd / 32) + (hh * hd + tid) / 32] = d;
+            os[(size_t)tt * (n_head * hd / 32) + (hh * hd + tid) / 32] = sum;
+        }
+    } else {
+        out[(size_t)tt * n_head * hd + hh * hd + tid] = v;
+    }
+}
+
+extern "C" __global__ void __launch_bounds__(128) attn_merge_kernel(const float* __restrict__ pm, const float* __restrict__ pl, const float* __restrict__ po, float* __restrict__ out, const StepState* __restrict__ st,
+                                                                    int ns_max, int hd) {
+    attn_merge_impl<false>(pm, pl, po, out, nullptr, nullptr, nullptr, st, ns_max, hd);
+}
+extern "C" __global__ void __launch_bounds__(128) attn_merge_q_kernel(const float* __restrict__ pm, const float* __restrict__ pl, const float* __restrict__ po, int8_t* __restrict__ oq, float* __restrict__ od,
+                                                                      int* __restrict__ os, const StepState* __restrict__ st, int ns_max, int hd) {
+    attn_merge_impl<true>(pm, pl, po, nullptr, oq, od, os, st, ns_max, hd);
+}
+
 // ---- S3 / S5: x += W v  (one warp per output row, weights hoisted into registers) ---------------------------------------------------------------------------------------------------------
 // dynamic shared memory: K floats for the input vector
 template <int NI>

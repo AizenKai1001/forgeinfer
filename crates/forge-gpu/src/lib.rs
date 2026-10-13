@@ -199,14 +199,24 @@ struct Kernels {
     qkv35_prep: Function,
     attention_g: Function,
     attn_split_g: Function,
+    /// split-KV decode attention of dense models (decode.cu): partial softmax per block of AS_CH positions, exact merge to fp32 / to the quantized activation
+    attn_split: Function,
+    attn_merge: Function,
+    attn_merge_q: Function,
     attn_merge_g: Function,
     gdn_prep: Function,
-    /// the scan with 32 / 64 / 128 state columns per block
+    gdn_prep_tile: Function,
+    /// the scan with 32 / 64 / 128 state columns per block (one column per 8 lanes), and the blocks of 128 threads with 16 / 32 / 64 columns of 1 / 2 / 4 columns per thread
     gdn_scan: [Function; 3],
+    gdn_scan_nc: [Function; 3],
     gdn_post: Function,
     qkv35_rope_batch: Function,
     attn_prefill_256g: Function,
     flash_256g: Function,
+    /// the Ampere attention kernels of flash_a80.cu (m16n8k16 MMAs, cp.async K / V tiles): Qwen3.5's gated head width 256 [fp32 accumulators, fp16 accumulators for S = Q K^T], and the dense head widths
+    /// [64 fp32, 64 fp16, 128 fp32, 128 fp16] (empty kernels below sm_80: the session picks them only from compute capability 8)
+    flash_256g_a80: [Function; 2],
+    flash_a80: [Function; 4],
     gemm_f32_out: Function,
     // MTP head
     mtp_prep: Function,
@@ -916,17 +926,33 @@ impl GpuModel {
             qkv35_prep: module.function("qkv35_prep_kernel")?,
             attention_g: module.function("attention_g_kernel")?,
             attn_split_g: module.function("attn_split_g_kernel")?,
+            attn_split: module.function("attn_split_kernel")?,
+            attn_merge: module.function("attn_merge_kernel")?,
+            attn_merge_q: module.function("attn_merge_q_kernel")?,
             attn_merge_g: module.function("attn_merge_g_kernel")?,
             gdn_prep: module.function("gdn_prep_kernel")?,
+            gdn_prep_tile: module.function("gdn_prep_tile_kernel")?,
             gdn_scan: [
                 module.function("gdn_scan_kernel_32")?,
                 module.function("gdn_scan_kernel_64")?,
                 module.function("gdn_scan_kernel_128")?,
             ],
+            gdn_scan_nc: [
+                module.function("gdn_scan_nc_16")?,
+                module.function("gdn_scan_nc_32")?,
+                module.function("gdn_scan_nc_64")?,
+            ],
             gdn_post: module.function("gdn_post_kernel")?,
             qkv35_rope_batch: module.function("qkv35_rope_batch_kernel")?,
             attn_prefill_256g: module.function("attn_prefill_256g")?,
             flash_256g: module.function("flash_fwd_256g")?,
+            flash_256g_a80: [module.function("flash_fwd_256g_a80")?, module.function("flash_fwd_256g_a80h")?],
+            flash_a80: [
+                module.function("flash_fwd_64_a80")?,
+                module.function("flash_fwd_64_a80h")?,
+                module.function("flash_fwd_128_a80")?,
+                module.function("flash_fwd_128_a80h")?,
+            ],
             gemm_f32_out: module.function("gemm_nt_f32")?,
             mtp_prep: module.function("mtp_prep_kernel")?,
             mtp_prep_batch: module.function("mtp_prep_batch_kernel")?,
@@ -1392,6 +1418,9 @@ const SAMPLE_BLOCKS: u32 = 128;
 /// positions per split of the split-KV attention kernels (decode_h.cu: AS_CH); used when the context is longer than AS_MAX_SINGLE
 const AS_CH: usize = 1024;
 const AS_MAX_SINGLE: usize = 4096;
+/// the longest context the one-block-per-head decode attention of a dense model can take: scores[max_ctx] + q[hd] + part[1024] + red[32] floats in the 48 KB of dynamic shared memory a launch gets without an opt-in
+/// (11,168 positions for a head width of 64, 11,104 for 128)
+const DENSE_ONE_BLOCK_MAX: usize = 11_000;
 /// capacity of the candidate list the device builds for the sampler
 const CAND_CAP: usize = 2048;
 
@@ -1683,6 +1712,15 @@ pub struct GpuSession<'m> {
     mmq_min_m: usize,
     /// the int8 activation buffers could not be allocated (a model that fills the card): the integer GEMMs stay off for the rest of the session
     mmq_no_mem: std::cell::Cell<bool>,
+    /// the prompt attention runs on the Ampere kernels of flash_a80.cu (from compute capability 8; FORGE_FLASH_A80=0 keeps the sm_75 kernels of flash.cu / flash256.cu); `flash_hacc`: the scores S = Q K^T
+    /// accumulate in fp16 inside the tensor core (flushed into fp32 after every k16 step), default as `f16acc` (FORGE_FLASH_HACC=1 / 0 forces it)
+    flash_a80: bool,
+    flash_hacc: bool,
+    /// the Gated DeltaNet prompt scan on blocks of 128 threads with several state columns per thread (prefill_h.cu `gdn_scan_nc_*`, bit-identical results; FORGE_SCAN_NC=0 keeps one column per thread)
+    scan_nc: bool,
+    /// the decode attention of a dense model runs in splits of AS_CH positions (decode.cu `attn_split_kernel`) instead of one block per head with all scores in shared memory: from a context of
+    /// DENSE_ONE_BLOCK_MAX positions on (the one-block kernel needs 4 bytes of shared memory per position and fails to launch beyond 48 KB); FORGE_ATTN_SPLIT=1 / 0 forces it on / off (for tests)
+    attn_split: bool,
     /// calibration passes that start or stop inside the network (`eval_chunk_resid`): the residual stream to start from / the one the pass ended with
     resid_in: Option<Vec<f32>>,
     resid_out: Option<Vec<f32>>,
@@ -1889,6 +1927,12 @@ impl<'m> GpuSession<'m> {
         };
         let plain_s80 = m.dev.info.cc_major >= 8 && std::env::var("FORGE_PLAIN_S80").map(|v| v != "0").unwrap_or(true);
         let mmq_on = m.k.mmq_ok && std::env::var("FORGE_MMQ").map(|v| v != "0").unwrap_or(true);
+        let flash_a80 = m.dev.info.cc_major >= 8 && std::env::var("FORGE_FLASH_A80").map(|v| v != "0").unwrap_or(true);
+        let flash_hacc = match std::env::var("FORGE_FLASH_HACC").ok().as_deref() {
+            Some("1") => m.dev.info.cc_major >= 8,
+            Some(_) => false,
+            None => f16acc,
+        };
         let mut s = GpuSession {
             m,
             max_ctx,
@@ -1969,6 +2013,14 @@ impl<'m> GpuSession<'m> {
                 .and_then(|v| v.parse().ok())
                 .unwrap_or(16),
             mmq_no_mem: std::cell::Cell::new(false),
+            flash_a80,
+            flash_hacc,
+            scan_nc: std::env::var("FORGE_SCAN_NC").map(|v| v != "0").unwrap_or(true),
+            attn_split: match std::env::var("FORGE_ATTN_SPLIT").ok().as_deref() {
+                Some("1") => true,
+                Some("0") => false,
+                _ => max_ctx > DENSE_ONE_BLOCK_MAX,
+            },
             fused_max: if std::env::var("FORGE_NO_FUSED").is_ok() {
                 [0; 3]
             } else {
@@ -2273,22 +2325,59 @@ impl<'m> GpuSession<'m> {
                 )?;
             }
             // S2
-            k.attention.launch(
-                (c.n_head as u32, 1, 1),
-                (128, 1, 1),
-                self.attention_smem(),
-                st,
-                &Args::new()
-                    .buf(&self.q)
-                    .ptr(kc)
-                    .ptr(vc)
-                    .buf(&self.attn_out)
-                    .buf(&self.state)
-                    .i32(c.n_head as i32)
-                    .i32(c.n_head_kv as i32)
-                    .i32(hd)
-                    .i32(self.max_ctx as i32),
-            )?;
+            if self.attn_split {
+                // long contexts: split-KV attention (partial softmax per block of AS_CH positions), then the exact merge
+                let ns_max = (self.max_ctx + AS_CH - 1) / AS_CH;
+                k.attn_split.launch(
+                    (c.n_head as u32, ns_max as u32, 1),
+                    (128, 1, 1),
+                    0,
+                    st,
+                    &Args::new()
+                        .buf(&self.q)
+                        .ptr(kc)
+                        .ptr(vc)
+                        .buf(&self.as_m)
+                        .buf(&self.as_l)
+                        .buf(&self.as_o)
+                        .buf(&self.state)
+                        .i32(c.n_head as i32)
+                        .i32(c.n_head_kv as i32)
+                        .i32(hd)
+                        .i32(ns_max as i32),
+                )?;
+                k.attn_merge.launch(
+                    (c.n_head as u32, 1, 1),
+                    (128, 1, 1),
+                    0,
+                    st,
+                    &Args::new()
+                        .buf(&self.as_m)
+                        .buf(&self.as_l)
+                        .buf(&self.as_o)
+                        .buf(&self.attn_out)
+                        .buf(&self.state)
+                        .i32(ns_max as i32)
+                        .i32(hd),
+                )?;
+            } else {
+                k.attention.launch(
+                    (c.n_head as u32, 1, 1),
+                    (128, 1, 1),
+                    self.attention_smem(),
+                    st,
+                    &Args::new()
+                        .buf(&self.q)
+                        .ptr(kc)
+                        .ptr(vc)
+                        .buf(&self.attn_out)
+                        .buf(&self.state)
+                        .i32(c.n_head as i32)
+                        .i32(c.n_head_kv as i32)
+                        .i32(hd)
+                        .i32(self.max_ctx as i32),
+                )?;
+            }
             // S3 and S5 share the residual matvec kernel
             let blocks_e = (((c.n_embd + wpb - 1) / wpb) as u32, 1, 1);
             if q8 {
@@ -2564,24 +2653,62 @@ impl<'m> GpuSession<'m> {
                         .f32(c.rms_eps),
                 )?;
             }
-            k.attention_q.launch(
-                (c.n_head as u32, 1, 1),
-                (128, 1, 1),
-                self.attention_smem(),
-                st,
-                &Args::new()
-                    .buf(&self.q)
-                    .ptr(kc)
-                    .ptr(vc)
-                    .buf(&self.xq_a)
-                    .buf(&self.xd_a)
-                    .buf(&self.xs_a)
-                    .buf(&self.state)
-                    .i32(c.n_head as i32)
-                    .i32(c.n_head_kv as i32)
-                    .i32(hd)
-                    .i32(self.max_ctx as i32),
-            )?;
+            if self.attn_split {
+                let ns_max = (self.max_ctx + AS_CH - 1) / AS_CH;
+                k.attn_split.launch(
+                    (c.n_head as u32, ns_max as u32, 1),
+                    (128, 1, 1),
+                    0,
+                    st,
+                    &Args::new()
+                        .buf(&self.q)
+                        .ptr(kc)
+                        .ptr(vc)
+                        .buf(&self.as_m)
+                        .buf(&self.as_l)
+                        .buf(&self.as_o)
+                        .buf(&self.state)
+                        .i32(c.n_head as i32)
+                        .i32(c.n_head_kv as i32)
+                        .i32(hd)
+                        .i32(ns_max as i32),
+                )?;
+                k.attn_merge_q.launch(
+                    (c.n_head as u32, 1, 1),
+                    (128, 1, 1),
+                    0,
+                    st,
+                    &Args::new()
+                        .buf(&self.as_m)
+                        .buf(&self.as_l)
+                        .buf(&self.as_o)
+                        .buf(&self.xq_a)
+                        .buf(&self.xd_a)
+                        .buf(&self.xs_a)
+                        .buf(&self.state)
+                        .i32(ns_max as i32)
+                        .i32(hd),
+                )?;
+            } else {
+                k.attention_q.launch(
+                    (c.n_head as u32, 1, 1),
+                    (128, 1, 1),
+                    self.attention_smem(),
+                    st,
+                    &Args::new()
+                        .buf(&self.q)
+                        .ptr(kc)
+                        .ptr(vc)
+                        .buf(&self.xq_a)
+                        .buf(&self.xd_a)
+                        .buf(&self.xs_a)
+                        .buf(&self.state)
+                        .i32(c.n_head as i32)
+                        .i32(c.n_head_kv as i32)
+                        .i32(hd)
+                        .i32(self.max_ctx as i32),
+                )?;
+            }
             self.kv_post(li, None, 1, self.state.ptr())?;
             let (wo_fn, wo_smem) = k.mvq_res.mv_fn(l.wo.qf.unwrap(), c.q_dim())?;
             wo_fn.launch(
@@ -3174,6 +3301,18 @@ impl<'m> GpuSession<'m> {
     /// The fused GEMMs accumulate in fp16 (for A/B tests; ignored below compute capability 8).
     pub fn set_f16acc(&mut self, on: bool) {
         self.f16acc = on && self.m.dev.info.cc_major >= 8;
+    }
+
+    /// The Gated DeltaNet prompt scan with several state columns per thread (for A/B tests).
+    pub fn set_scan_nc(&mut self, on: bool) {
+        self.scan_nc = on;
+    }
+
+    /// The prompt attention on the Ampere kernels of flash_a80.cu, with fp16 accumulators for the scores when `hacc` (for A/B tests; stays off below compute capability 8).
+    pub fn set_flash_a80(&mut self, on: bool, hacc: bool) {
+        let ok = self.m.dev.info.cc_major >= 8;
+        self.flash_a80 = on && ok;
+        self.flash_hacc = hacc && ok;
     }
 
     pub fn max_ctx(&self) -> usize {
@@ -3858,22 +3997,28 @@ impl<'m> GpuSession<'m> {
                     e,
                     2 * n_v,
                 )?;
-                k.gdn_prep.launch(
-                    (t as u32, n_v as u32, 1),
+                // 8 tokens per block (bit-identical to the one-token kernel; FORGE_SCAN_NC=0 keeps that one)
+                let (prep_fn, prep_grid) = if self.scan_nc { (k.gdn_prep_tile, ((t + 7) / 8) as u32) } else { (k.gdn_prep, t as u32) };
+                let mut prep_args = Args::new()
+                    .buf(&hy.mixed)
+                    .buf(&hy.ab)
+                    .buf(&dl.conv)
+                    .ptr(conv_state)
+                    .buf(&dl.a_neg)
+                    .buf(&dl.dt_bias)
+                    .buf(&hy.pq)
+                    .buf(&hy.pk)
+                    .buf(&hy.pv)
+                    .buf(&hy.pg);
+                if self.scan_nc {
+                    prep_args = prep_args.i32(t as i32);
+                }
+                prep_fn.launch(
+                    (prep_grid, n_v as u32, 1),
                     (384, 1, 1),
                     0,
                     st,
-                    &Args::new()
-                        .buf(&hy.mixed)
-                        .buf(&hy.ab)
-                        .buf(&dl.conv)
-                        .ptr(conv_state)
-                        .buf(&dl.a_neg)
-                        .buf(&dl.dt_bias)
-                        .buf(&hy.pq)
-                        .buf(&hy.pk)
-                        .buf(&hy.pv)
-                        .buf(&hy.pg)
+                    &prep_args
                         .i32(d.n_k as i32)
                         .i32(n_v as i32)
                         .i32(d.tiled_v as i32)
@@ -3895,14 +4040,26 @@ impl<'m> GpuSession<'m> {
                     } else {
                         32
                     });
-                let scan_fn = k.gdn_scan[match cpb {
-                    32 => 0,
-                    64 => 1,
-                    _ => 2,
-                }];
+                // blocks of 128 threads with CPB / 16 columns per thread (gdn_scan_nc_*): the fewest blocks that still give every SM 2.5 of them (the RTX 4060: 64 blocks of 64 columns for 32 value heads,
+                // 64 of 32 columns for 16 heads); FORGE_SCAN_NC=0 keeps the kernels of one column per thread above
+                let (scan_fn, cpb) = if self.scan_nc && std::env::var("FORGE_SCAN_CPB").is_err() {
+                    let want = (sms * 5 + 1) / 2;
+                    let cpb = [64usize, 32, 16].into_iter().find(|&c| n_v * (128 / c) >= want).unwrap_or(16);
+                    (k.gdn_scan_nc[match cpb { 16 => 0, 32 => 1, _ => 2 }], cpb)
+                } else {
+                    (
+                        k.gdn_scan[match cpb {
+                            32 => 0,
+                            64 => 1,
+                            _ => 2,
+                        }],
+                        cpb,
+                    )
+                };
+                let scan_threads = if self.scan_nc && std::env::var("FORGE_SCAN_CPB").is_err() { 128 } else { cpb * 8 };
                 scan_fn.launch(
                     (n_v as u32, (128 / cpb) as u32, 1),
-                    ((cpb * 8) as u32, 1, 1),
+                    (scan_threads as u32, 1, 1),
                     0,
                     st,
                     &Args::new()
@@ -4004,7 +4161,8 @@ impl<'m> GpuSession<'m> {
                             .i32((2 * hd) as i32),
                     )?;
                 } else {
-                    k.flash_256g.launch(
+                    let fa = if self.flash_a80 { k.flash_256g_a80[self.flash_hacc as usize] } else { k.flash_256g };
+                    fa.launch(
                         (((t + 63) / 64) as u32, nh as u32, 2),
                         (128, 1, 1),
                         0,
@@ -4330,7 +4488,11 @@ impl<'m> GpuSession<'m> {
             )?;
             let use_flash = std::env::var("FORGE_NO_FLASH").is_err();
             let (attn, qb) = if use_flash {
-                (if hd == 64 { k.flash_64 } else { k.flash_128 }, 64)
+                if self.flash_a80 {
+                    (k.flash_a80[(hd != 64) as usize * 2 + self.flash_hacc as usize], 64)
+                } else {
+                    (if hd == 64 { k.flash_64 } else { k.flash_128 }, 64)
+                }
             } else if hd == 64 {
                 (k.attn_prefill_64, 128)
             } else {

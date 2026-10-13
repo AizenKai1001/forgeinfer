@@ -15,6 +15,7 @@
 #include "prefill_h.cu"
 #include "flash.cu"
 #include "flash256.cu"
+#include "flash_a80.cu"
 #include "flash_bwd.cu"
 #include "flash_train.cu"
 #include "train.cu"

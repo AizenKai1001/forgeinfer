@@ -59,16 +59,95 @@ extern "C" __global__ void __launch_bounds__(384) gdn_prep_kernel(const float* _
     }
 }
 
-// grid (n_v, 128 / CPB), block CPB * 8: the thread mapping of gdn_step_kernel for CPB of the head's 128 state columns (the columns of the recurrence are independent given k, q and the gates, so a head
-// can be spread over several blocks and SMs). S stays in registers over the whole chunk; so[t][h][col] receives the raw output of the recurrence.
+// The same arithmetic as gdn_prep_kernel for GDN_PT consecutive tokens per block: grid (ceil(T / GDN_PT), n_v), block 384. The partial sums of the L2 norms (one warp_sum per 32 channels and token) and of
+// k . q are exchanged through shared memory for the whole tile, so a tile needs three barriers where the one-token kernel needs four per token (bit-identical results; 535 -> 427 us for 1,024 tokens of 32
+// heads on the RTX 4060, which is the memory-traffic bound of the three fp32 outputs: 84 MB).
+#define GDN_PT 8
+extern "C" __global__ void __launch_bounds__(384) gdn_prep_tile_kernel(const float* __restrict__ mixed, const float* __restrict__ ab, const float* __restrict__ conv_w, const float* __restrict__ conv_state,
+                                                                      const float* __restrict__ a_neg, const float* __restrict__ dt_bias, float* __restrict__ pq, float* __restrict__ pk,
+                                                                      float* __restrict__ pv, float* __restrict__ pg, int T, int n_k, int n_v, int tiled, int conv_k, int conv_dim) {
+    __shared__ float sred[GDN_PT][8], sred2[GDN_PT][4];
+    __shared__ __align__(16) float skn[GDN_PT][GDN_D];
+    const int t0 = blockIdx.x * GDN_PT, h = blockIdx.y, tid = threadIdx.x;
+    const int kh = tiled ? (h % n_k) : (h / (n_v / n_k));
+    const int key_dim = n_k * GDN_D;
+    const int part = tid / GDN_D, i = tid % GDN_D;
+    const int w8 = tid >> 5, lane = tid & 31;
+    const int ch = part == 0 ? kh * GDN_D + i : (part == 1 ? key_dim + kh * GDN_D + i : 2 * key_dim + h * GDN_D + i);
+    const float* w = conv_w + (size_t)ch * conv_k;
+    float cval[GDN_PT];
+#pragma unroll
+    for (int j = 0; j < GDN_PT; j++) {
+        const int t = t0 + j;
+        float acc = 0.f;
+        if (t < T) {
+            for (int jj = 0; jj < conv_k; jj++) {
+                const int sidx = t - (conv_k - 1) + jj;   // input column; negative = the carried window
+                const float x = sidx >= 0 ? mixed[(size_t)sidx * conv_dim + ch] : conv_state[((size_t)h * (conv_k - 1) + (conv_k - 1 + sidx)) * 384 + tid];
+                acc += w[jj] * x;
+            }
+        }
+        cval[j] = h_silu(acc);
+        if (part == 2 && t < T) pv[((size_t)t * n_v + h) * GDN_D + i] = cval[j];
+    }
+    if (w8 < 8) {
+#pragma unroll
+        for (int j = 0; j < GDN_PT; j++) {
+            const float s2 = warp_sum(cval[j] * cval[j]);
+            if (lane == 0) sred[j][w8] = s2;
+        }
+    }
+    __syncthreads();
+    float qv[GDN_PT];
+#pragma unroll
+    for (int j = 0; j < GDN_PT; j++) {
+        const int t = t0 + j;
+        qv[j] = 0.f;
+        if (part == 0) {
+            const float rq = rsqrtf(sred[j][0] + sred[j][1] + sred[j][2] + sred[j][3] + 1e-6f) * 0.08838834764831845f;
+            qv[j] = cval[j] * rq;
+            if (t < T) pq[((size_t)t * n_v + h) * GDN_D + i] = qv[j];
+        } else if (part == 1) {
+            const float rk = rsqrtf(sred[j][4] + sred[j][5] + sred[j][6] + sred[j][7] + 1e-6f);
+            const float kv = cval[j] * rk;
+            if (t < T) pk[((size_t)t * n_v + h) * GDN_D + i] = kv;
+            skn[j][i] = kv;
+        }
+    }
+    __syncthreads();
+    if (w8 < 4) {
+#pragma unroll
+        for (int j = 0; j < GDN_PT; j++) {
+            const float s2 = warp_sum(skn[j][w8 * 32 + lane] * qv[j]);
+            if (lane == 0) sred2[j][w8] = s2;
+        }
+    }
+    __syncthreads();
+    if (tid < GDN_PT && t0 + tid < T) {
+        const int t = t0 + tid;
+        const float kq = sred2[tid][0] + sred2[tid][1] + sred2[tid][2] + sred2[tid][3];
+        const float* abt = ab + (size_t)t * 2 * n_v;
+        const float beta = h_sigmoid(abt[n_v + h]);
+        const float a = __expf(a_neg[h] * h_softplus(abt[h] + dt_bias[h]));
+        float* g = pg + ((size_t)t * n_v + h) * 3;
+        g[0] = beta;
+        g[1] = a;
+        g[2] = kq;
+    }
+}
+
+// grid (n_v, 128 / CPB), block CPB * 8 / NC: the thread mapping of gdn_step_kernel for CPB of the head's 128 state columns (the columns of the recurrence are independent given k, q and the gates, so a head
+// can be spread over several blocks and SMs); a column is 8 lanes of 16 state rows each, and with NC > 1 a thread owns NC consecutive columns: the k / q vectors a warp reads from shared memory (the
+// LDS wavefronts were the bottleneck: 12 per warp and token for 4 columns) then serve 4 * NC columns, and the lanes that hold a column's rows still reduce in the same order, so the result is bit-identical
+// for every NC. S stays in registers over the whole chunk; so[t][h][col] receives the raw output of the recurrence.
 // The per-token inputs (k, q, v, gates) are staged through shared memory in tiles of GS_TT tokens, the NEXT tile's global loads are in flight while the current tile is computed: the recurrence
 // itself is a chain of a few hundred cycles per token, the exposed DRAM latency of a one-token prefetch was ten times that. The outputs of a tile leave as one coalesced store.
 // The block with blockIdx.y == 0 finally replaces the head's convolution window by the last conv_k - 1 input columns of the chunk.
 #define GS_TT 8
-template <int CPB>
+template <int CPB, int NC = 1>
 __device__ __forceinline__ void gdn_scan_impl(const float* __restrict__ pq, const float* __restrict__ pk, const float* __restrict__ pv, const float* __restrict__ pg, const float* __restrict__ mixed,
                                               float* __restrict__ conv_state, float* __restrict__ S, float* __restrict__ so, int T, int n_k, int n_v, int tiled, int conv_k, int conv_dim) {
-    constexpr int NT = CPB * 8;                       // threads
+    constexpr int NT = CPB * 8 / NC;                  // threads
     constexpr int NV4 = GS_TT * CPB / 4;              // float4 of v per tile
     constexpr int TOTAL = 2 * GS_TT * 32 + NV4;       // float4 per tile: k, q, v
     constexpr int ITEMS = (TOTAL + NT - 1) / NT;
@@ -78,12 +157,15 @@ __device__ __forceinline__ void gdn_scan_impl(const float* __restrict__ pq, cons
     __shared__ __align__(16) float sg[2][GS_TT * 4];
     __shared__ __align__(16) float sot[2][GS_TT * CPB];
     const int h = blockIdx.x, c0 = blockIdx.y * CPB, tid = threadIdx.x;
-    const int lcol = tid >> 3, l8 = tid & 7;          // column within the block, lane within the column
-    const int col = c0 + lcol;
-    float4* s_ptr = reinterpret_cast<float4*>(S + ((size_t)h * GDN_D + col) * GDN_D);
-    float4 s[4];
+    const int l8 = tid & 7;                           // lane within the column
+    const int lcol0 = (tid >> 3) * NC;                // first of this thread's NC columns (within the block)
+    float4 s[NC][4];
 #pragma unroll
-    for (int r = 0; r < 4; r++) s[r] = s_ptr[8 * r + l8];
+    for (int c = 0; c < NC; c++) {
+        const float4* s_ptr = reinterpret_cast<const float4*>(S + ((size_t)h * GDN_D + c0 + lcol0 + c) * GDN_D);
+#pragma unroll
+        for (int r = 0; r < 4; r++) s[c][r] = s_ptr[8 * r + l8];
+    }
 
     const int ntiles = (T + GS_TT - 1) / GS_TT;
     float4 pre[ITEMS];
@@ -134,35 +216,51 @@ __device__ __forceinline__ void gdn_scan_impl(const float* __restrict__ pq, cons
             const float4* kj = reinterpret_cast<const float4*>(&sk[cur][j * GDN_D]);
             const float4* qj = reinterpret_cast<const float4*>(&sq[cur][j * GDN_D]);
             const float beta = sg[cur][j * 4], a = sg[cur][j * 4 + 1], kq = sg[cur][j * 4 + 2];
-            float ks = 0.f, qs = 0.f;
+            float4 k4[4], q4[4];
 #pragma unroll
             for (int r = 0; r < 4; r++) {
-                const float4 k4 = kj[8 * r + l8], q4 = qj[8 * r + l8];
-                ks = fmaf(s[r].x, k4.x, ks);
-                ks = fmaf(s[r].y, k4.y, ks);
-                ks = fmaf(s[r].z, k4.z, ks);
-                ks = fmaf(s[r].w, k4.w, ks);
-                qs = fmaf(s[r].x, q4.x, qs);
-                qs = fmaf(s[r].y, q4.y, qs);
-                qs = fmaf(s[r].z, q4.z, qs);
-                qs = fmaf(s[r].w, q4.w, qs);
+                k4[r] = kj[8 * r + l8];
+                q4[r] = qj[8 * r + l8];
+            }
+            float ks[NC], qs[NC];
+#pragma unroll
+            for (int c = 0; c < NC; c++) {
+                float kk = 0.f, qq = 0.f;
+#pragma unroll
+                for (int r = 0; r < 4; r++) {
+                    kk = fmaf(s[c][r].x, k4[r].x, kk);
+                    kk = fmaf(s[c][r].y, k4[r].y, kk);
+                    kk = fmaf(s[c][r].z, k4[r].z, kk);
+                    kk = fmaf(s[c][r].w, k4[r].w, kk);
+                    qq = fmaf(s[c][r].x, q4[r].x, qq);
+                    qq = fmaf(s[c][r].y, q4[r].y, qq);
+                    qq = fmaf(s[c][r].z, q4[r].z, qq);
+                    qq = fmaf(s[c][r].w, q4[r].w, qq);
+                }
+                ks[c] = kk;
+                qs[c] = qq;
             }
 #pragma unroll
             for (int m = 1; m < 8; m <<= 1) {
-                ks += __shfl_xor_sync(0xffffffffu, ks, m);
-                qs += __shfl_xor_sync(0xffffffffu, qs, m);
-            }
-            const float u = beta * (sv[cur][j * CPB + lcol] - a * ks);
-            const float o = a * qs + kq * u;
 #pragma unroll
-            for (int r = 0; r < 4; r++) {
-                const float4 k4 = kj[8 * r + l8];
-                s[r].x = fmaf(a, s[r].x, k4.x * u);
-                s[r].y = fmaf(a, s[r].y, k4.y * u);
-                s[r].z = fmaf(a, s[r].z, k4.z * u);
-                s[r].w = fmaf(a, s[r].w, k4.w * u);
+                for (int c = 0; c < NC; c++) {
+                    ks[c] += __shfl_xor_sync(0xffffffffu, ks[c], m);
+                    qs[c] += __shfl_xor_sync(0xffffffffu, qs[c], m);
+                }
             }
-            if (l8 == 0) sot[cur][j * CPB + lcol] = o;
+#pragma unroll
+            for (int c = 0; c < NC; c++) {
+                const float u = beta * (sv[cur][j * CPB + lcol0 + c] - a * ks[c]);
+                const float o = a * qs[c] + kq * u;
+#pragma unroll
+                for (int r = 0; r < 4; r++) {
+                    s[c][r].x = fmaf(a, s[c][r].x, k4[r].x * u);
+                    s[c][r].y = fmaf(a, s[c][r].y, k4[r].y * u);
+                    s[c][r].z = fmaf(a, s[c][r].z, k4[r].z * u);
+                    s[c][r].w = fmaf(a, s[c][r].w, k4[r].w * u);
+                }
+                if (l8 == 0) sot[cur][j * CPB + lcol0 + c] = o;
+            }
         }
         if (tile + 1 < ntiles) store_tile(cur ^ 1);
         __syncthreads();
@@ -173,7 +271,11 @@ __device__ __forceinline__ void gdn_scan_impl(const float* __restrict__ pq, cons
         }
     }
 #pragma unroll
-    for (int r = 0; r < 4; r++) s_ptr[8 * r + l8] = s[r];
+    for (int c = 0; c < NC; c++) {
+        float4* s_ptr = reinterpret_cast<float4*>(S + ((size_t)h * GDN_D + c0 + lcol0 + c) * GDN_D);
+#pragma unroll
+        for (int r = 0; r < 4; r++) s_ptr[8 * r + l8] = s[c][r];
+    }
     // the new convolution window: input columns T-(conv_k-1) .. T-1, from this chunk or (for a chunk shorter than the window) the old window
     if (blockIdx.y == 0) {
         const int kh = tiled ? (h % n_k) : (h / (n_v / n_k));
@@ -195,6 +297,10 @@ __device__ __forceinline__ void gdn_scan_impl(const float* __restrict__ pq, cons
 extern "C" __global__ void __launch_bounds__(256) gdn_scan_kernel_32(GDN_SCAN_ARGS) { gdn_scan_impl<32>(pq, pk, pv, pg, mixed, conv_state, S, so, T, n_k, n_v, tiled, conv_k, conv_dim); }
 extern "C" __global__ void __launch_bounds__(512) gdn_scan_kernel_64(GDN_SCAN_ARGS) { gdn_scan_impl<64>(pq, pk, pv, pg, mixed, conv_state, S, so, T, n_k, n_v, tiled, conv_k, conv_dim); }
 extern "C" __global__ void __launch_bounds__(1024) gdn_scan_kernel_128(GDN_SCAN_ARGS) { gdn_scan_impl<128>(pq, pk, pv, pg, mixed, conv_state, S, so, T, n_k, n_v, tiled, conv_k, conv_dim); }
+// blocks of 128 threads whatever CPB: 16 / 32 / 64 columns with 1 / 2 / 4 columns per thread (fewer, fatter blocks: 2.7 blocks per SM of the RTX 4060 is the fastest, 1.75x the 256-thread kernel)
+extern "C" __global__ void __launch_bounds__(128) gdn_scan_nc_16(GDN_SCAN_ARGS) { gdn_scan_impl<16, 1>(pq, pk, pv, pg, mixed, conv_state, S, so, T, n_k, n_v, tiled, conv_k, conv_dim); }
+extern "C" __global__ void __launch_bounds__(128) gdn_scan_nc_32(GDN_SCAN_ARGS) { gdn_scan_impl<32, 2>(pq, pk, pv, pg, mixed, conv_state, S, so, T, n_k, n_v, tiled, conv_k, conv_dim); }
+extern "C" __global__ void __launch_bounds__(128) gdn_scan_nc_64(GDN_SCAN_ARGS) { gdn_scan_impl<64, 4>(pq, pk, pv, pg, mixed, conv_state, S, so, T, n_k, n_v, tiled, conv_k, conv_dim); }
 
 // grid (T, n_v), block 128: gated RMSNorm of the head's output (rms(o) * w * silu(z)), fp16 for the output projection GEMM
 extern "C" __global__ void __launch_bounds__(128) gdn_post_kernel(const float* __restrict__ so, const float* __restrict__ zv, const float* __restrict__ norm_w, half* __restrict__ yh, int n_v, float eps) {
