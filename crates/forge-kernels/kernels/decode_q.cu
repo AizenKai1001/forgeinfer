@@ -696,9 +696,16 @@ __device__ __forceinline__ QkvUnit qkv_unit(int u, int nq, int nk, int half_d, i
     return r;
 }
 
+// bias_q / bias_k / bias_v (null for most models; Qwen2 has them): added to the two rows of the unit before RoPE and before the cache write.
 __device__ __forceinline__ void qkv_finish(const QkvUnit& un, float av, float bv, float* __restrict__ q_out, float* __restrict__ k_raw, half* __restrict__ k_cache, half* __restrict__ v_cache,
-                                           const float* __restrict__ cos_t, const float* __restrict__ sin_t, uint32_t pos, int n_kv, int hd, int rotate) {
+                                           const float* __restrict__ cos_t, const float* __restrict__ sin_t, uint32_t pos, int n_kv, int hd, int rotate, const float* __restrict__ bias_q,
+                                           const float* __restrict__ bias_k, const float* __restrict__ bias_v) {
     const int half_d = hd / 2, kv_dim = n_kv * hd, head = un.head, i = un.i;
+    const float* bp = un.which == 0 ? bias_q : (un.which == 1 ? bias_k : bias_v);
+    if (bp != nullptr) {
+        av += bp[un.row0];
+        bv += bp[un.row1];
+    }
     if (un.which == 2) {
         v_cache[(size_t)pos * kv_dim + head * hd + i] = __float2half(av);
         v_cache[(size_t)pos * kv_dim + head * hd + i + half_d] = __float2half(bv);
@@ -724,7 +731,8 @@ __device__ __forceinline__ void qkv_finish(const QkvUnit& un, float av, float bv
 
 template <int NI, int F>
 __device__ __forceinline__ void qkv_impl(QP wq, QP wk, QP wv, int fq, int fk, int fv, ActP a, float* __restrict__ q_out, float* __restrict__ k_raw, half* __restrict__ k_cache, half* __restrict__ v_cache,
-                                         const float* __restrict__ cos_t, const float* __restrict__ sin_t, const StepState* __restrict__ st, int E, int n_head, int n_kv, int hd, int rotate, int u_lo, int u_hi) {
+                                         const float* __restrict__ cos_t, const float* __restrict__ sin_t, const StepState* __restrict__ st, int E, int n_head, int n_kv, int hd, int rotate, int u_lo, int u_hi,
+                                         const float* __restrict__ bias_q, const float* __restrict__ bias_k, const float* __restrict__ bias_v) {
     const int lane = threadIdx.x & 31, warp = threadIdx.x >> 5, nw = blockDim.x >> 5;
     const int half_d = hd / 2;
     const int nq = n_head * half_d, nk = n_kv * half_d;   // units: nq of q, nk of k, then nk of v; this launch handles [u_lo, u_hi)
@@ -751,7 +759,7 @@ __device__ __forceinline__ void qkv_impl(QP wq, QP wk, QP wv, int fq, int fk, in
                 load_row<NI, F>(b1, F, pick(nu.which), nu.row1, E, lane);
             }
             const float av = dot_rowr<NI, F>(a0, ar, lane), bv = dot_rowr<NI, F>(a1, ar, lane);
-            if (lane == 0) qkv_finish(cu, av, bv, q_out, k_raw, k_cache, v_cache, cos_t, sin_t, pos, n_kv, hd, rotate);
+            if (lane == 0) qkv_finish(cu, av, bv, q_out, k_raw, k_cache, v_cache, cos_t, sin_t, pos, n_kv, hd, rotate, bias_q, bias_k, bias_v);
             if (u1 >= total) break;
             const int u2 = u1 + stride;
             QkvUnit nn = nu;
@@ -761,7 +769,7 @@ __device__ __forceinline__ void qkv_impl(QP wq, QP wk, QP wv, int fq, int fk, in
                 load_row<NI, F>(a1, F, pick(nn.which), nn.row1, E, lane);
             }
             const float cv = dot_rowr<NI, F>(b0, ar, lane), dv = dot_rowr<NI, F>(b1, ar, lane);
-            if (lane == 0) qkv_finish(nu, cv, dv, q_out, k_raw, k_cache, v_cache, cos_t, sin_t, pos, n_kv, hd, rotate);
+            if (lane == 0) qkv_finish(nu, cv, dv, q_out, k_raw, k_cache, v_cache, cos_t, sin_t, pos, n_kv, hd, rotate, bias_q, bias_k, bias_v);
             if (u2 >= total) break;
             u = u2;
             cu = nn;
@@ -776,7 +784,7 @@ __device__ __forceinline__ void qkv_impl(QP wq, QP wk, QP wv, int fq, int fk, in
             load_row<NI, -1>(r0, fmt, w, un.row0, E, lane);
             load_row<NI, -1>(r1, fmt, w, un.row1, E, lane);
             const float av = dot_row<NI, -1>(r0, fmt, a, E, lane), bv = dot_row<NI, -1>(r1, fmt, a, E, lane);
-            if (lane == 0) qkv_finish(un, av, bv, q_out, k_raw, k_cache, v_cache, cos_t, sin_t, pos, n_kv, hd, rotate);
+            if (lane == 0) qkv_finish(un, av, bv, q_out, k_raw, k_cache, v_cache, cos_t, sin_t, pos, n_kv, hd, rotate, bias_q, bias_k, bias_v);
         }
     }
 }
@@ -784,8 +792,8 @@ __device__ __forceinline__ void qkv_impl(QP wq, QP wk, QP wv, int fq, int fk, in
 #define INST_QKV_F(NI, F, SUF)                                                                                                                                                               \
     extern "C" __global__ void qkvq_##SUF##_kernel_##NI(QPARAMS(wq), QPARAMS(wk), QPARAMS(wv), int fq, int fk, int fv, const int8_t* xq, const float* xd, const int* xs, float* q_out,              \
                                                        float* k_raw, half* k_cache, half* v_cache, const float* cos_t, const float* sin_t, const StepState* st, int E, int n_head, int n_kv,  \
-                                                       int hd, int rotate, int u_lo, int u_hi) {                                                                                                                \
-        qkv_impl<NI, F>(QMAKE(wq), QMAKE(wk), QMAKE(wv), fq, fk, fv, ActP{xq, xd, xs}, q_out, k_raw, k_cache, v_cache, cos_t, sin_t, st, E, n_head, n_kv, hd, rotate, u_lo, u_hi);                       \
+                                                       int hd, int rotate, int u_lo, int u_hi, const float* bias_q, const float* bias_k, const float* bias_v) {                                                \
+        qkv_impl<NI, F>(QMAKE(wq), QMAKE(wk), QMAKE(wv), fq, fk, fv, ActP{xq, xd, xs}, q_out, k_raw, k_cache, v_cache, cos_t, sin_t, st, E, n_head, n_kv, hd, rotate, u_lo, u_hi, bias_q, bias_k, bias_v);   \
     }
 #define INST_QKV(NI) INST_QKV_F(NI, 0, q8) INST_QKV_F(NI, 1, q40) INST_QKV_F(NI, 2, q50) INST_QKV_F(NI, 3, q4k) INST_QKV_F(NI, 4, q5k) INST_QKV_F(NI, 5, q6k) INST_QKV_F(NI, -1, x)
 INST_QKV(1) INST_QKV(2) INST_QKV(3) INST_QKV(4) INST_QKV(6) INST_QKV(8) INST_QKV(12) INST_QKV(16) INST_QKV(24)

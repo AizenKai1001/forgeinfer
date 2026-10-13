@@ -574,24 +574,30 @@ MM_ALL(4, 2) MM_ALL(8, 2) MM_ALL(12, 2) MM_ALL(16, 2)
 // grid (n_head + 2 n_kv, N).
 extern "C" __global__ void __launch_bounds__(256) qkv_prep_multi_kernel(const float* __restrict__ q_raw, const float* __restrict__ k_raw, const float* __restrict__ v_raw, const float* __restrict__ qn_w,
                                                                        const float* __restrict__ kn_w, const float* __restrict__ cos_t, const float* __restrict__ sin_t, const StepState* __restrict__ st,
-                                                                       float* __restrict__ q_out, half* __restrict__ k_cache, half* __restrict__ v_cache, int n_head, int n_kv, int hd, int rd, float eps) {
+                                                                       float* __restrict__ q_out, half* __restrict__ k_cache, half* __restrict__ v_cache, int n_head, int n_kv, int hd, int rd, float eps,
+                                                                       const float* __restrict__ bias_q, const float* __restrict__ bias_k, const float* __restrict__ bias_v) {
     __shared__ float red[32];
     const int b = blockIdx.x, tt = blockIdx.y;
     const uint32_t pos = st->pos + tt;
     const size_t kv_dim = (size_t)n_kv * hd;
     if (b >= n_head + n_kv) {
         const int head = b - n_head - n_kv;
-        for (int d = threadIdx.x; d < hd; d += blockDim.x) v_cache[pos * kv_dim + head * hd + d] = __float2half(v_raw[tt * kv_dim + head * hd + d]);
+        for (int d = threadIdx.x; d < hd; d += blockDim.x) v_cache[pos * kv_dim + head * hd + d] = __float2half(v_raw[tt * kv_dim + head * hd + d] + (bias_v ? bias_v[head * hd + d] : 0.f));
         return;
     }
     const bool is_q = b < n_head;
     const int head = is_q ? b : b - n_head;
     const float* src = is_q ? q_raw + (size_t)tt * n_head * hd + (size_t)head * hd : k_raw + tt * kv_dim + (size_t)head * hd;
     const float* wn = is_q ? qn_w : kn_w;
+    const float* bh = is_q ? bias_q : bias_k;   // the bias of the projection (null: none), indexed like a row of the projection output
+    if (bh != nullptr) bh += (size_t)head * hd;
     float r = 1.f;
     if (wn != nullptr) {
         float ss = 0.f;
-        for (int d = threadIdx.x; d < hd; d += blockDim.x) ss += src[d] * src[d];
+        for (int d = threadIdx.x; d < hd; d += blockDim.x) {
+            const float x = src[d] + (bh ? bh[d] : 0.f);
+            ss += x * x;
+        }
         ss = block_sum(ss, red);
         r = rsqrtf(ss / (float)hd + eps);
     }
@@ -600,11 +606,11 @@ extern "C" __global__ void __launch_bounds__(256) qkv_prep_multi_kernel(const fl
         float o;
         if (d < rd) {
             const int i = d < half_r ? d : d - half_r;
-            const float a = src[i] * r * (wn ? wn[i] : 1.f), bb = src[i + half_r] * r * (wn ? wn[i + half_r] : 1.f);
+            const float a = (src[i] + (bh ? bh[i] : 0.f)) * r * (wn ? wn[i] : 1.f), bb = (src[i + half_r] + (bh ? bh[i + half_r] : 0.f)) * r * (wn ? wn[i + half_r] : 1.f);
             const float c = cos_t[(size_t)pos * half_r + i], s = sin_t[(size_t)pos * half_r + i];
             o = d < half_r ? a * c - bb * s : bb * c + a * s;
         } else {
-            o = src[d] * r * (wn ? wn[d] : 1.f);
+            o = (src[d] + (bh ? bh[d] : 0.f)) * r * (wn ? wn[d] : 1.f);
         }
         if (is_q) q_out[(size_t)tt * n_head * hd + head * hd + d] = o;
         else k_cache[pos * kv_dim + head * hd + d] = __float2half(o);

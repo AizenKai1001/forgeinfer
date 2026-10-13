@@ -1,0 +1,1733 @@
+{
+ "name": "qwen25",
+ "cases": [
+  {
+   "name": "plain_user",
+   "messages": [
+    {
+     "role": "user",
+     "content": "Hello!"
+    }
+   ],
+   "tools": null,
+   "add_generation_prompt": true,
+   "kwargs": {},
+   "text": "<|im_start|>system\nYou are Qwen, created by Alibaba Cloud. You are a helpful assistant.<|im_end|>\n<|im_start|>user\nHello!<|im_end|>\n<|im_start|>assistant\n"
+  },
+  {
+   "name": "plain_user",
+   "messages": [
+    {
+     "role": "user",
+     "content": "Hello!"
+    }
+   ],
+   "tools": null,
+   "add_generation_prompt": false,
+   "kwargs": {},
+   "text": "<|im_start|>system\nYou are Qwen, created by Alibaba Cloud. You are a helpful assistant.<|im_end|>\n<|im_start|>user\nHello!<|im_end|>\n"
+  },
+  {
+   "name": "plain_user",
+   "messages": [
+    {
+     "role": "user",
+     "content": "Hello!"
+    }
+   ],
+   "tools": [
+    {
+     "type": "function",
+     "function": {
+      "name": "lookup",
+      "description": "Look something up in the encyclopedia.",
+      "parameters": {
+       "type": "object",
+       "properties": {
+        "query": {
+         "type": "string",
+         "description": "What to look for."
+        }
+       },
+       "required": [
+        "query"
+       ]
+      }
+     }
+    },
+    {
+     "type": "function",
+     "function": {
+      "name": "run_python",
+      "description": "Run a Python program and return what it printed.",
+      "parameters": {
+       "type": "object",
+       "properties": {
+        "code": {
+         "type": "string"
+        }
+       },
+       "required": [
+        "code"
+       ]
+      }
+     }
+    }
+   ],
+   "add_generation_prompt": true,
+   "kwargs": {},
+   "text": "<|im_start|>system\nYou are Qwen, created by Alibaba Cloud. You are a helpful assistant.\n\n# Tools\n\nYou may call one or more functions to assist with the user query.\n\nYou are provided with function signatures within <tools></tools> XML tags:\n<tools>\n{\"type\": \"function\", \"function\": {\"name\": \"lookup\", \"description\": \"Look something up in the encyclopedia.\", \"parameters\": {\"type\": \"object\", \"properties\": {\"query\": {\"type\": \"string\", \"description\": \"What to look for.\"}}, \"required\": [\"query\"]}}}\n{\"type\": \"function\", \"function\": {\"name\": \"run_python\", \"description\": \"Run a Python program and return what it printed.\", \"parameters\": {\"type\": \"object\", \"properties\": {\"code\": {\"type\": \"string\"}}, \"required\": [\"code\"]}}}\n</tools>\n\nFor each function call, return a json object with function name and arguments within <tool_call></tool_call> XML tags:\n<tool_call>\n{{\"name\": <function-name>, \"arguments\": <args-json-object>}}\n</tool_call><|im_end|>\n<|im_start|>user\nHello!<|im_end|>\n<|im_start|>assistant\n"
+  },
+  {
+   "name": "plain_user",
+   "messages": [
+    {
+     "role": "user",
+     "content": "Hello!"
+    }
+   ],
+   "tools": [
+    {
+     "type": "function",
+     "function": {
+      "name": "lookup",
+      "description": "Look something up in the encyclopedia.",
+      "parameters": {
+       "type": "object",
+       "properties": {
+        "query": {
+         "type": "string",
+         "description": "What to look for."
+        }
+       },
+       "required": [
+        "query"
+       ]
+      }
+     }
+    },
+    {
+     "type": "function",
+     "function": {
+      "name": "run_python",
+      "description": "Run a Python program and return what it printed.",
+      "parameters": {
+       "type": "object",
+       "properties": {
+        "code": {
+         "type": "string"
+        }
+       },
+       "required": [
+        "code"
+       ]
+      }
+     }
+    }
+   ],
+   "add_generation_prompt": false,
+   "kwargs": {},
+   "text": "<|im_start|>system\nYou are Qwen, created by Alibaba Cloud. You are a helpful assistant.\n\n# Tools\n\nYou may call one or more functions to assist with the user query.\n\nYou are provided with function signatures within <tools></tools> XML tags:\n<tools>\n{\"type\": \"function\", \"function\": {\"name\": \"lookup\", \"description\": \"Look something up in the encyclopedia.\", \"parameters\": {\"type\": \"object\", \"properties\": {\"query\": {\"type\": \"string\", \"description\": \"What to look for.\"}}, \"required\": [\"query\"]}}}\n{\"type\": \"function\", \"function\": {\"name\": \"run_python\", \"description\": \"Run a Python program and return what it printed.\", \"parameters\": {\"type\": \"object\", \"properties\": {\"code\": {\"type\": \"string\"}}, \"required\": [\"code\"]}}}\n</tools>\n\nFor each function call, return a json object with function name and arguments within <tool_call></tool_call> XML tags:\n<tool_call>\n{{\"name\": <function-name>, \"arguments\": <args-json-object>}}\n</tool_call><|im_end|>\n<|im_start|>user\nHello!<|im_end|>\n"
+  },
+  {
+   "name": "system_user",
+   "messages": [
+    {
+     "role": "system",
+     "content": "You are Ember, a friendly assistant."
+    },
+    {
+     "role": "user",
+     "content": "What is the capital of France?"
+    }
+   ],
+   "tools": null,
+   "add_generation_prompt": true,
+   "kwargs": {},
+   "text": "<|im_start|>system\nYou are Ember, a friendly assistant.<|im_end|>\n<|im_start|>user\nWhat is the capital of France?<|im_end|>\n<|im_start|>assistant\n"
+  },
+  {
+   "name": "system_user",
+   "messages": [
+    {
+     "role": "system",
+     "content": "You are Ember, a friendly assistant."
+    },
+    {
+     "role": "user",
+     "content": "What is the capital of France?"
+    }
+   ],
+   "tools": null,
+   "add_generation_prompt": false,
+   "kwargs": {},
+   "text": "<|im_start|>system\nYou are Ember, a friendly assistant.<|im_end|>\n<|im_start|>user\nWhat is the capital of France?<|im_end|>\n"
+  },
+  {
+   "name": "system_user",
+   "messages": [
+    {
+     "role": "system",
+     "content": "You are Ember, a friendly assistant."
+    },
+    {
+     "role": "user",
+     "content": "What is the capital of France?"
+    }
+   ],
+   "tools": [
+    {
+     "type": "function",
+     "function": {
+      "name": "lookup",
+      "description": "Look something up in the encyclopedia.",
+      "parameters": {
+       "type": "object",
+       "properties": {
+        "query": {
+         "type": "string",
+         "description": "What to look for."
+        }
+       },
+       "required": [
+        "query"
+       ]
+      }
+     }
+    },
+    {
+     "type": "function",
+     "function": {
+      "name": "run_python",
+      "description": "Run a Python program and return what it printed.",
+      "parameters": {
+       "type": "object",
+       "properties": {
+        "code": {
+         "type": "string"
+        }
+       },
+       "required": [
+        "code"
+       ]
+      }
+     }
+    }
+   ],
+   "add_generation_prompt": true,
+   "kwargs": {},
+   "text": "<|im_start|>system\nYou are Ember, a friendly assistant.\n\n# Tools\n\nYou may call one or more functions to assist with the user query.\n\nYou are provided with function signatures within <tools></tools> XML tags:\n<tools>\n{\"type\": \"function\", \"function\": {\"name\": \"lookup\", \"description\": \"Look something up in the encyclopedia.\", \"parameters\": {\"type\": \"object\", \"properties\": {\"query\": {\"type\": \"string\", \"description\": \"What to look for.\"}}, \"required\": [\"query\"]}}}\n{\"type\": \"function\", \"function\": {\"name\": \"run_python\", \"description\": \"Run a Python program and return what it printed.\", \"parameters\": {\"type\": \"object\", \"properties\": {\"code\": {\"type\": \"string\"}}, \"required\": [\"code\"]}}}\n</tools>\n\nFor each function call, return a json object with function name and arguments within <tool_call></tool_call> XML tags:\n<tool_call>\n{{\"name\": <function-name>, \"arguments\": <args-json-object>}}\n</tool_call><|im_end|>\n<|im_start|>user\nWhat is the capital of France?<|im_end|>\n<|im_start|>assistant\n"
+  },
+  {
+   "name": "system_user",
+   "messages": [
+    {
+     "role": "system",
+     "content": "You are Ember, a friendly assistant."
+    },
+    {
+     "role": "user",
+     "content": "What is the capital of France?"
+    }
+   ],
+   "tools": [
+    {
+     "type": "function",
+     "function": {
+      "name": "lookup",
+      "description": "Look something up in the encyclopedia.",
+      "parameters": {
+       "type": "object",
+       "properties": {
+        "query": {
+         "type": "string",
+         "description": "What to look for."
+        }
+       },
+       "required": [
+        "query"
+       ]
+      }
+     }
+    },
+    {
+     "type": "function",
+     "function": {
+      "name": "run_python",
+      "description": "Run a Python program and return what it printed.",
+      "parameters": {
+       "type": "object",
+       "properties": {
+        "code": {
+         "type": "string"
+        }
+       },
+       "required": [
+        "code"
+       ]
+      }
+     }
+    }
+   ],
+   "add_generation_prompt": false,
+   "kwargs": {},
+   "text": "<|im_start|>system\nYou are Ember, a friendly assistant.\n\n# Tools\n\nYou may call one or more functions to assist with the user query.\n\nYou are provided with function signatures within <tools></tools> XML tags:\n<tools>\n{\"type\": \"function\", \"function\": {\"name\": \"lookup\", \"description\": \"Look something up in the encyclopedia.\", \"parameters\": {\"type\": \"object\", \"properties\": {\"query\": {\"type\": \"string\", \"description\": \"What to look for.\"}}, \"required\": [\"query\"]}}}\n{\"type\": \"function\", \"function\": {\"name\": \"run_python\", \"description\": \"Run a Python program and return what it printed.\", \"parameters\": {\"type\": \"object\", \"properties\": {\"code\": {\"type\": \"string\"}}, \"required\": [\"code\"]}}}\n</tools>\n\nFor each function call, return a json object with function name and arguments within <tool_call></tool_call> XML tags:\n<tool_call>\n{{\"name\": <function-name>, \"arguments\": <args-json-object>}}\n</tool_call><|im_end|>\n<|im_start|>user\nWhat is the capital of France?<|im_end|>\n"
+  },
+  {
+   "name": "multi_turn",
+   "messages": [
+    {
+     "role": "system",
+     "content": "Be brief."
+    },
+    {
+     "role": "user",
+     "content": "Hi"
+    },
+    {
+     "role": "assistant",
+     "content": "Hello! How can I help?"
+    },
+    {
+     "role": "user",
+     "content": "Tell me a joke."
+    }
+   ],
+   "tools": null,
+   "add_generation_prompt": true,
+   "kwargs": {},
+   "text": "<|im_start|>system\nBe brief.<|im_end|>\n<|im_start|>user\nHi<|im_end|>\n<|im_start|>assistant\nHello! How can I help?<|im_end|>\n<|im_start|>user\nTell me a joke.<|im_end|>\n<|im_start|>assistant\n"
+  },
+  {
+   "name": "multi_turn",
+   "messages": [
+    {
+     "role": "system",
+     "content": "Be brief."
+    },
+    {
+     "role": "user",
+     "content": "Hi"
+    },
+    {
+     "role": "assistant",
+     "content": "Hello! How can I help?"
+    },
+    {
+     "role": "user",
+     "content": "Tell me a joke."
+    }
+   ],
+   "tools": null,
+   "add_generation_prompt": false,
+   "kwargs": {},
+   "text": "<|im_start|>system\nBe brief.<|im_end|>\n<|im_start|>user\nHi<|im_end|>\n<|im_start|>assistant\nHello! How can I help?<|im_end|>\n<|im_start|>user\nTell me a joke.<|im_end|>\n"
+  },
+  {
+   "name": "multi_turn",
+   "messages": [
+    {
+     "role": "system",
+     "content": "Be brief."
+    },
+    {
+     "role": "user",
+     "content": "Hi"
+    },
+    {
+     "role": "assistant",
+     "content": "Hello! How can I help?"
+    },
+    {
+     "role": "user",
+     "content": "Tell me a joke."
+    }
+   ],
+   "tools": [
+    {
+     "type": "function",
+     "function": {
+      "name": "lookup",
+      "description": "Look something up in the encyclopedia.",
+      "parameters": {
+       "type": "object",
+       "properties": {
+        "query": {
+         "type": "string",
+         "description": "What to look for."
+        }
+       },
+       "required": [
+        "query"
+       ]
+      }
+     }
+    },
+    {
+     "type": "function",
+     "function": {
+      "name": "run_python",
+      "description": "Run a Python program and return what it printed.",
+      "parameters": {
+       "type": "object",
+       "properties": {
+        "code": {
+         "type": "string"
+        }
+       },
+       "required": [
+        "code"
+       ]
+      }
+     }
+    }
+   ],
+   "add_generation_prompt": true,
+   "kwargs": {},
+   "text": "<|im_start|>system\nBe brief.\n\n# Tools\n\nYou may call one or more functions to assist with the user query.\n\nYou are provided with function signatures within <tools></tools> XML tags:\n<tools>\n{\"type\": \"function\", \"function\": {\"name\": \"lookup\", \"description\": \"Look something up in the encyclopedia.\", \"parameters\": {\"type\": \"object\", \"properties\": {\"query\": {\"type\": \"string\", \"description\": \"What to look for.\"}}, \"required\": [\"query\"]}}}\n{\"type\": \"function\", \"function\": {\"name\": \"run_python\", \"description\": \"Run a Python program and return what it printed.\", \"parameters\": {\"type\": \"object\", \"properties\": {\"code\": {\"type\": \"string\"}}, \"required\": [\"code\"]}}}\n</tools>\n\nFor each function call, return a json object with function name and arguments within <tool_call></tool_call> XML tags:\n<tool_call>\n{{\"name\": <function-name>, \"arguments\": <args-json-object>}}\n</tool_call><|im_end|>\n<|im_start|>user\nHi<|im_end|>\n<|im_start|>assistant\nHello! How can I help?<|im_end|>\n<|im_start|>user\nTell me a joke.<|im_end|>\n<|im_start|>assistant\n"
+  },
+  {
+   "name": "multi_turn",
+   "messages": [
+    {
+     "role": "system",
+     "content": "Be brief."
+    },
+    {
+     "role": "user",
+     "content": "Hi"
+    },
+    {
+     "role": "assistant",
+     "content": "Hello! How can I help?"
+    },
+    {
+     "role": "user",
+     "content": "Tell me a joke."
+    }
+   ],
+   "tools": [
+    {
+     "type": "function",
+     "function": {
+      "name": "lookup",
+      "description": "Look something up in the encyclopedia.",
+      "parameters": {
+       "type": "object",
+       "properties": {
+        "query": {
+         "type": "string",
+         "description": "What to look for."
+        }
+       },
+       "required": [
+        "query"
+       ]
+      }
+     }
+    },
+    {
+     "type": "function",
+     "function": {
+      "name": "run_python",
+      "description": "Run a Python program and return what it printed.",
+      "parameters": {
+       "type": "object",
+       "properties": {
+        "code": {
+         "type": "string"
+        }
+       },
+       "required": [
+        "code"
+       ]
+      }
+     }
+    }
+   ],
+   "add_generation_prompt": false,
+   "kwargs": {},
+   "text": "<|im_start|>system\nBe brief.\n\n# Tools\n\nYou may call one or more functions to assist with the user query.\n\nYou are provided with function signatures within <tools></tools> XML tags:\n<tools>\n{\"type\": \"function\", \"function\": {\"name\": \"lookup\", \"description\": \"Look something up in the encyclopedia.\", \"parameters\": {\"type\": \"object\", \"properties\": {\"query\": {\"type\": \"string\", \"description\": \"What to look for.\"}}, \"required\": [\"query\"]}}}\n{\"type\": \"function\", \"function\": {\"name\": \"run_python\", \"description\": \"Run a Python program and return what it printed.\", \"parameters\": {\"type\": \"object\", \"properties\": {\"code\": {\"type\": \"string\"}}, \"required\": [\"code\"]}}}\n</tools>\n\nFor each function call, return a json object with function name and arguments within <tool_call></tool_call> XML tags:\n<tool_call>\n{{\"name\": <function-name>, \"arguments\": <args-json-object>}}\n</tool_call><|im_end|>\n<|im_start|>user\nHi<|im_end|>\n<|im_start|>assistant\nHello! How can I help?<|im_end|>\n<|im_start|>user\nTell me a joke.<|im_end|>\n"
+  },
+  {
+   "name": "ends_with_assistant",
+   "messages": [
+    {
+     "role": "user",
+     "content": "Say hi"
+    },
+    {
+     "role": "assistant",
+     "content": "Hi!"
+    }
+   ],
+   "tools": null,
+   "add_generation_prompt": true,
+   "kwargs": {},
+   "text": "<|im_start|>system\nYou are Qwen, created by Alibaba Cloud. You are a helpful assistant.<|im_end|>\n<|im_start|>user\nSay hi<|im_end|>\n<|im_start|>assistant\nHi!<|im_end|>\n<|im_start|>assistant\n"
+  },
+  {
+   "name": "ends_with_assistant",
+   "messages": [
+    {
+     "role": "user",
+     "content": "Say hi"
+    },
+    {
+     "role": "assistant",
+     "content": "Hi!"
+    }
+   ],
+   "tools": null,
+   "add_generation_prompt": false,
+   "kwargs": {},
+   "text": "<|im_start|>system\nYou are Qwen, created by Alibaba Cloud. You are a helpful assistant.<|im_end|>\n<|im_start|>user\nSay hi<|im_end|>\n<|im_start|>assistant\nHi!<|im_end|>\n"
+  },
+  {
+   "name": "ends_with_assistant",
+   "messages": [
+    {
+     "role": "user",
+     "content": "Say hi"
+    },
+    {
+     "role": "assistant",
+     "content": "Hi!"
+    }
+   ],
+   "tools": [
+    {
+     "type": "function",
+     "function": {
+      "name": "lookup",
+      "description": "Look something up in the encyclopedia.",
+      "parameters": {
+       "type": "object",
+       "properties": {
+        "query": {
+         "type": "string",
+         "description": "What to look for."
+        }
+       },
+       "required": [
+        "query"
+       ]
+      }
+     }
+    },
+    {
+     "type": "function",
+     "function": {
+      "name": "run_python",
+      "description": "Run a Python program and return what it printed.",
+      "parameters": {
+       "type": "object",
+       "properties": {
+        "code": {
+         "type": "string"
+        }
+       },
+       "required": [
+        "code"
+       ]
+      }
+     }
+    }
+   ],
+   "add_generation_prompt": true,
+   "kwargs": {},
+   "text": "<|im_start|>system\nYou are Qwen, created by Alibaba Cloud. You are a helpful assistant.\n\n# Tools\n\nYou may call one or more functions to assist with the user query.\n\nYou are provided with function signatures within <tools></tools> XML tags:\n<tools>\n{\"type\": \"function\", \"function\": {\"name\": \"lookup\", \"description\": \"Look something up in the encyclopedia.\", \"parameters\": {\"type\": \"object\", \"properties\": {\"query\": {\"type\": \"string\", \"description\": \"What to look for.\"}}, \"required\": [\"query\"]}}}\n{\"type\": \"function\", \"function\": {\"name\": \"run_python\", \"description\": \"Run a Python program and return what it printed.\", \"parameters\": {\"type\": \"object\", \"properties\": {\"code\": {\"type\": \"string\"}}, \"required\": [\"code\"]}}}\n</tools>\n\nFor each function call, return a json object with function name and arguments within <tool_call></tool_call> XML tags:\n<tool_call>\n{{\"name\": <function-name>, \"arguments\": <args-json-object>}}\n</tool_call><|im_end|>\n<|im_start|>user\nSay hi<|im_end|>\n<|im_start|>assistant\nHi!<|im_end|>\n<|im_start|>assistant\n"
+  },
+  {
+   "name": "ends_with_assistant",
+   "messages": [
+    {
+     "role": "user",
+     "content": "Say hi"
+    },
+    {
+     "role": "assistant",
+     "content": "Hi!"
+    }
+   ],
+   "tools": [
+    {
+     "type": "function",
+     "function": {
+      "name": "lookup",
+      "description": "Look something up in the encyclopedia.",
+      "parameters": {
+       "type": "object",
+       "properties": {
+        "query": {
+         "type": "string",
+         "description": "What to look for."
+        }
+       },
+       "required": [
+        "query"
+       ]
+      }
+     }
+    },
+    {
+     "type": "function",
+     "function": {
+      "name": "run_python",
+      "description": "Run a Python program and return what it printed.",
+      "parameters": {
+       "type": "object",
+       "properties": {
+        "code": {
+         "type": "string"
+        }
+       },
+       "required": [
+        "code"
+       ]
+      }
+     }
+    }
+   ],
+   "add_generation_prompt": false,
+   "kwargs": {},
+   "text": "<|im_start|>system\nYou are Qwen, created by Alibaba Cloud. You are a helpful assistant.\n\n# Tools\n\nYou may call one or more functions to assist with the user query.\n\nYou are provided with function signatures within <tools></tools> XML tags:\n<tools>\n{\"type\": \"function\", \"function\": {\"name\": \"lookup\", \"description\": \"Look something up in the encyclopedia.\", \"parameters\": {\"type\": \"object\", \"properties\": {\"query\": {\"type\": \"string\", \"description\": \"What to look for.\"}}, \"required\": [\"query\"]}}}\n{\"type\": \"function\", \"function\": {\"name\": \"run_python\", \"description\": \"Run a Python program and return what it printed.\", \"parameters\": {\"type\": \"object\", \"properties\": {\"code\": {\"type\": \"string\"}}, \"required\": [\"code\"]}}}\n</tools>\n\nFor each function call, return a json object with function name and arguments within <tool_call></tool_call> XML tags:\n<tool_call>\n{{\"name\": <function-name>, \"arguments\": <args-json-object>}}\n</tool_call><|im_end|>\n<|im_start|>user\nSay hi<|im_end|>\n<|im_start|>assistant\nHi!<|im_end|>\n"
+  },
+  {
+   "name": "unicode_and_newlines",
+   "messages": [
+    {
+     "role": "user",
+     "content": "Zażółć gęślą jaźń\n\nSecond paragraph with <tags> & symbols: {braces} [brackets] \"quotes\" 日本語"
+    }
+   ],
+   "tools": null,
+   "add_generation_prompt": true,
+   "kwargs": {},
+   "text": "<|im_start|>system\nYou are Qwen, created by Alibaba Cloud. You are a helpful assistant.<|im_end|>\n<|im_start|>user\nZażółć gęślą jaźń\n\nSecond paragraph with <tags> & symbols: {braces} [brackets] \"quotes\" 日本語<|im_end|>\n<|im_start|>assistant\n"
+  },
+  {
+   "name": "unicode_and_newlines",
+   "messages": [
+    {
+     "role": "user",
+     "content": "Zażółć gęślą jaźń\n\nSecond paragraph with <tags> & symbols: {braces} [brackets] \"quotes\" 日本語"
+    }
+   ],
+   "tools": null,
+   "add_generation_prompt": false,
+   "kwargs": {},
+   "text": "<|im_start|>system\nYou are Qwen, created by Alibaba Cloud. You are a helpful assistant.<|im_end|>\n<|im_start|>user\nZażółć gęślą jaźń\n\nSecond paragraph with <tags> & symbols: {braces} [brackets] \"quotes\" 日本語<|im_end|>\n"
+  },
+  {
+   "name": "unicode_and_newlines",
+   "messages": [
+    {
+     "role": "user",
+     "content": "Zażółć gęślą jaźń\n\nSecond paragraph with <tags> & symbols: {braces} [brackets] \"quotes\" 日本語"
+    }
+   ],
+   "tools": [
+    {
+     "type": "function",
+     "function": {
+      "name": "lookup",
+      "description": "Look something up in the encyclopedia.",
+      "parameters": {
+       "type": "object",
+       "properties": {
+        "query": {
+         "type": "string",
+         "description": "What to look for."
+        }
+       },
+       "required": [
+        "query"
+       ]
+      }
+     }
+    },
+    {
+     "type": "function",
+     "function": {
+      "name": "run_python",
+      "description": "Run a Python program and return what it printed.",
+      "parameters": {
+       "type": "object",
+       "properties": {
+        "code": {
+         "type": "string"
+        }
+       },
+       "required": [
+        "code"
+       ]
+      }
+     }
+    }
+   ],
+   "add_generation_prompt": true,
+   "kwargs": {},
+   "text": "<|im_start|>system\nYou are Qwen, created by Alibaba Cloud. You are a helpful assistant.\n\n# Tools\n\nYou may call one or more functions to assist with the user query.\n\nYou are provided with function signatures within <tools></tools> XML tags:\n<tools>\n{\"type\": \"function\", \"function\": {\"name\": \"lookup\", \"description\": \"Look something up in the encyclopedia.\", \"parameters\": {\"type\": \"object\", \"properties\": {\"query\": {\"type\": \"string\", \"description\": \"What to look for.\"}}, \"required\": [\"query\"]}}}\n{\"type\": \"function\", \"function\": {\"name\": \"run_python\", \"description\": \"Run a Python program and return what it printed.\", \"parameters\": {\"type\": \"object\", \"properties\": {\"code\": {\"type\": \"string\"}}, \"required\": [\"code\"]}}}\n</tools>\n\nFor each function call, return a json object with function name and arguments within <tool_call></tool_call> XML tags:\n<tool_call>\n{{\"name\": <function-name>, \"arguments\": <args-json-object>}}\n</tool_call><|im_end|>\n<|im_start|>user\nZażółć gęślą jaźń\n\nSecond paragraph with <tags> & symbols: {braces} [brackets] \"quotes\" 日本語<|im_end|>\n<|im_start|>assistant\n"
+  },
+  {
+   "name": "unicode_and_newlines",
+   "messages": [
+    {
+     "role": "user",
+     "content": "Zażółć gęślą jaźń\n\nSecond paragraph with <tags> & symbols: {braces} [brackets] \"quotes\" 日本語"
+    }
+   ],
+   "tools": [
+    {
+     "type": "function",
+     "function": {
+      "name": "lookup",
+      "description": "Look something up in the encyclopedia.",
+      "parameters": {
+       "type": "object",
+       "properties": {
+        "query": {
+         "type": "string",
+         "description": "What to look for."
+        }
+       },
+       "required": [
+        "query"
+       ]
+      }
+     }
+    },
+    {
+     "type": "function",
+     "function": {
+      "name": "run_python",
+      "description": "Run a Python program and return what it printed.",
+      "parameters": {
+       "type": "object",
+       "properties": {
+        "code": {
+         "type": "string"
+        }
+       },
+       "required": [
+        "code"
+       ]
+      }
+     }
+    }
+   ],
+   "add_generation_prompt": false,
+   "kwargs": {},
+   "text": "<|im_start|>system\nYou are Qwen, created by Alibaba Cloud. You are a helpful assistant.\n\n# Tools\n\nYou may call one or more functions to assist with the user query.\n\nYou are provided with function signatures within <tools></tools> XML tags:\n<tools>\n{\"type\": \"function\", \"function\": {\"name\": \"lookup\", \"description\": \"Look something up in the encyclopedia.\", \"parameters\": {\"type\": \"object\", \"properties\": {\"query\": {\"type\": \"string\", \"description\": \"What to look for.\"}}, \"required\": [\"query\"]}}}\n{\"type\": \"function\", \"function\": {\"name\": \"run_python\", \"description\": \"Run a Python program and return what it printed.\", \"parameters\": {\"type\": \"object\", \"properties\": {\"code\": {\"type\": \"string\"}}, \"required\": [\"code\"]}}}\n</tools>\n\nFor each function call, return a json object with function name and arguments within <tool_call></tool_call> XML tags:\n<tool_call>\n{{\"name\": <function-name>, \"arguments\": <args-json-object>}}\n</tool_call><|im_end|>\n<|im_start|>user\nZażółć gęślą jaźń\n\nSecond paragraph with <tags> & symbols: {braces} [brackets] \"quotes\" 日本語<|im_end|>\n"
+  },
+  {
+   "name": "tool_round_trip",
+   "messages": [
+    {
+     "role": "system",
+     "content": "You are Ember."
+    },
+    {
+     "role": "user",
+     "content": "Who wrote Hamlet?"
+    },
+    {
+     "role": "assistant",
+     "content": "",
+     "tool_calls": [
+      {
+       "id": "call_1",
+       "type": "function",
+       "function": {
+        "name": "lookup",
+        "arguments": {
+         "query": "Hamlet author"
+        }
+       }
+      }
+     ]
+    },
+    {
+     "role": "tool",
+     "tool_call_id": "call_1",
+     "name": "lookup",
+     "content": "Hamlet is a tragedy by William Shakespeare."
+    },
+    {
+     "role": "assistant",
+     "content": "William Shakespeare wrote Hamlet."
+    },
+    {
+     "role": "user",
+     "content": "And Macbeth?"
+    }
+   ],
+   "tools": null,
+   "add_generation_prompt": true,
+   "kwargs": {},
+   "text": "<|im_start|>system\nYou are Ember.<|im_end|>\n<|im_start|>user\nWho wrote Hamlet?<|im_end|>\n<|im_start|>assistant\n<tool_call>\n{\"name\": \"lookup\", \"arguments\": {\"query\": \"Hamlet author\"}}\n</tool_call><|im_end|>\n<|im_start|>user\n<tool_response>\nHamlet is a tragedy by William Shakespeare.\n</tool_response><|im_end|>\n<|im_start|>assistant\nWilliam Shakespeare wrote Hamlet.<|im_end|>\n<|im_start|>user\nAnd Macbeth?<|im_end|>\n<|im_start|>assistant\n"
+  },
+  {
+   "name": "tool_round_trip",
+   "messages": [
+    {
+     "role": "system",
+     "content": "You are Ember."
+    },
+    {
+     "role": "user",
+     "content": "Who wrote Hamlet?"
+    },
+    {
+     "role": "assistant",
+     "content": "",
+     "tool_calls": [
+      {
+       "id": "call_1",
+       "type": "function",
+       "function": {
+        "name": "lookup",
+        "arguments": {
+         "query": "Hamlet author"
+        }
+       }
+      }
+     ]
+    },
+    {
+     "role": "tool",
+     "tool_call_id": "call_1",
+     "name": "lookup",
+     "content": "Hamlet is a tragedy by William Shakespeare."
+    },
+    {
+     "role": "assistant",
+     "content": "William Shakespeare wrote Hamlet."
+    },
+    {
+     "role": "user",
+     "content": "And Macbeth?"
+    }
+   ],
+   "tools": null,
+   "add_generation_prompt": false,
+   "kwargs": {},
+   "text": "<|im_start|>system\nYou are Ember.<|im_end|>\n<|im_start|>user\nWho wrote Hamlet?<|im_end|>\n<|im_start|>assistant\n<tool_call>\n{\"name\": \"lookup\", \"arguments\": {\"query\": \"Hamlet author\"}}\n</tool_call><|im_end|>\n<|im_start|>user\n<tool_response>\nHamlet is a tragedy by William Shakespeare.\n</tool_response><|im_end|>\n<|im_start|>assistant\nWilliam Shakespeare wrote Hamlet.<|im_end|>\n<|im_start|>user\nAnd Macbeth?<|im_end|>\n"
+  },
+  {
+   "name": "tool_round_trip",
+   "messages": [
+    {
+     "role": "system",
+     "content": "You are Ember."
+    },
+    {
+     "role": "user",
+     "content": "Who wrote Hamlet?"
+    },
+    {
+     "role": "assistant",
+     "content": "",
+     "tool_calls": [
+      {
+       "id": "call_1",
+       "type": "function",
+       "function": {
+        "name": "lookup",
+        "arguments": {
+         "query": "Hamlet author"
+        }
+       }
+      }
+     ]
+    },
+    {
+     "role": "tool",
+     "tool_call_id": "call_1",
+     "name": "lookup",
+     "content": "Hamlet is a tragedy by William Shakespeare."
+    },
+    {
+     "role": "assistant",
+     "content": "William Shakespeare wrote Hamlet."
+    },
+    {
+     "role": "user",
+     "content": "And Macbeth?"
+    }
+   ],
+   "tools": [
+    {
+     "type": "function",
+     "function": {
+      "name": "lookup",
+      "description": "Look something up in the encyclopedia.",
+      "parameters": {
+       "type": "object",
+       "properties": {
+        "query": {
+         "type": "string",
+         "description": "What to look for."
+        }
+       },
+       "required": [
+        "query"
+       ]
+      }
+     }
+    },
+    {
+     "type": "function",
+     "function": {
+      "name": "run_python",
+      "description": "Run a Python program and return what it printed.",
+      "parameters": {
+       "type": "object",
+       "properties": {
+        "code": {
+         "type": "string"
+        }
+       },
+       "required": [
+        "code"
+       ]
+      }
+     }
+    }
+   ],
+   "add_generation_prompt": true,
+   "kwargs": {},
+   "text": "<|im_start|>system\nYou are Ember.\n\n# Tools\n\nYou may call one or more functions to assist with the user query.\n\nYou are provided with function signatures within <tools></tools> XML tags:\n<tools>\n{\"type\": \"function\", \"function\": {\"name\": \"lookup\", \"description\": \"Look something up in the encyclopedia.\", \"parameters\": {\"type\": \"object\", \"properties\": {\"query\": {\"type\": \"string\", \"description\": \"What to look for.\"}}, \"required\": [\"query\"]}}}\n{\"type\": \"function\", \"function\": {\"name\": \"run_python\", \"description\": \"Run a Python program and return what it printed.\", \"parameters\": {\"type\": \"object\", \"properties\": {\"code\": {\"type\": \"string\"}}, \"required\": [\"code\"]}}}\n</tools>\n\nFor each function call, return a json object with function name and arguments within <tool_call></tool_call> XML tags:\n<tool_call>\n{{\"name\": <function-name>, \"arguments\": <args-json-object>}}\n</tool_call><|im_end|>\n<|im_start|>user\nWho wrote Hamlet?<|im_end|>\n<|im_start|>assistant\n<tool_call>\n{\"name\": \"lookup\", \"arguments\": {\"query\": \"Hamlet author\"}}\n</tool_call><|im_end|>\n<|im_start|>user\n<tool_response>\nHamlet is a tragedy by William Shakespeare.\n</tool_response><|im_end|>\n<|im_start|>assistant\nWilliam Shakespeare wrote Hamlet.<|im_end|>\n<|im_start|>user\nAnd Macbeth?<|im_end|>\n<|im_start|>assistant\n"
+  },
+  {
+   "name": "tool_round_trip",
+   "messages": [
+    {
+     "role": "system",
+     "content": "You are Ember."
+    },
+    {
+     "role": "user",
+     "content": "Who wrote Hamlet?"
+    },
+    {
+     "role": "assistant",
+     "content": "",
+     "tool_calls": [
+      {
+       "id": "call_1",
+       "type": "function",
+       "function": {
+        "name": "lookup",
+        "arguments": {
+         "query": "Hamlet author"
+        }
+       }
+      }
+     ]
+    },
+    {
+     "role": "tool",
+     "tool_call_id": "call_1",
+     "name": "lookup",
+     "content": "Hamlet is a tragedy by William Shakespeare."
+    },
+    {
+     "role": "assistant",
+     "content": "William Shakespeare wrote Hamlet."
+    },
+    {
+     "role": "user",
+     "content": "And Macbeth?"
+    }
+   ],
+   "tools": [
+    {
+     "type": "function",
+     "function": {
+      "name": "lookup",
+      "description": "Look something up in the encyclopedia.",
+      "parameters": {
+       "type": "object",
+       "properties": {
+        "query": {
+         "type": "string",
+         "description": "What to look for."
+        }
+       },
+       "required": [
+        "query"
+       ]
+      }
+     }
+    },
+    {
+     "type": "function",
+     "function": {
+      "name": "run_python",
+      "description": "Run a Python program and return what it printed.",
+      "parameters": {
+       "type": "object",
+       "properties": {
+        "code": {
+         "type": "string"
+        }
+       },
+       "required": [
+        "code"
+       ]
+      }
+     }
+    }
+   ],
+   "add_generation_prompt": false,
+   "kwargs": {},
+   "text": "<|im_start|>system\nYou are Ember.\n\n# Tools\n\nYou may call one or more functions to assist with the user query.\n\nYou are provided with function signatures within <tools></tools> XML tags:\n<tools>\n{\"type\": \"function\", \"function\": {\"name\": \"lookup\", \"description\": \"Look something up in the encyclopedia.\", \"parameters\": {\"type\": \"object\", \"properties\": {\"query\": {\"type\": \"string\", \"description\": \"What to look for.\"}}, \"required\": [\"query\"]}}}\n{\"type\": \"function\", \"function\": {\"name\": \"run_python\", \"description\": \"Run a Python program and return what it printed.\", \"parameters\": {\"type\": \"object\", \"properties\": {\"code\": {\"type\": \"string\"}}, \"required\": [\"code\"]}}}\n</tools>\n\nFor each function call, return a json object with function name and arguments within <tool_call></tool_call> XML tags:\n<tool_call>\n{{\"name\": <function-name>, \"arguments\": <args-json-object>}}\n</tool_call><|im_end|>\n<|im_start|>user\nWho wrote Hamlet?<|im_end|>\n<|im_start|>assistant\n<tool_call>\n{\"name\": \"lookup\", \"arguments\": {\"query\": \"Hamlet author\"}}\n</tool_call><|im_end|>\n<|im_start|>user\n<tool_response>\nHamlet is a tragedy by William Shakespeare.\n</tool_response><|im_end|>\n<|im_start|>assistant\nWilliam Shakespeare wrote Hamlet.<|im_end|>\n<|im_start|>user\nAnd Macbeth?<|im_end|>\n"
+  },
+  {
+   "name": "two_tool_calls",
+   "messages": [
+    {
+     "role": "user",
+     "content": "Compute 17*23 and look up Paris."
+    },
+    {
+     "role": "assistant",
+     "content": "I will do both.",
+     "tool_calls": [
+      {
+       "id": "a",
+       "type": "function",
+       "function": {
+        "name": "run_python",
+        "arguments": {
+         "code": "print(17*23)"
+        }
+       }
+      },
+      {
+       "id": "b",
+       "type": "function",
+       "function": {
+        "name": "lookup",
+        "arguments": {
+         "query": "Paris"
+        }
+       }
+      }
+     ]
+    },
+    {
+     "role": "tool",
+     "tool_call_id": "a",
+     "name": "run_python",
+     "content": "391"
+    },
+    {
+     "role": "tool",
+     "tool_call_id": "b",
+     "name": "lookup",
+     "content": "Paris is the capital of France."
+    }
+   ],
+   "tools": null,
+   "add_generation_prompt": true,
+   "kwargs": {},
+   "text": "<|im_start|>system\nYou are Qwen, created by Alibaba Cloud. You are a helpful assistant.<|im_end|>\n<|im_start|>user\nCompute 17*23 and look up Paris.<|im_end|>\n<|im_start|>assistant\nI will do both.\n<tool_call>\n{\"name\": \"run_python\", \"arguments\": {\"code\": \"print(17*23)\"}}\n</tool_call>\n<tool_call>\n{\"name\": \"lookup\", \"arguments\": {\"query\": \"Paris\"}}\n</tool_call><|im_end|>\n<|im_start|>user\n<tool_response>\n391\n</tool_response>\n<tool_response>\nParis is the capital of France.\n</tool_response><|im_end|>\n<|im_start|>assistant\n"
+  },
+  {
+   "name": "two_tool_calls",
+   "messages": [
+    {
+     "role": "user",
+     "content": "Compute 17*23 and look up Paris."
+    },
+    {
+     "role": "assistant",
+     "content": "I will do both.",
+     "tool_calls": [
+      {
+       "id": "a",
+       "type": "function",
+       "function": {
+        "name": "run_python",
+        "arguments": {
+         "code": "print(17*23)"
+        }
+       }
+      },
+      {
+       "id": "b",
+       "type": "function",
+       "function": {
+        "name": "lookup",
+        "arguments": {
+         "query": "Paris"
+        }
+       }
+      }
+     ]
+    },
+    {
+     "role": "tool",
+     "tool_call_id": "a",
+     "name": "run_python",
+     "content": "391"
+    },
+    {
+     "role": "tool",
+     "tool_call_id": "b",
+     "name": "lookup",
+     "content": "Paris is the capital of France."
+    }
+   ],
+   "tools": null,
+   "add_generation_prompt": false,
+   "kwargs": {},
+   "text": "<|im_start|>system\nYou are Qwen, created by Alibaba Cloud. You are a helpful assistant.<|im_end|>\n<|im_start|>user\nCompute 17*23 and look up Paris.<|im_end|>\n<|im_start|>assistant\nI will do both.\n<tool_call>\n{\"name\": \"run_python\", \"arguments\": {\"code\": \"print(17*23)\"}}\n</tool_call>\n<tool_call>\n{\"name\": \"lookup\", \"arguments\": {\"query\": \"Paris\"}}\n</tool_call><|im_end|>\n<|im_start|>user\n<tool_response>\n391\n</tool_response>\n<tool_response>\nParis is the capital of France.\n</tool_response><|im_end|>\n"
+  },
+  {
+   "name": "two_tool_calls",
+   "messages": [
+    {
+     "role": "user",
+     "content": "Compute 17*23 and look up Paris."
+    },
+    {
+     "role": "assistant",
+     "content": "I will do both.",
+     "tool_calls": [
+      {
+       "id": "a",
+       "type": "function",
+       "function": {
+        "name": "run_python",
+        "arguments": {
+         "code": "print(17*23)"
+        }
+       }
+      },
+      {
+       "id": "b",
+       "type": "function",
+       "function": {
+        "name": "lookup",
+        "arguments": {
+         "query": "Paris"
+        }
+       }
+      }
+     ]
+    },
+    {
+     "role": "tool",
+     "tool_call_id": "a",
+     "name": "run_python",
+     "content": "391"
+    },
+    {
+     "role": "tool",
+     "tool_call_id": "b",
+     "name": "lookup",
+     "content": "Paris is the capital of France."
+    }
+   ],
+   "tools": [
+    {
+     "type": "function",
+     "function": {
+      "name": "lookup",
+      "description": "Look something up in the encyclopedia.",
+      "parameters": {
+       "type": "object",
+       "properties": {
+        "query": {
+         "type": "string",
+         "description": "What to look for."
+        }
+       },
+       "required": [
+        "query"
+       ]
+      }
+     }
+    },
+    {
+     "type": "function",
+     "function": {
+      "name": "run_python",
+      "description": "Run a Python program and return what it printed.",
+      "parameters": {
+       "type": "object",
+       "properties": {
+        "code": {
+         "type": "string"
+        }
+       },
+       "required": [
+        "code"
+       ]
+      }
+     }
+    }
+   ],
+   "add_generation_prompt": true,
+   "kwargs": {},
+   "text": "<|im_start|>system\nYou are Qwen, created by Alibaba Cloud. You are a helpful assistant.\n\n# Tools\n\nYou may call one or more functions to assist with the user query.\n\nYou are provided with function signatures within <tools></tools> XML tags:\n<tools>\n{\"type\": \"function\", \"function\": {\"name\": \"lookup\", \"description\": \"Look something up in the encyclopedia.\", \"parameters\": {\"type\": \"object\", \"properties\": {\"query\": {\"type\": \"string\", \"description\": \"What to look for.\"}}, \"required\": [\"query\"]}}}\n{\"type\": \"function\", \"function\": {\"name\": \"run_python\", \"description\": \"Run a Python program and return what it printed.\", \"parameters\": {\"type\": \"object\", \"properties\": {\"code\": {\"type\": \"string\"}}, \"required\": [\"code\"]}}}\n</tools>\n\nFor each function call, return a json object with function name and arguments within <tool_call></tool_call> XML tags:\n<tool_call>\n{{\"name\": <function-name>, \"arguments\": <args-json-object>}}\n</tool_call><|im_end|>\n<|im_start|>user\nCompute 17*23 and look up Paris.<|im_end|>\n<|im_start|>assistant\nI will do both.\n<tool_call>\n{\"name\": \"run_python\", \"arguments\": {\"code\": \"print(17*23)\"}}\n</tool_call>\n<tool_call>\n{\"name\": \"lookup\", \"arguments\": {\"query\": \"Paris\"}}\n</tool_call><|im_end|>\n<|im_start|>user\n<tool_response>\n391\n</tool_response>\n<tool_response>\nParis is the capital of France.\n</tool_response><|im_end|>\n<|im_start|>assistant\n"
+  },
+  {
+   "name": "two_tool_calls",
+   "messages": [
+    {
+     "role": "user",
+     "content": "Compute 17*23 and look up Paris."
+    },
+    {
+     "role": "assistant",
+     "content": "I will do both.",
+     "tool_calls": [
+      {
+       "id": "a",
+       "type": "function",
+       "function": {
+        "name": "run_python",
+        "arguments": {
+         "code": "print(17*23)"
+        }
+       }
+      },
+      {
+       "id": "b",
+       "type": "function",
+       "function": {
+        "name": "lookup",
+        "arguments": {
+         "query": "Paris"
+        }
+       }
+      }
+     ]
+    },
+    {
+     "role": "tool",
+     "tool_call_id": "a",
+     "name": "run_python",
+     "content": "391"
+    },
+    {
+     "role": "tool",
+     "tool_call_id": "b",
+     "name": "lookup",
+     "content": "Paris is the capital of France."
+    }
+   ],
+   "tools": [
+    {
+     "type": "function",
+     "function": {
+      "name": "lookup",
+      "description": "Look something up in the encyclopedia.",
+      "parameters": {
+       "type": "object",
+       "properties": {
+        "query": {
+         "type": "string",
+         "description": "What to look for."
+        }
+       },
+       "required": [
+        "query"
+       ]
+      }
+     }
+    },
+    {
+     "type": "function",
+     "function": {
+      "name": "run_python",
+      "description": "Run a Python program and return what it printed.",
+      "parameters": {
+       "type": "object",
+       "properties": {
+        "code": {
+         "type": "string"
+        }
+       },
+       "required": [
+        "code"
+       ]
+      }
+     }
+    }
+   ],
+   "add_generation_prompt": false,
+   "kwargs": {},
+   "text": "<|im_start|>system\nYou are Qwen, created by Alibaba Cloud. You are a helpful assistant.\n\n# Tools\n\nYou may call one or more functions to assist with the user query.\n\nYou are provided with function signatures within <tools></tools> XML tags:\n<tools>\n{\"type\": \"function\", \"function\": {\"name\": \"lookup\", \"description\": \"Look something up in the encyclopedia.\", \"parameters\": {\"type\": \"object\", \"properties\": {\"query\": {\"type\": \"string\", \"description\": \"What to look for.\"}}, \"required\": [\"query\"]}}}\n{\"type\": \"function\", \"function\": {\"name\": \"run_python\", \"description\": \"Run a Python program and return what it printed.\", \"parameters\": {\"type\": \"object\", \"properties\": {\"code\": {\"type\": \"string\"}}, \"required\": [\"code\"]}}}\n</tools>\n\nFor each function call, return a json object with function name and arguments within <tool_call></tool_call> XML tags:\n<tool_call>\n{{\"name\": <function-name>, \"arguments\": <args-json-object>}}\n</tool_call><|im_end|>\n<|im_start|>user\nCompute 17*23 and look up Paris.<|im_end|>\n<|im_start|>assistant\nI will do both.\n<tool_call>\n{\"name\": \"run_python\", \"arguments\": {\"code\": \"print(17*23)\"}}\n</tool_call>\n<tool_call>\n{\"name\": \"lookup\", \"arguments\": {\"query\": \"Paris\"}}\n</tool_call><|im_end|>\n<|im_start|>user\n<tool_response>\n391\n</tool_response>\n<tool_response>\nParis is the capital of France.\n</tool_response><|im_end|>\n"
+  },
+  {
+   "name": "system_only",
+   "messages": [
+    {
+     "role": "system",
+     "content": "Only a system message."
+    }
+   ],
+   "tools": null,
+   "add_generation_prompt": true,
+   "kwargs": {},
+   "text": "<|im_start|>system\nOnly a system message.<|im_end|>\n<|im_start|>assistant\n"
+  },
+  {
+   "name": "system_only",
+   "messages": [
+    {
+     "role": "system",
+     "content": "Only a system message."
+    }
+   ],
+   "tools": null,
+   "add_generation_prompt": false,
+   "kwargs": {},
+   "text": "<|im_start|>system\nOnly a system message.<|im_end|>\n"
+  },
+  {
+   "name": "system_only",
+   "messages": [
+    {
+     "role": "system",
+     "content": "Only a system message."
+    }
+   ],
+   "tools": [
+    {
+     "type": "function",
+     "function": {
+      "name": "lookup",
+      "description": "Look something up in the encyclopedia.",
+      "parameters": {
+       "type": "object",
+       "properties": {
+        "query": {
+         "type": "string",
+         "description": "What to look for."
+        }
+       },
+       "required": [
+        "query"
+       ]
+      }
+     }
+    },
+    {
+     "type": "function",
+     "function": {
+      "name": "run_python",
+      "description": "Run a Python program and return what it printed.",
+      "parameters": {
+       "type": "object",
+       "properties": {
+        "code": {
+         "type": "string"
+        }
+       },
+       "required": [
+        "code"
+       ]
+      }
+     }
+    }
+   ],
+   "add_generation_prompt": true,
+   "kwargs": {},
+   "text": "<|im_start|>system\nOnly a system message.\n\n# Tools\n\nYou may call one or more functions to assist with the user query.\n\nYou are provided with function signatures within <tools></tools> XML tags:\n<tools>\n{\"type\": \"function\", \"function\": {\"name\": \"lookup\", \"description\": \"Look something up in the encyclopedia.\", \"parameters\": {\"type\": \"object\", \"properties\": {\"query\": {\"type\": \"string\", \"description\": \"What to look for.\"}}, \"required\": [\"query\"]}}}\n{\"type\": \"function\", \"function\": {\"name\": \"run_python\", \"description\": \"Run a Python program and return what it printed.\", \"parameters\": {\"type\": \"object\", \"properties\": {\"code\": {\"type\": \"string\"}}, \"required\": [\"code\"]}}}\n</tools>\n\nFor each function call, return a json object with function name and arguments within <tool_call></tool_call> XML tags:\n<tool_call>\n{{\"name\": <function-name>, \"arguments\": <args-json-object>}}\n</tool_call><|im_end|>\n<|im_start|>assistant\n"
+  },
+  {
+   "name": "system_only",
+   "messages": [
+    {
+     "role": "system",
+     "content": "Only a system message."
+    }
+   ],
+   "tools": [
+    {
+     "type": "function",
+     "function": {
+      "name": "lookup",
+      "description": "Look something up in the encyclopedia.",
+      "parameters": {
+       "type": "object",
+       "properties": {
+        "query": {
+         "type": "string",
+         "description": "What to look for."
+        }
+       },
+       "required": [
+        "query"
+       ]
+      }
+     }
+    },
+    {
+     "type": "function",
+     "function": {
+      "name": "run_python",
+      "description": "Run a Python program and return what it printed.",
+      "parameters": {
+       "type": "object",
+       "properties": {
+        "code": {
+         "type": "string"
+        }
+       },
+       "required": [
+        "code"
+       ]
+      }
+     }
+    }
+   ],
+   "add_generation_prompt": false,
+   "kwargs": {},
+   "text": "<|im_start|>system\nOnly a system message.\n\n# Tools\n\nYou may call one or more functions to assist with the user query.\n\nYou are provided with function signatures within <tools></tools> XML tags:\n<tools>\n{\"type\": \"function\", \"function\": {\"name\": \"lookup\", \"description\": \"Look something up in the encyclopedia.\", \"parameters\": {\"type\": \"object\", \"properties\": {\"query\": {\"type\": \"string\", \"description\": \"What to look for.\"}}, \"required\": [\"query\"]}}}\n{\"type\": \"function\", \"function\": {\"name\": \"run_python\", \"description\": \"Run a Python program and return what it printed.\", \"parameters\": {\"type\": \"object\", \"properties\": {\"code\": {\"type\": \"string\"}}, \"required\": [\"code\"]}}}\n</tools>\n\nFor each function call, return a json object with function name and arguments within <tool_call></tool_call> XML tags:\n<tool_call>\n{{\"name\": <function-name>, \"arguments\": <args-json-object>}}\n</tool_call><|im_end|>\n"
+  },
+  {
+   "name": "system_then_assistant",
+   "messages": [
+    {
+     "role": "system",
+     "content": "Be brief."
+    },
+    {
+     "role": "user",
+     "content": "Hi"
+    },
+    {
+     "role": "assistant",
+     "content": "Hello!"
+    },
+    {
+     "role": "user",
+     "content": "Bye"
+    }
+   ],
+   "tools": null,
+   "add_generation_prompt": true,
+   "kwargs": {},
+   "text": "<|im_start|>system\nBe brief.<|im_end|>\n<|im_start|>user\nHi<|im_end|>\n<|im_start|>assistant\nHello!<|im_end|>\n<|im_start|>user\nBye<|im_end|>\n<|im_start|>assistant\n"
+  },
+  {
+   "name": "system_then_assistant",
+   "messages": [
+    {
+     "role": "system",
+     "content": "Be brief."
+    },
+    {
+     "role": "user",
+     "content": "Hi"
+    },
+    {
+     "role": "assistant",
+     "content": "Hello!"
+    },
+    {
+     "role": "user",
+     "content": "Bye"
+    }
+   ],
+   "tools": null,
+   "add_generation_prompt": false,
+   "kwargs": {},
+   "text": "<|im_start|>system\nBe brief.<|im_end|>\n<|im_start|>user\nHi<|im_end|>\n<|im_start|>assistant\nHello!<|im_end|>\n<|im_start|>user\nBye<|im_end|>\n"
+  },
+  {
+   "name": "system_then_assistant",
+   "messages": [
+    {
+     "role": "system",
+     "content": "Be brief."
+    },
+    {
+     "role": "user",
+     "content": "Hi"
+    },
+    {
+     "role": "assistant",
+     "content": "Hello!"
+    },
+    {
+     "role": "user",
+     "content": "Bye"
+    }
+   ],
+   "tools": [
+    {
+     "type": "function",
+     "function": {
+      "name": "lookup",
+      "description": "Look something up in the encyclopedia.",
+      "parameters": {
+       "type": "object",
+       "properties": {
+        "query": {
+         "type": "string",
+         "description": "What to look for."
+        }
+       },
+       "required": [
+        "query"
+       ]
+      }
+     }
+    },
+    {
+     "type": "function",
+     "function": {
+      "name": "run_python",
+      "description": "Run a Python program and return what it printed.",
+      "parameters": {
+       "type": "object",
+       "properties": {
+        "code": {
+         "type": "string"
+        }
+       },
+       "required": [
+        "code"
+       ]
+      }
+     }
+    }
+   ],
+   "add_generation_prompt": true,
+   "kwargs": {},
+   "text": "<|im_start|>system\nBe brief.\n\n# Tools\n\nYou may call one or more functions to assist with the user query.\n\nYou are provided with function signatures within <tools></tools> XML tags:\n<tools>\n{\"type\": \"function\", \"function\": {\"name\": \"lookup\", \"description\": \"Look something up in the encyclopedia.\", \"parameters\": {\"type\": \"object\", \"properties\": {\"query\": {\"type\": \"string\", \"description\": \"What to look for.\"}}, \"required\": [\"query\"]}}}\n{\"type\": \"function\", \"function\": {\"name\": \"run_python\", \"description\": \"Run a Python program and return what it printed.\", \"parameters\": {\"type\": \"object\", \"properties\": {\"code\": {\"type\": \"string\"}}, \"required\": [\"code\"]}}}\n</tools>\n\nFor each function call, return a json object with function name and arguments within <tool_call></tool_call> XML tags:\n<tool_call>\n{{\"name\": <function-name>, \"arguments\": <args-json-object>}}\n</tool_call><|im_end|>\n<|im_start|>user\nHi<|im_end|>\n<|im_start|>assistant\nHello!<|im_end|>\n<|im_start|>user\nBye<|im_end|>\n<|im_start|>assistant\n"
+  },
+  {
+   "name": "system_then_assistant",
+   "messages": [
+    {
+     "role": "system",
+     "content": "Be brief."
+    },
+    {
+     "role": "user",
+     "content": "Hi"
+    },
+    {
+     "role": "assistant",
+     "content": "Hello!"
+    },
+    {
+     "role": "user",
+     "content": "Bye"
+    }
+   ],
+   "tools": [
+    {
+     "type": "function",
+     "function": {
+      "name": "lookup",
+      "description": "Look something up in the encyclopedia.",
+      "parameters": {
+       "type": "object",
+       "properties": {
+        "query": {
+         "type": "string",
+         "description": "What to look for."
+        }
+       },
+       "required": [
+        "query"
+       ]
+      }
+     }
+    },
+    {
+     "type": "function",
+     "function": {
+      "name": "run_python",
+      "description": "Run a Python program and return what it printed.",
+      "parameters": {
+       "type": "object",
+       "properties": {
+        "code": {
+         "type": "string"
+        }
+       },
+       "required": [
+        "code"
+       ]
+      }
+     }
+    }
+   ],
+   "add_generation_prompt": false,
+   "kwargs": {},
+   "text": "<|im_start|>system\nBe brief.\n\n# Tools\n\nYou may call one or more functions to assist with the user query.\n\nYou are provided with function signatures within <tools></tools> XML tags:\n<tools>\n{\"type\": \"function\", \"function\": {\"name\": \"lookup\", \"description\": \"Look something up in the encyclopedia.\", \"parameters\": {\"type\": \"object\", \"properties\": {\"query\": {\"type\": \"string\", \"description\": \"What to look for.\"}}, \"required\": [\"query\"]}}}\n{\"type\": \"function\", \"function\": {\"name\": \"run_python\", \"description\": \"Run a Python program and return what it printed.\", \"parameters\": {\"type\": \"object\", \"properties\": {\"code\": {\"type\": \"string\"}}, \"required\": [\"code\"]}}}\n</tools>\n\nFor each function call, return a json object with function name and arguments within <tool_call></tool_call> XML tags:\n<tool_call>\n{{\"name\": <function-name>, \"arguments\": <args-json-object>}}\n</tool_call><|im_end|>\n<|im_start|>user\nHi<|im_end|>\n<|im_start|>assistant\nHello!<|im_end|>\n<|im_start|>user\nBye<|im_end|>\n"
+  },
+  {
+   "name": "mid_system",
+   "messages": [
+    {
+     "role": "user",
+     "content": "Hi"
+    },
+    {
+     "role": "system",
+     "content": "From now on answer in French."
+    },
+    {
+     "role": "user",
+     "content": "How are you?"
+    }
+   ],
+   "tools": null,
+   "add_generation_prompt": true,
+   "kwargs": {},
+   "text": "<|im_start|>system\nYou are Qwen, created by Alibaba Cloud. You are a helpful assistant.<|im_end|>\n<|im_start|>user\nHi<|im_end|>\n<|im_start|>system\nFrom now on answer in French.<|im_end|>\n<|im_start|>user\nHow are you?<|im_end|>\n<|im_start|>assistant\n"
+  },
+  {
+   "name": "mid_system",
+   "messages": [
+    {
+     "role": "user",
+     "content": "Hi"
+    },
+    {
+     "role": "system",
+     "content": "From now on answer in French."
+    },
+    {
+     "role": "user",
+     "content": "How are you?"
+    }
+   ],
+   "tools": null,
+   "add_generation_prompt": false,
+   "kwargs": {},
+   "text": "<|im_start|>system\nYou are Qwen, created by Alibaba Cloud. You are a helpful assistant.<|im_end|>\n<|im_start|>user\nHi<|im_end|>\n<|im_start|>system\nFrom now on answer in French.<|im_end|>\n<|im_start|>user\nHow are you?<|im_end|>\n"
+  },
+  {
+   "name": "mid_system",
+   "messages": [
+    {
+     "role": "user",
+     "content": "Hi"
+    },
+    {
+     "role": "system",
+     "content": "From now on answer in French."
+    },
+    {
+     "role": "user",
+     "content": "How are you?"
+    }
+   ],
+   "tools": [
+    {
+     "type": "function",
+     "function": {
+      "name": "lookup",
+      "description": "Look something up in the encyclopedia.",
+      "parameters": {
+       "type": "object",
+       "properties": {
+        "query": {
+         "type": "string",
+         "description": "What to look for."
+        }
+       },
+       "required": [
+        "query"
+       ]
+      }
+     }
+    },
+    {
+     "type": "function",
+     "function": {
+      "name": "run_python",
+      "description": "Run a Python program and return what it printed.",
+      "parameters": {
+       "type": "object",
+       "properties": {
+        "code": {
+         "type": "string"
+        }
+       },
+       "required": [
+        "code"
+       ]
+      }
+     }
+    }
+   ],
+   "add_generation_prompt": true,
+   "kwargs": {},
+   "text": "<|im_start|>system\nYou are Qwen, created by Alibaba Cloud. You are a helpful assistant.\n\n# Tools\n\nYou may call one or more functions to assist with the user query.\n\nYou are provided with function signatures within <tools></tools> XML tags:\n<tools>\n{\"type\": \"function\", \"function\": {\"name\": \"lookup\", \"description\": \"Look something up in the encyclopedia.\", \"parameters\": {\"type\": \"object\", \"properties\": {\"query\": {\"type\": \"string\", \"description\": \"What to look for.\"}}, \"required\": [\"query\"]}}}\n{\"type\": \"function\", \"function\": {\"name\": \"run_python\", \"description\": \"Run a Python program and return what it printed.\", \"parameters\": {\"type\": \"object\", \"properties\": {\"code\": {\"type\": \"string\"}}, \"required\": [\"code\"]}}}\n</tools>\n\nFor each function call, return a json object with function name and arguments within <tool_call></tool_call> XML tags:\n<tool_call>\n{{\"name\": <function-name>, \"arguments\": <args-json-object>}}\n</tool_call><|im_end|>\n<|im_start|>user\nHi<|im_end|>\n<|im_start|>system\nFrom now on answer in French.<|im_end|>\n<|im_start|>user\nHow are you?<|im_end|>\n<|im_start|>assistant\n"
+  },
+  {
+   "name": "mid_system",
+   "messages": [
+    {
+     "role": "user",
+     "content": "Hi"
+    },
+    {
+     "role": "system",
+     "content": "From now on answer in French."
+    },
+    {
+     "role": "user",
+     "content": "How are you?"
+    }
+   ],
+   "tools": [
+    {
+     "type": "function",
+     "function": {
+      "name": "lookup",
+      "description": "Look something up in the encyclopedia.",
+      "parameters": {
+       "type": "object",
+       "properties": {
+        "query": {
+         "type": "string",
+         "description": "What to look for."
+        }
+       },
+       "required": [
+        "query"
+       ]
+      }
+     }
+    },
+    {
+     "type": "function",
+     "function": {
+      "name": "run_python",
+      "description": "Run a Python program and return what it printed.",
+      "parameters": {
+       "type": "object",
+       "properties": {
+        "code": {
+         "type": "string"
+        }
+       },
+       "required": [
+        "code"
+       ]
+      }
+     }
+    }
+   ],
+   "add_generation_prompt": false,
+   "kwargs": {},
+   "text": "<|im_start|>system\nYou are Qwen, created by Alibaba Cloud. You are a helpful assistant.\n\n# Tools\n\nYou may call one or more functions to assist with the user query.\n\nYou are provided with function signatures within <tools></tools> XML tags:\n<tools>\n{\"type\": \"function\", \"function\": {\"name\": \"lookup\", \"description\": \"Look something up in the encyclopedia.\", \"parameters\": {\"type\": \"object\", \"properties\": {\"query\": {\"type\": \"string\", \"description\": \"What to look for.\"}}, \"required\": [\"query\"]}}}\n{\"type\": \"function\", \"function\": {\"name\": \"run_python\", \"description\": \"Run a Python program and return what it printed.\", \"parameters\": {\"type\": \"object\", \"properties\": {\"code\": {\"type\": \"string\"}}, \"required\": [\"code\"]}}}\n</tools>\n\nFor each function call, return a json object with function name and arguments within <tool_call></tool_call> XML tags:\n<tool_call>\n{{\"name\": <function-name>, \"arguments\": <args-json-object>}}\n</tool_call><|im_end|>\n<|im_start|>user\nHi<|im_end|>\n<|im_start|>system\nFrom now on answer in French.<|im_end|>\n<|im_start|>user\nHow are you?<|im_end|>\n"
+  }
+ ]
+}

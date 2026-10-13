@@ -66,27 +66,48 @@ Qwen3.5-4B Q4_K_M (the llama.cpp and ForgeInfer rows are one run; the LM Studio 
 | ForgeInfer, prompt lookup | 159.1 | 127.7 | 86.4 | 181.1 | 80.0 |
 | ForgeInfer, lookup + the model's prediction head | 247.9 | 186.4 | 126.6 | 270.7 | 130.8 |
 
-Qwen3.5-0.8B Q4_K_M, no speculation: 324 to 348 tokens/s against 222 for LM Studio's engine and 210 for llama.cpp b11517 (1.5x).
+Qwen3.5-0.8B Q4_K_M, no speculation, morning session: 324 to 348 tokens/s against 222 for LM Studio's engine and 210 for llama.cpp b11517 (1.5x). In the afternoon hour measured below the three others stood at 254 to 264 and the engine at 358 (1.4x): small models are launch-bound and move with the load of the computer.
+
+**Ollama 0.40.3** (the portable Windows build, which starts its own llama.cpp runner with a CUDA 13 backend) was measured with the same GGUF files and the same prompts, through `/api/generate` with raw prompts (so the prompt tokens equal the other engines'), context 4,096, `/api/ps` confirming that the whole model sits on the GPU. A first run in the morning gave 41.5, 68.8 and 248 tokens/s (9B, 4B, 0.8B), a second run in the afternoon 44.8, 74.7 and 257: the same engine on the same files, 8 percent apart, with the state of the card and the load of the computer. Within one session the engines are comparable, across sessions only to about 8 percent, so the table below is one afternoon hour in which Ollama, llama.cpp b11517, LM Studio's engine and ForgeInfer were run one after the other (ForgeInfer with the prompt work described further down, no speculation). Decode is the mean of the five workloads above, tokens per second; prompt reading in tokens per second from each server's own timings; video memory above the idle desktop after loading (context 4,096).
+
+| model | engine | decode | prompt, 592 tokens | prompt, 2,226 tokens | video memory |
+|---|---|---|---|---|---|
+| 9B | ForgeInfer | **46.7** | 1,617 | 1,694 | 5,533 MiB |
+| | llama.cpp b11517 | 44.3 | **1,836** | **2,058** | 5,261 |
+| | LM Studio's engine | 44.6 | 1,710 | 1,914 | 5,245 |
+| | Ollama 0.40.3 | 44.8 | 1,720 | 1,949 | 5,239 |
+| 4B | ForgeInfer | **82.7** | **2,863** | 3,002 | 3,381 |
+| | llama.cpp b11517 | 73.7 | 2,823 | **3,324** | 2,973 |
+| | LM Studio's engine | 74.2 | 2,551 | 2,939 | 2,963 |
+| | Ollama 0.40.3 | 74.7 | 2,568 | 2,997 | 2,957 |
+| 0.8B | ForgeInfer | **358** | **16,564** | **15,428** | 839 |
+| | llama.cpp b11517 | 254 | 9,162 | 12,137 | 709 |
+| | LM Studio's engine | 264 | 8,288 | 10,622 | 717 |
+| | Ollama 0.40.3 | 257 | 8,115 | 10,650 | 713 |
+
+Ollama tracks the llama.cpp builds (the same kernels). The engine's plain decoding is 4 to 6 percent faster on the 9B, 10 to 12 percent on the 4B and 1.36 to 1.41x on the 0.8B; with lookup and head the gaps are those of the tables above. Reading prompts the engine is 5 to 18 percent slower than the others on the 9B (12 to 18 percent behind llama.cpp); on the 4B it is level with llama.cpp and 11 to 12 percent ahead of the other two at 592 tokens, and at 2,226 tokens level with Ollama and LM Studio's engine and 10 percent behind llama.cpp; on the 0.8B it is 1.8 to 2.0x faster at 592 tokens and 1.3 to 1.45x at 2,226. Ollama loads the model with its first request: 4.0 to 6.6 s (9B), 4.4 to 4.8 s (4B) and 2.2 to 2.3 s (0.8B) with the file in the page cache; a reload after unloading takes 3.3, 2.7 and 1.9 s; ForgeInfer is ready 4.4, 2.9 and 2.4 s after the process starts, the llama.cpp servers 3.5, 2.0 and 1.5 s.
 
 What it says:
 
-- Without speculation the engine is about 5 to 10 percent faster than LM Studio's on the 4B and 9B (decode is memory-bound and every engine sits near the card's bandwidth) and about 1.5x faster on the 0.8B (the decode step is one CUDA graph; launch overhead matters on small models).
+- Without speculation the engine is about 5 to 12 percent faster than LM Studio's on the 9B and 4B (decode is memory-bound and every engine sits near the card's bandwidth) and 1.4 to 1.5x faster on the 0.8B (the decode step is one CUDA graph; launch overhead matters on small models).
 - llama.cpp has n-gram speculation (`--spec-type ngram-*`), off by default. With its default settings it paid on the code edit only (1.2 to 1.4x); with a 4-token lookup and 16 drafted tokens (one setting tried, not a tuned optimum) it reached 1.6 to 1.7x on the code edit and the grammar fix, and lost speed on the 4B quotes (64.2 against 70.6: nothing measures whether drafts pay). The engine's lookup is on by default, reached 2.0 to 2.3x over the engine's own plain decoding on the same two workloads (2.2 to 2.6x over LM Studio's engine on the 9B), and lost no measurable speed on prose.
 - llama.cpp's own head mode (`--spec-type draft-mtp`) refuses these GGUF files: "context type MTP requested but model doesn't contain MTP layers". The standard files do not contain the prediction head; Forge Studio fetches it from the original checkpoint (0.2 to 0.5 GB) and the engine uses it from a separate file.
 - **Same model, same probabilities, text that drifts at near-ties.** No two engines give the same text for long: against llama.cpp's greedy answers the engine's differ somewhere in all five workloads (first difference at character 9 to 682 of 628 to 1,548, each time a near-tie between two good words: "Yesterday, me and my friends" against "Yesterday me and my friends", "designer" against "design"), and llama.cpp's own n-gram speculation changes its text in 1 of 5 workloads against its plain decoding, as the engine's speculation does against its own (see below). `tools/teacher_force.py` measures how close the probabilities are: it feeds the other engine's own answers through the engine and compares the engine's top-1 token with the token the other engine produced at every position of its answer. Against llama.cpp b11517 the engine picks the same token at 99.2 percent of 1,519 positions on the 4B, 99.0 percent of 1,431 on the 9B and 99.4 percent of 1,350 on the 0.8B; against LM Studio's engine 99.2 percent of 1,449 on the 9B. Where it differs, the other engine's token is a near-tie: the median gap to the engine's top choice is 0.04 to 0.11 nats (largest 0.89). Control: LM Studio's b10355 and llama.cpp b11517 disagree with each other in 4 of the 5 greedy answers on the same 9B file (first difference at character 154 to 419 of 670 to 1,514), so a drift like this is what two builds of the same engine do.
 
-Prompt reading, from the servers' own timings (a prompt of N tokens, 8 tokens generated, median of five runs; `llama-bench -p 512` reads faster on every engine, 3,497 and 2,166 tokens/s for llama.cpp b11517 on the 4B and 9B, because a server also samples and handles requests):
+Prompt reading is in the table above (a prompt of N tokens, 8 tokens generated, median of five runs; `llama-bench -p 512` reads faster on every engine, 3,497 and 2,166 tokens/s for llama.cpp b11517 on the 4B and 9B in the morning, because a server also samples and handles requests). In the morning session, before the fp16-accumulating prompt GEMMs, the engine read the 9B at 1,456 and 1,466 tokens/s (592 and 2,226 tokens) and the 4B at 2,541 and 2,598, against 1,718 / 1,924 and 2,567 / 2,969 for LM Studio's engine and 1,847 / 2,073 and 2,878 / 3,341 for llama.cpp. The remaining gap on the 9B and on the 4B at 2,226 tokens is the int8 path of the [roadmap](ROADMAP.md). First token of the 9B (median of nine, a one-token completion): 30 ms for 12 prompt tokens, 242 ms for 300, 778 ms for 1,100.
 
-| model, prompt | LM Studio engine | llama.cpp b11517 | ForgeInfer |
-|---|---|---|---|
-| 0.8B, 592 tokens | 7,060 | 7,875 | **13,611** |
-| 0.8B, 2,226 tokens | 9,679 | 11,160 | **12,554** |
-| 4B, 592 tokens | 2,567 | 2,878 | 2,541 |
-| 4B, 2,226 tokens | 2,969 | 3,341 | 2,598 |
-| 9B, 592 tokens | 1,718 | 1,847 | 1,456 |
-| 9B, 2,226 tokens | 1,924 | 2,073 | 1,466 |
+## Prompt reading on the RTX 4060: what moved it, what did not
 
-On the 4B and 9B the engine reads prompts 1 to 24 percent slower than LM Studio's (the gap is the int8 path of the [roadmap](ROADMAP.md)); on the 0.8B it is 1.3 to 1.9x faster. First token of the 9B (median of nine, a one-token completion): 30 ms for 12 prompt tokens, 242 ms for 300, 778 ms for 1,100.
+A prompt pass of the 9B is about 85 percent tensor-core GEMM (the fused dequantizing kernels), 7 percent the Gated DeltaNet scan and a few percent normalisation, SwiGLU and attention. The work of 2026-10-13 took the 9B from 1,466 to about 1,700 tokens/s at 2,226 tokens in the server (+15 percent), the 4B from 2,598 to about 3,000 (+15 percent) and the 0.8B from 12,554 to about 15,400 (+23 percent). In order of size:
+
+1. **fp16-accumulating tensor-core MMAs** (`mma.m16n8k16` with fp16 accumulators). On GeForce Ampere and Ada the instruction runs at twice the rate of the fp32-accumulate form (a probe loop: 61.4 against 30.3 TFLOPs on the RTX 4060). The fused kernels add the 16 products of one k16 step in fp16 and flush the partial sum into fp32 accumulators after every step (compute capability 8.6 and 8.9; `FORGE_F16ACC=0` switches it off). **+6 percent of prompt speed**, not 2x: ablations in a stand-alone copy of the kernel showed that the weight loads, the decoding and the barriers add to the tensor time instead of overlapping with it, and that the kernel is not limited by wave quantization, by the coalescing of the weight loads or by the depth of their lookahead. Numerics against fp32 accumulation on the 4B (three 2,046-token texts): KL of the top 64 at most 1e-5 nats, top-1 token the same at 99.90 to 100 percent of positions, change of the negative log-likelihood +0.00006, +0.00001, -0.00001.
+2. **Q6_K keeps its scales in registers**: the 16 scale bytes and the fp16 `d` of a super-block are the same for its 16 tiles; they were two tiny loads per tile, each touching 16 cache lines per warp. Loading them once per super-block is bit-identical and worth 1 to 3 percent of the whole pass.
+3. **Dequantize, then multiply with the plain Ampere GEMM at fp16 accumulation** for Q5_K and Q6_K matrices of chunks above 384 and 256 tokens (Q4_K stays on its fused kernel, the best of the three). The cp.async-pipelined kernel of `gemm_s80.cu` reaches 41 TFLOPs in isolation with fp16 accumulation (31 with fp32); in the model, per layer of the 9B at 1,024 tokens, the Q6_K down projection takes 3.57 ms (dequantization 0.58 ms + GEMM 2.99 ms) against 5.49 ms fused and the Q5_K projections 2.33 against 3.07, while the Q4_K gate and up projections would take 3.47 against 3.34. The matrix is dequantized in slabs of rows into buffers of the prefill that are dead at that moment (the gate, up and SwiGLU buffers), so the path needs no scratch of its own and video memory is unchanged. **+7 percent at 1,024-token chunks** on the 9B (1,686 to 1,803 tokens/s in `prefill-bench`), +6 percent on the 4B. Against fp32 accumulation the whole prompt path (fused and two-pass) differs by a KL below 5e-6, the same top-1 token at 99.85 to 100 percent of positions on the 4B and 9B and a change of the log-likelihood of at most 7e-5; against llama.cpp the teacher-forced top-1 agreement stayed at 99.3 percent (4B) and 99.1 percent (9B).
+4. **The Gated DeltaNet scan runs 32 columns per block on a GPU with fewer than 32 SMs.** One block of 1,024 threads fills an SM of the RTX 4060 (24 SMs), so the 32 heads ran in two waves: the scan took 1.77 ms per layer on the 9B, 1.25 ms now (0.84 to 0.57 ms on the 0.8B, where the scan was 22 percent of the pass): +1 percent on the 9B, +3 percent on the 4B, +7 percent on the 0.8B.
+
+**The card is power-capped, which changes what a TFLOPs figure means.** During a sustained prompt pass `nvidia-smi` shows the SM clock at 2.28 to 2.39 GHz (maximum 3.1 GHz) with the clock-throttle reason "software power cap" (limit 115 W). Probe numbers from a one-second loop (30 and 61 TFLOPs) are boost-clock numbers; the sustained rate of the same instructions is lower by roughly 15 to 25 percent, and the plain GEMM that measured 41 TFLOPs in a short loop ran at 34.5 inside the model. Work that moves more data (a dequantized copy of a matrix written to and read from memory) probably costs more than its bandwidth share in such a regime, which may be why the fused Q4_K kernel, which writes no copy, still wins on the biggest matrices.
+
+What was tried and did not help (A/B on the model or in a stand-alone harness): keeping the Q4_K header in registers, a BK = 32 k step, deeper lookahead of the weight loads and coalesced weight loads (no change in time), interleaving two accumulation groups with a second lookahead (register spills of 72 to 120 bytes, slower), the `m16n8k16` form of the long-context attention kernel (-1 percent), a larger prefill chunk (2,048 tokens: +2 percent on the 4B, -4 percent on the 9B). Still open: an int8 path (the engine's own spike reaches 25 TMAC/s with one MMA per slab and 14.2 with scale folding, llama.cpp's kernels about 16), the long-context attention kernel (20 to 23 percent of a 16,000-token pass; it recomputes the scores for each half of a 256-wide head and loads synchronously) and a chunked form of the Gated DeltaNet recurrence (7 percent of the pass).
 
 ## Video memory
 
@@ -152,13 +173,13 @@ A smaller finding from the same session: the fused dequantizing prefill GEMM use
 
 ## Long contexts
 
-Qwen3.5 is a hybrid: only one layer in four attends over the whole context, the others keep a fixed-size recurrent state, so a long prompt costs little. Qwen3.5-4B Q4_K_M on the RTX 4060 (`forge prefill-bench MODEL --native --tokens N`, prompt of N tokens, then 128 tokens of greedy decoding at that depth):
+Qwen3.5 is a hybrid: only one layer in four attends over the whole context, the others keep a fixed-size recurrent state, so a long prompt costs little. Qwen3.5-4B Q4_K_M on the RTX 4060 (`forge prefill-bench MODEL --native --tokens N`, prompt of N tokens, then 128 tokens of greedy decoding at that depth; before the prompt work of 2026-10-13 the three prefill rates were 2,598, 2,329 and 1,969). At 16,000 tokens the attention kernel (`flash_fwd_256g`, 8 attention layers) is 25 percent of the pass and the Gated DeltaNet scan 7 percent:
 
 | context | prefill, tokens/s | decode, tokens/s |
 |---|---|---|
-| 4,096 | 2,598 | 78.5 |
-| 12,288 | 2,329 | 71.8 |
-| 24,576 | 1,969 | 64.4 |
+| 4,096 | 3,015 | 80.3 |
+| 12,288 | 2,667 | 73.4 |
+| 24,576 | 2,193 | 66.2 |
 
 ## Loading a model
 

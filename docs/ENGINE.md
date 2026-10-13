@@ -60,7 +60,7 @@ forge run | chat | gpu-bench | prefill-bench | kbench     smaller tools
 GGUF file ──► forge-gguf   mmap, metadata, tensor table, bit-exact decoders for the quantization formats
             ├► forge-tok   byte-level BPE built from the file's own vocabulary and merges, NFC, pre-tokenizers (GPT-2, SmolLM, Qwen2/3, Qwen3.5, Llama 3)
             ├► forge-chat  chat templates (ChatML, SmolLM2, Qwen3, Qwen3.5, Llama 3) and the incremental parser of reasoning and tool calls
-            └► forge-model configuration and weights (llama, qwen3, qwen35), the f32 reference forward pass (the oracle for the GPU path), the sampler
+            └► forge-model configuration and weights (llama, qwen2, qwen3, qwen35), the f32 reference forward pass (the oracle for the GPU path), the sampler
 forge-gpu     weights on the device, the fused decode step captured as CUDA graphs, tensor-core GEMM prefill, flash attention, KV-cache compression,
               the host-FFN planner and the AVX2 kernels for layers that live in system memory
 forge-cuda    the CUDA driver API loaded at run time (nvcuda.dll / libcuda.so): no CUDA runtime library is needed to run

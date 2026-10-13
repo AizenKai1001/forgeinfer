@@ -237,6 +237,12 @@ struct Kernels {
     gemm_f32_add: Function,
     /// fused dequantizing GEMMs (K-quant weights read in place): [Q4_K, Q5_K, Q6_K] x [fp16 out, fp32 out, fp32 add]
     gemmq: Vec<Function>,
+    /// the same with fp16 accumulators (one k16 step per partial sum, sm_80 and newer: twice the tensor-core rate on GeForce cards), used when FORGE_F16ACC=1
+    gemmq_h: Vec<Function>,
+    /// the plain tensor-core GEMMs of gemm_s80.cu (cp.async pipeline, m16n8k16; sm_80 and newer): C (+)= A B^T for contiguous A [M][K] and B [N][K], [fp16 out, fp32 out, fp32 add]; `gemm_s80h` accumulates in fp16
+    /// (flushed into fp32 after every k16 step): 41 against 31 TFLOPs on the RTX 4060. They multiply a dequantized weight matrix (the long chunks of a prompt) and need `S80_SMEM` bytes of shared memory.
+    gemm_s80: Vec<Function>,
+    gemm_s80h: Vec<Function>,
     /// stand-alone fp16 dequantization of K-quant matrices: [Q4_K, Q5_K, Q6_K]
     dequantk: Vec<Function>,
     embed_batch: Function,
@@ -411,6 +417,10 @@ struct GpuLayer {
     wo: GpuMat,
     q_norm: Option<DeviceBuffer>,
     k_norm: Option<DeviceBuffer>,
+    /// biases of the q, k and v projections (Qwen2), fp32
+    bq: Option<DeviceBuffer>,
+    bk: Option<DeviceBuffer>,
+    bv: Option<DeviceBuffer>,
     ffn_norm: DeviceBuffer,
     w_gate: GpuMat,
     w_up: GpuMat,
@@ -418,6 +428,14 @@ struct GpuLayer {
     delta: Option<GpuDelta>,
     /// the FFN lives in host memory and the CPU kernels can multiply it (decode steps run it there)
     cpu: Option<cpuk::CpuFfn>,
+}
+
+impl GpuLayer {
+    /// Device addresses of the q, k and v biases (0 = the model has none), as the attention kernels take them.
+    fn bias_ptrs(&self) -> (u64, u64, u64) {
+        let p = |b: &Option<DeviceBuffer>| b.as_ref().map(|b| b.ptr()).unwrap_or(0);
+        (p(&self.bq), p(&self.bk), p(&self.bv))
+    }
 }
 
 /// The weights of a Gated DeltaNet layer on the device (matrices quantized, the small per-head parameters fp32).
@@ -786,6 +804,11 @@ impl GpuModel {
                     .to_string(),
             ));
         }
+        if cfg.qkv_bias && fmt != Fmt::Native && !eval_only {
+            return Err(Error::unsupported(
+                "models with biases on the q, k and v projections (Qwen2) run with the quantized weights of a GGUF file as they are (--native)".to_string(),
+            ));
+        }
         if let Some(d) = &cfg.delta {
             if d.head_k != 128
                 || d.head_v != 128
@@ -916,6 +939,14 @@ impl GpuModel {
             collect: module.function("collect_kernel")?,
             gemm_f16_out: module.function("gemm_nt_f16")?,
             gemm_f32_add: module.function("gemm_nt_add")?,
+            gemm_s80: ["f16", "f32", "add"]
+                .iter()
+                .map(|e| module.function(&format!("gemm_nt_{e}_s80")))
+                .collect::<Result<Vec<_>>>()?,
+            gemm_s80h: ["f16", "f32", "add"]
+                .iter()
+                .map(|e| module.function(&format!("gemm_nt_{e}_s80h")))
+                .collect::<Result<Vec<_>>>()?,
             dequantk: ["q4k", "q5k", "q6k"]
                 .iter()
                 .map(|f| module.function(&format!("dequantk_{f}_kernel")))
@@ -926,6 +957,15 @@ impl GpuModel {
                     ["f16", "f32", "add"]
                         .iter()
                         .map(move |e| format!("gemmq_{f}_{e}"))
+                })
+                .map(|n| module.function(&n))
+                .collect::<Result<Vec<_>>>()?,
+            gemmq_h: ["q4k", "q5k", "q6k"]
+                .iter()
+                .flat_map(|f| {
+                    ["f16", "f32", "add"]
+                        .iter()
+                        .map(move |e| format!("gemmq_{f}_{e}_h"))
                 })
                 .map(|n| module.function(&n))
                 .collect::<Result<Vec<_>>>()?,
@@ -946,6 +986,9 @@ impl GpuModel {
             kv_quant: module.function("kv_quant_kernel")?,
         };
         // the multi-row kernels of blocks of 12 warps use up to 62 KB of shared memory: allow more than the 48 KB of the default launch limit
+        for f in k.gemm_s80.iter().chain(k.gemm_s80h.iter()) {
+            f.set_max_dynamic_smem(S80_SMEM as i32)?;
+        }
         for f in k.mm_out.iter().chain(k.mm_res.iter()).flatten() {
             f.set_max_dynamic_smem(64000)?;
         }
@@ -1001,6 +1044,9 @@ impl GpuModel {
                     wo: GpuMat::dummy()?,
                     q_norm: None,
                     k_norm: None,
+                    bq: None,
+                    bk: None,
+                    bv: None,
                     ffn_norm: f32_buffer(&l.ffn_norm)?,
                     w_gate: upload_mat(&l.w_gate, fmt, host)?,
                     w_up: upload_mat(&l.w_up, fmt, host)?,
@@ -1017,6 +1063,9 @@ impl GpuModel {
                     wo: upload_mat(&l.wo, fmt, false)?,
                     q_norm: l.q_norm.as_ref().map(|v| f32_buffer(v)).transpose()?,
                     k_norm: l.k_norm.as_ref().map(|v| f32_buffer(v)).transpose()?,
+                    bq: l.bq.as_ref().map(|v| f32_buffer(v)).transpose()?,
+                    bk: l.bk.as_ref().map(|v| f32_buffer(v)).transpose()?,
+                    bv: l.bv.as_ref().map(|v| f32_buffer(v)).transpose()?,
                     ffn_norm: f32_buffer(&l.ffn_norm)?,
                     w_gate: upload_mat(&l.w_gate, fmt, host)?,
                     w_up: upload_mat(&l.w_up, fmt, host)?,
@@ -1048,6 +1097,9 @@ impl GpuModel {
                     wo: upload_mat(&l.wo, fmt, false)?,
                     q_norm: l.q_norm.as_ref().map(|v| f32_buffer(v)).transpose()?,
                     k_norm: l.k_norm.as_ref().map(|v| f32_buffer(v)).transpose()?,
+                    bq: l.bq.as_ref().map(|v| f32_buffer(v)).transpose()?,
+                    bk: l.bk.as_ref().map(|v| f32_buffer(v)).transpose()?,
+                    bv: l.bv.as_ref().map(|v| f32_buffer(v)).transpose()?,
                     ffn_norm: f32_buffer(&l.ffn_norm)?,
                     w_gate: upload_mat(&l.w_gate, fmt, false)?,
                     w_up: upload_mat(&l.w_up, fmt, false)?,
@@ -1598,7 +1650,13 @@ pub struct GpuSession<'m> {
     /// K-quant matrices are multiplied by the fused dequantizing GEMMs when the chunk has at most this many tokens: the decode inside the GEMM makes it about 18 % slower than the plain GEMM, the separate
     /// dequantization pass (fast kernels) costs a fixed ~70 ms on the 9B whatever the chunk size, so the fused kernel wins for the short chunks of a chat's follow-up turns (+50 % at 64 tokens, +15 % at 256)
     /// and loses from about 400 tokens. FORGE_FUSED_MAX=N sets the limit, FORGE_NO_FUSED=1 means 0.
-    fused_max: usize,
+    fused_max: [usize; 3],
+    /// the fused GEMMs accumulate in fp16 and flush into fp32 after every k16 step (see `Kernels::gemmq_h`). On by default on GeForce-class Ampere and Ada (compute capability 8.6 and 8.9, where the
+    /// fp32-accumulate MMA runs at half the rate of the fp16-accumulate one: +5 to 11 percent of prompt speed on an RTX 4060, outputs within 3e-5 nats of the fp32 form); FORGE_F16ACC=1 / 0 forces it
+    /// on (compute capability 8 and newer) or off
+    f16acc: bool,
+    /// the dequantize-then-multiply path of the prompt GEMMs uses the Ampere kernels of gemm_s80.cu (sm_80 and newer; FORGE_PLAIN_S80=0 keeps the Turing-style ones of gemm.cu)
+    plain_s80: bool,
     /// calibration passes that start or stop inside the network (`eval_chunk_resid`): the residual stream to start from / the one the pass ended with
     resid_in: Option<Vec<f32>>,
     resid_out: Option<Vec<f32>>,
@@ -1628,8 +1686,11 @@ struct PrefillBufs {
     qkv: DeviceBuffer, // fp16 [T][q_dim + 2 kv_dim]
     q: DeviceBuffer,   // fp16 [T][q_dim]
     o: DeviceBuffer,   // fp16 [T][q_dim]
-    g: DeviceBuffer,   // fp16 [T][F]
-    u: DeviceBuffer,   // fp16 [T][F]
+    /// fp16 [T][F] twice: the gate output (first half) and the up output (second half). One allocation, so that a stretch of 2 x T x F halves is free while neither is live (the dequantization slabs of
+    /// `gemm_w` live there during the attention, recurrent and down projections)
+    gu: DeviceBuffer,
+    /// bytes of one half of `gu`
+    gu_half: u64,
     a: DeviceBuffer,   // fp16 [T][F]
     /// quantized models: a small matrix no fused kernel takes (the 32-row Q8_0 projections of a Gated DeltaNet layer), dequantized to fp16
     wscratch_small: DeviceBuffer,
@@ -1642,6 +1703,15 @@ struct PrefillBufs {
     wblk: [DeviceBuffer; 2],
     /// hybrid models only
     hy: Option<HybridBufs>,
+}
+
+impl PrefillBufs {
+    fn g_ptr(&self) -> u64 {
+        self.gu.ptr()
+    }
+    fn u_ptr(&self) -> u64 {
+        self.gu.ptr() + self.gu_half
+    }
 }
 
 /// Buffers of the evaluation path (`prefill_logits`).
@@ -1693,16 +1763,25 @@ struct HybridBufs {
 /// Capacity of the prefill buffers (tokens per chunk at most); `prefill_batched` uses `prefill_chunk_len()` of them.
 pub const PREFILL_CHUNK: usize = 1024;
 
+/// Dynamic shared memory of the plain Ampere GEMMs (gemm_s80.cu: three stages of two 128 x 32 half tiles are 49,152 bytes; the kernel file reserves 52,224 for its largest layout)
+const S80_SMEM: u32 = 52224;
+
 /// Bytes of the always-present dequantization scratch for small matrices (see `PrefillBufs::wscratch_small`): matrices of up to 2 M weights.
 const WSCRATCH_SMALL: usize = 4 << 20;
 
 /// The chunk length up to which the fused dequantizing GEMMs are used (see `GpuSession::fused_max`). 448 was measured on Turing (RTX 2060 SUPER, T4). On Ada (compute capability 8.9, the RTX 40 series) the fused kernel
 /// won at every length measured on an RTX 4060 (Qwen3.5 4B and 9B, Q4_K_M: +5 to +7 percent at 554 tokens, +17 to +21 at 1,086, +8 to +10 at 2,169), so there it is always used. FORGE_FUSED_MAX overrides.
-fn default_fused_max(cc_major: i32, cc_minor: i32) -> usize {
+/// Per K-quant format ([Q4_K, Q5_K, Q6_K]). With the Ampere GEMM at fp16 accumulation (`plain_s80`, `f16acc`) the dequantize-then-multiply path (1.5x the speed of the fused kernels on the Q6_K and Q5_K
+/// shapes of the 9B at 1,024 tokens, 0.9x on the Q4_K ones: the fused Q4_K kernel is the best of the three) wins above 256 tokens for Q6_K and 384 for Q5_K, and never for Q4_K.
+fn default_fused_max(cc_major: i32, cc_minor: i32, two_pass_s80: bool) -> [usize; 3] {
     if (cc_major, cc_minor) == (8, 9) {
-        1 << 20
+        if two_pass_s80 {
+            [1 << 20, 384, 256]
+        } else {
+            [1 << 20; 3]
+        }
     } else {
-        448
+        [448; 3]
     }
 }
 
@@ -1757,6 +1836,12 @@ impl<'m> GpuSession<'m> {
             .unwrap_or((0, 0, 0));
         let act_a = c.q_dim().max(value_dim);
         let stream = Stream::new()?;
+        let f16acc = match std::env::var("FORGE_F16ACC").ok().as_deref() {
+            Some("1") => m.dev.info.cc_major >= 8,
+            Some(_) => false,
+            None => matches!((m.dev.info.cc_major, m.dev.info.cc_minor), (8, 6) | (8, 9)),
+        };
+        let plain_s80 = m.dev.info.cc_major >= 8 && std::env::var("FORGE_PLAIN_S80").map(|v| v != "0").unwrap_or(true);
         let mut s = GpuSession {
             m,
             max_ctx,
@@ -1829,13 +1914,15 @@ impl<'m> GpuSession<'m> {
             pf: None,
             eval: None,
             stats: None,
+            f16acc,
+            plain_s80,
             fused_max: if std::env::var("FORGE_NO_FUSED").is_ok() {
-                0
+                [0; 3]
             } else {
-                std::env::var("FORGE_FUSED_MAX")
-                    .ok()
-                    .and_then(|v| v.parse().ok())
-                    .unwrap_or_else(|| default_fused_max(m.dev.info.cc_major, m.dev.info.cc_minor))
+                match std::env::var("FORGE_FUSED_MAX").ok().and_then(|v| v.parse().ok()) {
+                    Some(v) => [v; 3],
+                    None => default_fused_max(m.dev.info.cc_major, m.dev.info.cc_minor, plain_s80 && f16acc),
+                }
             },
             resid_in: None,
             resid_out: None,
@@ -2364,6 +2451,7 @@ impl<'m> GpuSession<'m> {
                 ]
             };
             self.kv_pre(li, None, self.state.ptr())?;
+            let (bq, bk, bv) = l.bias_ptrs();
             for (fmt_r, lo, hi) in ranges {
                 let qkv_fn = k.qkvq.uniform(fmt_r, c.n_embd)?;
                 let mut a = Self::qp(Args::new(), &l.wq);
@@ -2393,7 +2481,10 @@ impl<'m> GpuSession<'m> {
                         .i32(hd)
                         .i32(rotate)
                         .i32(lo as i32)
-                        .i32(hi as i32),
+                        .i32(hi as i32)
+                        .ptr(bq)
+                        .ptr(bk)
+                        .ptr(bv),
                 )?;
             }
             if c.qk_norm {
@@ -3016,7 +3107,12 @@ impl<'m> GpuSession<'m> {
 
     /// Multiply K-quant matrices with the fused dequantizing GEMMs in the prefill whatever the chunk size, or never (the default switches by chunk size, see `fused_max`; for A/B tests).
     pub fn set_fused(&mut self, on: bool) {
-        self.fused_max = if on { usize::MAX } else { 0 };
+        self.fused_max = if on { [usize::MAX; 3] } else { [0; 3] };
+    }
+
+    /// The fused GEMMs accumulate in fp16 (for A/B tests; ignored below compute capability 8).
+    pub fn set_f16acc(&mut self, on: bool) {
+        self.f16acc = on && self.m.dev.info.cc_major >= 8;
     }
 
     pub fn max_ctx(&self) -> usize {
@@ -3112,10 +3208,11 @@ impl<'m> GpuSession<'m> {
             return self.gemm_host(epi, a, g, c, m, n, k, ldc);
         }
         // (a matrix in host memory goes through the dequantizing pass instead: the fused kernels read every weight once per tile of the output, which over PCIe is a multiple of the matrix)
-        if let (Some(fi), true, 0) = (fmt_index, m <= self.fused_max && !g.is_host(), k % 256) {
+        if let (Some(fi), true, 0) = (fmt_index, fmt_index.map_or(false, |f| m <= self.fused_max[f]) && !g.is_host(), k % 256) {
             let p = g.ptrs();
             let grid = (((n + 127) / 128) as u32, ((m + 127) / 128) as u32, 1);
-            return self.m.k.gemmq[fi * 3 + epi].launch(
+            let table = if self.f16acc { &self.m.k.gemmq_h } else { &self.m.k.gemmq };
+            return table[fi * 3 + epi].launch(
                 grid,
                 (256, 1, 1),
                 0,
@@ -3136,12 +3233,94 @@ impl<'m> GpuSession<'m> {
             );
         }
         let kn = &self.m.k;
+        // a large quantized matrix and the Ampere GEMM: the matrix is dequantized in slabs of rows into buffers of the prefill that are dead at this point, so that no scratch of its own is needed
+        if self.plain_s80 && k % 32 == 0 && g.qf.is_some() && !g.is_host() && n * k * 2 > WSCRATCH_SMALL {
+            if let Some((buf, cap)) = self.slab_scratch(c) {
+                let rows_cap = cap / (2 * k) / 128 * 128;
+                if rows_cap >= 128 {
+                    let slabs = (n + rows_cap - 1) / rows_cap;
+                    let rows_per = ((n + slabs - 1) / slabs + 127) / 128 * 128;
+                    let esz = if epi == 0 { 2 } else { 4 };
+                    let mut r0 = 0;
+                    while r0 < n {
+                        let rows = rows_per.min(n - r0);
+                        self.dequant_rows(g, n, r0, rows, k, buf)?;
+                        self.gemm_s80(epi, a, buf, c + (r0 * esz) as u64, m, rows, k, ldc)?;
+                        r0 += rows;
+                    }
+                    return Ok(());
+                }
+            }
+        }
+        let w16 = self.wf16(g, n, k)?;
+        if self.plain_s80 && k % 32 == 0 {
+            return self.gemm_s80(epi, a, w16.ptr(), c, m, n, k, ldc);
+        }
         let f = match epi {
             0 => kn.gemm_f16_out,
             1 => kn.gemm_f32_out,
             _ => kn.gemm_f32_add,
         };
-        self.gemm(f, a, self.wf16(g, n, k)?, c, m, n, k, ldc)
+        self.gemm(f, a, w16, c, m, n, k, ldc)
+    }
+
+    /// C (+)= A B^T with the Ampere kernels of gemm_s80.cu (A [m][k] and B [n][k] contiguous fp16): fp16 accumulation (flushed into fp32 after every k16 step) when `f16acc`, else fp32. `epi`: 0 fp16 out, 1 fp32 out,
+    /// 2 add into fp32.
+    #[allow(clippy::too_many_arguments)]
+    fn gemm_s80(&self, epi: usize, a: u64, b: u64, c: u64, m: usize, n: usize, k: usize, ldc: usize) -> Result<()> {
+        let kn = &self.m.k;
+        let table = if self.f16acc { &kn.gemm_s80h } else { &kn.gemm_s80 };
+        table[epi.min(2)].launch(
+            (((n + 127) / 128) as u32, ((m + 127) / 128) as u32, 1),
+            (256, 1, 1),
+            S80_SMEM,
+            &self.stream,
+            &Args::new().ptr(a).ptr(b).ptr(c).i32(m as i32).i32(n as i32).i32(k as i32).i32(k as i32).i32(k as i32).i32(ldc as i32).f32(1.0),
+        )
+    }
+
+    /// Where `gemm_w` may put dequantized rows of a weight matrix while it multiplies it: (device address, bytes) of a stretch of prefill buffers that is dead at this point. The gate and up outputs are
+    /// produced from the normed residual stream and consumed by the SwiGLU right away, the SwiGLU output only lives until the down projection has read it: so the gate and up GEMMs may use the SwiGLU
+    /// buffer, every other GEMM (attention and recurrent projections, the output projection, the down projection) both halves of `gu`.
+    fn slab_scratch(&self, c: u64) -> Option<(u64, usize)> {
+        let pf = self.pf.as_ref()?;
+        if c == pf.g_ptr() || c == pf.u_ptr() {
+            Some((pf.a.ptr(), pf.a.len()))
+        } else {
+            Some((pf.gu.ptr(), pf.gu.len()))
+        }
+    }
+
+    /// Dequantize rows r0 .. r0 + rows of the quantized matrix `g` ([n_total][cols]) to fp16 at the device address `out`.
+    fn dequant_rows(&self, g: &GpuMat, n_total: usize, r0: usize, rows: usize, cols: usize, out: u64) -> Result<()> {
+        let qf = g.qf.unwrap();
+        let (p, lens) = (g.ptrs(), g.plane_lens());
+        let pp: [u64; 4] = std::array::from_fn(|i| if lens[i] == 0 { 0 } else { p[i] + (r0 * (lens[i] / n_total)) as u64 });
+        let n8 = rows * cols / 8;
+        let blocks = (((n8 + 255) / 256).min(16384)) as u32;
+        let fast = match qf {
+            QFmt::Q4_K => Some(0),
+            QFmt::Q5_K => Some(1),
+            QFmt::Q6_K => Some(2),
+            _ => None,
+        };
+        if let (Some(fi), 0) = (fast, cols % 256) {
+            self.m.k.dequantk[fi].launch(
+                (blocks, 1, 1),
+                (256, 1, 1),
+                0,
+                &self.stream,
+                &Args::new().ptr(pp[0]).ptr(pp[1]).ptr(pp[2]).ptr(pp[3]).ptr(out).i32(rows as i32).i32(cols as i32),
+            )
+        } else {
+            self.m.k.dequant_f16.launch(
+                (blocks, 1, 1),
+                (256, 1, 1),
+                0,
+                &self.stream,
+                &Args::new().ptr(pp[0]).ptr(pp[1]).ptr(pp[2]).ptr(pp[3]).i32(qf as i32).ptr(out).i32(rows as i32).i32(cols as i32),
+            )
+        }
     }
 
     /// C (+)= A W^T for a matrix in host memory (see `gemm_w`): the rows of W are dequantized to fp16 in blocks on a second stream (the dequantizer reads the packed weights over PCIe at 8.5 GB/s, which takes
@@ -3311,8 +3490,8 @@ impl<'m> GpuSession<'m> {
                 qkv: DeviceBuffer::alloc(pfc * (qd + 2 * kvd) * 2)?,
                 q: DeviceBuffer::alloc(pfc * qd * 2)?,
                 o: DeviceBuffer::alloc(pfc * qd * 2)?,
-                g: DeviceBuffer::alloc(pfc * f * 2)?,
-                u: DeviceBuffer::alloc(pfc * f * 2)?,
+                gu: DeviceBuffer::alloc(2 * pfc * f * 2)?,
+                gu_half: (pfc * f * 2) as u64,
                 a: DeviceBuffer::alloc(pfc * f * 2)?,
                 wscratch_small: DeviceBuffer::alloc(WSCRATCH_SMALL)?,
                 wscratch: std::sync::OnceLock::new(),
@@ -3360,8 +3539,8 @@ impl<'m> GpuSession<'m> {
                 qkv: DeviceBuffer::alloc(pfc * stride * 2)?,
                 q: DeviceBuffer::alloc(pfc * qd * 2)?,
                 o: DeviceBuffer::alloc(pfc * qd * 2)?,
-                g: DeviceBuffer::alloc(pfc * f * 2)?,
-                u: DeviceBuffer::alloc(pfc * f * 2)?,
+                gu: DeviceBuffer::alloc(2 * pfc * f * 2)?,
+                gu_half: (pfc * f * 2) as u64,
                 a: DeviceBuffer::alloc(pfc * f * 2)?,
                 wscratch_small: DeviceBuffer::alloc(WSCRATCH_SMALL)?,
                 wscratch: std::sync::OnceLock::new(),
@@ -3548,11 +3727,15 @@ impl<'m> GpuSession<'m> {
                         .i32(d.conv as i32)
                         .i32(conv_dim as i32),
                 )?;
-                // spread each head over enough blocks to occupy the SMs: 128 columns for 32 heads or more, 64 for 16, else 32
+                // spread each head over enough blocks to occupy the SMs: with 32 SMs or more 128 columns for 32 heads or more, 64 for 16, else 32; with fewer SMs always 32 columns (the RTX 4060 has 24 SMs: a block of
+                // 1,024 threads fills one, so 32 heads ran in two waves; scan 1.77 -> 1.25 ms on the 9B, 1.74 -> 1.20 on the 4B, 0.84 -> 0.57 ms on the 0.8B)
+                let sms = self.m.dev.info.sm_count as usize;
                 let cpb: usize = std::env::var("FORGE_SCAN_CPB")
                     .ok()
                     .and_then(|v| v.parse().ok())
-                    .unwrap_or(if n_v >= 32 {
+                    .unwrap_or(if sms < 32 {
+                        32
+                    } else if n_v >= 32 {
                         128
                     } else if n_v >= 16 {
                         64
@@ -3704,15 +3887,15 @@ impl<'m> GpuSession<'m> {
                     .f32(c.rms_eps),
             )?;
             self.stat(li, 2, &pf.h, t, e)?;
-            self.gemm_w(0, pf.h.ptr(), &l.w_gate, pf.g.ptr(), t, f, e, f)?;
-            self.gemm_w(0, pf.h.ptr(), &l.w_up, pf.u.ptr(), t, f, e, f)?;
+            self.gemm_w(0, pf.h.ptr(), &l.w_gate, pf.g_ptr(), t, f, e, f)?;
+            self.gemm_w(0, pf.h.ptr(), &l.w_up, pf.u_ptr(), t, f, e, f)?;
             let n = (t * f) as u64;
             k.swiglu.launch(
                 (((n + 255) / 256).min(4096) as u32, 1, 1),
                 (256, 1, 1),
                 0,
                 st,
-                &Args::new().buf(&pf.g).buf(&pf.u).buf(&pf.a).u64(n),
+                &Args::new().ptr(pf.g_ptr()).ptr(pf.u_ptr()).buf(&pf.a).u64(n),
             )?;
             self.stat(li, 3, &pf.a, t, f)?;
             self.gemm_w(2, pf.a.ptr(), &l.w_down, pf.x.ptr(), t, e, f, e)?;
@@ -3967,6 +4150,7 @@ impl<'m> GpuSession<'m> {
                 (Some(a), Some(b)) => (a.ptr(), b.ptr()),
                 _ => (0, 0),
             };
+            let (bq, bk, bv) = l.bias_ptrs();
             self.kv_pre(li, Some(pos0), self.state.ptr())?;
             k.qkv_rope.launch(
                 (t as u32, (nh + 2 * nkv) as u32, 1),
@@ -3986,7 +4170,10 @@ impl<'m> GpuSession<'m> {
                     .i32(nh as i32)
                     .i32(nkv as i32)
                     .i32(hd as i32)
-                    .f32(c.rms_eps),
+                    .f32(c.rms_eps)
+                    .ptr(bq)
+                    .ptr(bk)
+                    .ptr(bv),
             )?;
             let use_flash = std::env::var("FORGE_NO_FLASH").is_err();
             let (attn, qb) = if use_flash {
@@ -4027,15 +4214,15 @@ impl<'m> GpuSession<'m> {
                     .f32(c.rms_eps),
             )?;
             self.stat(li, 2, &pf.h, t, e)?;
-            self.gemm_w(0, pf.h.ptr(), &l.w_gate, pf.g.ptr(), t, f, e, f)?;
-            self.gemm_w(0, pf.h.ptr(), &l.w_up, pf.u.ptr(), t, f, e, f)?;
+            self.gemm_w(0, pf.h.ptr(), &l.w_gate, pf.g_ptr(), t, f, e, f)?;
+            self.gemm_w(0, pf.h.ptr(), &l.w_up, pf.u_ptr(), t, f, e, f)?;
             let n = (t * f) as u64;
             k.swiglu.launch(
                 (((n + 255) / 256).min(4096) as u32, 1, 1),
                 (256, 1, 1),
                 0,
                 st,
-                &Args::new().buf(&pf.g).buf(&pf.u).buf(&pf.a).u64(n),
+                &Args::new().ptr(pf.g_ptr()).ptr(pf.u_ptr()).buf(&pf.a).u64(n),
             )?;
             self.stat(li, 3, &pf.a, t, f)?;
             self.gemm_w(2, pf.a.ptr(), &l.w_down, pf.x.ptr(), t, e, f, e)?;

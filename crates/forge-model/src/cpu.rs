@@ -304,6 +304,9 @@ impl<'m> Session<'m> {
         let proj = out;
         {
             matvec(&l.wq, h, &mut qfull, 1);
+            if let Some(b) = &l.bq {
+                qfull.iter_mut().zip(b).for_each(|(x, b)| *x += b);
+            }
             if c.attn_gate {
                 // per head: hd query values, then hd gate values
                 for hh in 0..nh {
@@ -317,6 +320,10 @@ impl<'m> Session<'m> {
             }
             matvec(&l.wk, h, &mut kk, 1);
             matvec(&l.wv, h, &mut vv, 1);
+            if let (Some(bk), Some(bv)) = (&l.bk, &l.bv) {
+                kk.iter_mut().zip(bk).for_each(|(x, b)| *x += b);
+                vv.iter_mut().zip(bv).for_each(|(x, b)| *x += b);
+            }
             if let (Some(qn), Some(kn)) = (&l.q_norm, &l.k_norm) {
                 for hh in 0..nh {
                     let seg = q[hh * hd..(hh + 1) * hd].to_vec();

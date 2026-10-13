@@ -95,6 +95,10 @@ pub struct Layer {
     pub wo: Mat,
     pub q_norm: Option<Vec<f32>>,
     pub k_norm: Option<Vec<f32>>,
+    /// biases of the q, k and v projections (Qwen2): [q_rows], [kv_dim], [kv_dim]
+    pub bq: Option<Vec<f32>>,
+    pub bk: Option<Vec<f32>>,
+    pub bv: Option<Vec<f32>>,
     pub ffn_norm: Vec<f32>,
     pub w_gate: Mat,
     pub w_up: Mat,
@@ -219,6 +223,9 @@ impl Source {
                         "wo" => "attn_output.weight",
                         "q_norm" => "attn_q_norm.weight",
                         "k_norm" => "attn_k_norm.weight",
+                        "bq" => "attn_q.bias",
+                        "bk" => "attn_k.bias",
+                        "bv" => "attn_v.bias",
                         // in the Qwen3.5 family the pre-MLP norm is called post_attention_norm
                         "ffn_norm" => {
                             if qwen35 {
@@ -261,6 +268,9 @@ impl Source {
                             "wo" => "self_attn.o_proj.weight",
                             "q_norm" => "self_attn.q_norm.weight",
                             "k_norm" => "self_attn.k_norm.weight",
+                            "bq" => "self_attn.q_proj.bias",
+                            "bk" => "self_attn.k_proj.bias",
+                            "bv" => "self_attn.v_proj.bias",
                             "ffn_norm" => "post_attention_layernorm.weight",
                             "w_gate" => "mlp.gate_proj.weight",
                             "w_up" => "mlp.up_proj.weight",
@@ -561,6 +571,17 @@ impl Model {
         let mut layers = Vec::with_capacity(cfg.n_layer);
         for l in 0..cfg.n_layer {
             let n = |s: &str| format!("L{l}.{s}");
+            // the bias of a projection (models with `qkv_bias`), checked against the rows of its matrix
+            let bias = |what: &str, rows: usize| -> Result<Option<Vec<f32>>> {
+                if !cfg.qkv_bias {
+                    return Ok(None);
+                }
+                let v = src.vec(&n(what))?;
+                if v.len() != rows {
+                    return Err(Error::format(format!("{}: {} values, expected {rows}", src.names(&n(what)), v.len())));
+                }
+                Ok(Some(v))
+            };
             let common = (src.norm(&n("attn_norm"))?, src.norm(&n("ffn_norm"))?);
             let (w_gate, w_up, w_down) = (
                 src.mat(&n("w_gate"), f, e, o)?,
@@ -586,6 +607,9 @@ impl Model {
                     wo: Mat::empty(),
                     q_norm: None,
                     k_norm: None,
+                    bq: None,
+                    bk: None,
+                    bv: None,
                     ffn_norm: common.1,
                     w_gate,
                     w_up,
@@ -626,6 +650,9 @@ impl Model {
                 } else {
                     None
                 },
+                bq: bias("bq", cfg.q_rows())?,
+                bk: bias("bk", kv)?,
+                bv: bias("bv", kv)?,
                 ffn_norm: common.1,
                 w_gate,
                 w_up,
@@ -703,6 +730,9 @@ impl Model {
             wo: mat(&format!("{l}self_attn.o_proj.weight"), e, cfg.q_dim())?,
             q_norm: Some(norm(&format!("{l}self_attn.q_norm.weight"))?),
             k_norm: Some(norm(&format!("{l}self_attn.k_norm.weight"))?),
+            bq: None,
+            bk: None,
+            bv: None,
             ffn_norm: norm(&format!("{l}post_attention_layernorm.weight"))?,
             w_gate: mat(&format!("{l}mlp.gate_proj.weight"), f, e)?,
             w_up: mat(&format!("{l}mlp.up_proj.weight"), f, e)?,

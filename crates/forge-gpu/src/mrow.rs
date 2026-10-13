@@ -707,6 +707,7 @@ impl<'m> GpuSession<'m> {
                     (Some(a), Some(b)) => (a.ptr(), b.ptr()),
                     _ => (0, 0),
                 };
+                let (bq, bk, bv) = l.bias_ptrs();
                 if c.delta.is_some() {
                     // gated full attention (Qwen3.5): the q projection carries the output gate
                     let qr = c.q_rows();
@@ -841,7 +842,10 @@ impl<'m> GpuSession<'m> {
                             .i32(nkv as i32)
                             .i32(hd as i32)
                             .i32(c.rotary_dim as i32)
-                            .f32(c.rms_eps),
+                            .f32(c.rms_eps)
+                            .ptr(bq)
+                            .ptr(bk)
+                            .ptr(bv),
                     )?;
                     k.attention_q.launch(
                         (nh as u32, n as u32, 1),

@@ -66,6 +66,7 @@ template <> struct QB<FMT_Q4_K> {
         o.h = ldg128(p.p1 + blk * 16);
         return o;
     }
+    static __device__ __forceinline__ Raw load_next(const QP& p, size_t blk, int r, const Raw&) { return load(p, blk, r); }
     static __device__ __forceinline__ uint4 decode(const Raw& o) {
         const int j = o.j;
         const uint32_t u0 = o.h.y, u1 = o.h.z, u2 = o.h.w;
@@ -101,6 +102,7 @@ template <> struct QB<FMT_Q5_K> {
         o.h = ldg128(p.p2 + blk * 16);
         return o;
     }
+    static __device__ __forceinline__ Raw load_next(const QP& p, size_t blk, int r, const Raw&) { return load(p, blk, r); }
     static __device__ __forceinline__ uint4 decode(const Raw& o) {
         const int j = o.j;
         const uint32_t u0 = o.h.y, u1 = o.h.z, u2 = o.h.w;
@@ -128,6 +130,8 @@ template <> struct QB<FMT_Q6_K> {
         uint2 hh;
         float scale;
         int g;
+        uint4 scs;   // load_next: the 16 scale bytes of the super-block and its d, carried from tile to tile
+        float d;
     };
     static __device__ __forceinline__ Raw load(const QP& p, size_t blk, int r) {
         Raw o;
@@ -137,6 +141,28 @@ template <> struct QB<FMT_Q6_K> {
         o.hh = ldg64(p.p1 + blk * 64 + 32 * h + l);
         const int sc = ldg_s8(p.p2 + blk * 16 + 4 * (2 * h + u) + o.g);
         o.scale = __half2float(__ushort_as_half((unsigned short)ldg_u16(reinterpret_cast<const unsigned short*>(p.p3) + blk))) * (float)sc;
+        o.scs = make_uint4(0u, 0u, 0u, 0u);
+        o.d = 0.f;
+        return o;
+    }
+    // The scale bytes (16 per super-block) and d are the same for its 16 tiles: they are loaded for the first tile (r < 16 whichever half of the 16 weights a thread owns) and kept in registers for the rest, which
+    // replaces a 1 byte and a 2 byte load per tile (each touching 16 cache lines per warp) by 16 bytes once per 16 tiles: -10 percent of the kernel's time on the RTX 4060 (fp32 accumulate, -15 with fp16)
+    static __device__ __forceinline__ Raw load_next(const QP& p, size_t blk, int r, const Raw& prev) {
+        Raw o;
+        const int h = r >> 7, r2 = r & 127, l = r2 & 31, u = l >> 4;
+        o.g = r2 >> 5;
+        o.a = ldg64(p.p0 + blk * 128 + 64 * h + 32 * (o.g & 1) + l);
+        o.hh = ldg64(p.p1 + blk * 64 + 32 * h + l);
+        if (r < 16) {
+            o.scs = ldg128(p.p2 + blk * 16);
+            o.d = __half2float(__ushort_as_half((unsigned short)ldg_u16(reinterpret_cast<const unsigned short*>(p.p3) + blk)));
+        } else {
+            o.scs = prev.scs;
+            o.d = prev.d;
+        }
+        const int idx = 4 * (2 * h + u) + o.g;
+        const uint32_t word = idx < 4 ? o.scs.x : idx < 8 ? o.scs.y : idx < 12 ? o.scs.z : o.scs.w;
+        o.scale = o.d * (float)(int)(int8_t)(word >> (8 * (idx & 3)));
         return o;
     }
     static __device__ __forceinline__ uint4 decode(const Raw& o) {
@@ -151,7 +177,8 @@ template <> struct QB<FMT_Q6_K> {
     }
 };
 
-template <int F, int EPI>
+// HACC: the MMAs accumulate in fp16 (one k16 step, 16 products, per partial sum) and the partial sums are added into the fp32 accumulators after every step (sm_80 and newer; older cards run the fp32 form).
+template <int F, int EPI, bool HACC>
 __device__ __forceinline__ void gemm_q_impl(const half* __restrict__ A, const QP w, void* __restrict__ Cv, int M, int N, int K, int lda, int ldc, float alpha) {
     __shared__ __align__(16) half As[2][128 * 16];
     __shared__ __align__(16) half Bs[2][128 * 16];
@@ -187,7 +214,7 @@ __device__ __forceinline__ void gemm_q_impl(const half* __restrict__ A, const QP
     typename QB<F>::Raw rq = {};
     auto ldg_tile = [&]() {
         if (a_ok) ra = ldg128(pa);
-        if (b_ok) rq = QB<F>::load(w, bblk + (size_t)(kcur >> 8), kcur & 255);
+        if (b_ok) rq = QB<F>::load_next(w, bblk + (size_t)(kcur >> 8), kcur & 255, rq);
         pa += 16;
         kcur += 16;
     };
@@ -222,13 +249,34 @@ __device__ __forceinline__ void gemm_q_impl(const half* __restrict__ A, const QP
         for (int j = 0; j < 2; j++) ldsm_x4(fb[j], sb + b_ld + j * FRAG);
 #if __CUDA_ARCH__ >= 800
         // sm_80+: one m16n8k16 instead of two m16n8k8 (the k8 form runs at half the tensor-core rate on Ampere and Ada; the fragments loaded above are already k16 ones)
+        if constexpr (HACC) {
+            uint32_t hc[4][4][2];
 #pragma unroll
-        for (int i = 0; i < 4; i++)
+            for (int i = 0; i < 4; i++)
 #pragma unroll
-            for (int j = 0; j < 2; j++) {
-                gemm80::mma16(acc[i][2 * j], fa[i], fb[j][0], fb[j][1]);
-                gemm80::mma16(acc[i][2 * j + 1], fa[i], fb[j][2], fb[j][3]);
-            }
+                for (int j = 0; j < 2; j++) {
+                    gemm80::mma16h0(hc[i][2 * j], fa[i], fb[j][0], fb[j][1]);
+                    gemm80::mma16h0(hc[i][2 * j + 1], fa[i], fb[j][2], fb[j][3]);
+                }
+#pragma unroll
+            for (int i = 0; i < 4; i++)
+#pragma unroll
+                for (int j = 0; j < 4; j++) {
+                    const float2 f0 = __half22float2(h2u(hc[i][j][0])), f1 = __half22float2(h2u(hc[i][j][1]));
+                    acc[i][j][0] += f0.x;
+                    acc[i][j][1] += f0.y;
+                    acc[i][j][2] += f1.x;
+                    acc[i][j][3] += f1.y;
+                }
+        } else {
+#pragma unroll
+            for (int i = 0; i < 4; i++)
+#pragma unroll
+                for (int j = 0; j < 2; j++) {
+                    gemm80::mma16(acc[i][2 * j], fa[i], fb[j][0], fb[j][1]);
+                    gemm80::mma16(acc[i][2 * j + 1], fa[i], fb[j][2], fb[j][3]);
+                }
+        }
 #else
 #pragma unroll
         for (int s = 0; s < 2; s++)
@@ -267,7 +315,12 @@ DEQUANT_FAST_KERNEL(dequantk_q6k_kernel, FMT_Q6_K)
 
 #define GEMM_Q_KERNEL(NAME, F, EPI, CT)                                                                                                                                                     \
     extern "C" __global__ void __launch_bounds__(256, 2) NAME(const half* A, QPARAMS(w), CT* C, int M, int N, int K, int lda, int ldc, float alpha) {                                         \
-        gemm::gemm_q_impl<F, EPI>(A, QMAKE(w), C, M, N, K, lda, ldc, alpha);                                                                                                                \
+        gemm::gemm_q_impl<F, EPI, false>(A, QMAKE(w), C, M, N, K, lda, ldc, alpha);                                                                                                         \
+    }
+// the fp16-accumulate forms (FORGE_F16ACC)
+#define GEMM_QH_KERNEL(NAME, F, EPI, CT)                                                                                                                                                    \
+    extern "C" __global__ void __launch_bounds__(256, 2) NAME(const half* A, QPARAMS(w), CT* C, int M, int N, int K, int lda, int ldc, float alpha) {                                         \
+        gemm::gemm_q_impl<F, EPI, true>(A, QMAKE(w), C, M, N, K, lda, ldc, alpha);                                                                                                          \
     }
 
 GEMM_Q_KERNEL(gemmq_q4k_f16, FMT_Q4_K, 0, half)
@@ -278,4 +331,13 @@ GEMM_Q_KERNEL(gemmq_q5k_f32, FMT_Q5_K, 1, float)
 GEMM_Q_KERNEL(gemmq_q5k_add, FMT_Q5_K, 2, float)
 GEMM_Q_KERNEL(gemmq_q6k_f16, FMT_Q6_K, 0, half)
 GEMM_Q_KERNEL(gemmq_q6k_f32, FMT_Q6_K, 1, float)
+GEMM_QH_KERNEL(gemmq_q4k_f16_h, FMT_Q4_K, 0, half)
+GEMM_QH_KERNEL(gemmq_q4k_f32_h, FMT_Q4_K, 1, float)
+GEMM_QH_KERNEL(gemmq_q4k_add_h, FMT_Q4_K, 2, float)
+GEMM_QH_KERNEL(gemmq_q5k_f16_h, FMT_Q5_K, 0, half)
+GEMM_QH_KERNEL(gemmq_q5k_f32_h, FMT_Q5_K, 1, float)
+GEMM_QH_KERNEL(gemmq_q5k_add_h, FMT_Q5_K, 2, float)
+GEMM_QH_KERNEL(gemmq_q6k_f16_h, FMT_Q6_K, 0, half)
+GEMM_QH_KERNEL(gemmq_q6k_f32_h, FMT_Q6_K, 1, float)
+GEMM_QH_KERNEL(gemmq_q6k_add_h, FMT_Q6_K, 2, float)
 GEMM_Q_KERNEL(gemmq_q6k_add, FMT_Q6_K, 2, float)

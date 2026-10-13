@@ -24,9 +24,11 @@ extern "C" __global__ void rmsnorm_rows_kernel(const float* __restrict__ x, cons
 }
 
 // qkv: fp16 [T][q_dim + 2 kv_dim] (q | k | v per token). Writes the rotated q to q_out (fp16 [T][q_dim]) and the rotated k and the v of every token into the layer's KV cache at pos0 + t.
-// One block per (token, head); heads 0..n_head-1 are query heads, then n_kv key heads, then n_kv value heads. qn / kn (may be null) are the Qwen3 per-head RMSNorm weights.
+// One block per (token, head); heads 0..n_head-1 are query heads, then n_kv key heads, then n_kv value heads. qn / kn (may be null) are the Qwen3 per-head RMSNorm weights; bias_q / bias_k / bias_v
+// (may be null) the biases of the projections (Qwen2), added in fp32 to the fp16 GEMM output before the norm and the rotation.
 extern "C" __global__ void qkv_rope_kernel(const half* __restrict__ qkv, half* __restrict__ q_out, half* __restrict__ k_cache, half* __restrict__ v_cache, const float* __restrict__ cos_t,
-                                           const float* __restrict__ sin_t, const float* __restrict__ qn, const float* __restrict__ kn, int pos0, int n_head, int n_kv, int hd, float eps) {
+                                           const float* __restrict__ sin_t, const float* __restrict__ qn, const float* __restrict__ kn, int pos0, int n_head, int n_kv, int hd, float eps,
+                                           const float* __restrict__ bias_q, const float* __restrict__ bias_k, const float* __restrict__ bias_v) {
     __shared__ float red[32];
     __shared__ float hv[256];
     const int t = blockIdx.x, hb = blockIdx.y;
@@ -39,14 +41,20 @@ extern "C" __global__ void qkv_rope_kernel(const half* __restrict__ qkv, half* _
     else if (hb < n_head + n_kv) { kind = 1; head = hb - n_head; src = qkv + (size_t)t * stride + q_dim + head * hd; }
     else { kind = 2; head = hb - n_head - n_kv; src = qkv + (size_t)t * stride + q_dim + kv_dim + head * hd; }
     const int half_d = hd / 2;
+    const float* bh = kind == 0 ? bias_q : (kind == 1 ? bias_k : bias_v);
+    if (bh != nullptr) bh += head * hd;
     if (kind == 2) {
         half* dst = v_cache + (size_t)pos * kv_dim + head * hd;
-        for (int d = threadIdx.x; d < hd; d += blockDim.x) dst[d] = src[d];
+        if (bh == nullptr) {
+            for (int d = threadIdx.x; d < hd; d += blockDim.x) dst[d] = src[d];
+        } else {
+            for (int d = threadIdx.x; d < hd; d += blockDim.x) dst[d] = __float2half(__half2float(src[d]) + bh[d]);
+        }
         return;
     }
     float ss = 0.f;
     for (int d = threadIdx.x; d < hd; d += blockDim.x) {
-        const float v = __half2float(src[d]);
+        const float v = __half2float(src[d]) + (bh ? bh[d] : 0.f);
         hv[d] = v;
         ss += v * v;
     }

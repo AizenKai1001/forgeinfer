@@ -60,13 +60,13 @@ forge tensor model.gguf blk.10.ffn_up.weight     # statistics and a block of num
 forge tokenize model.gguf "any text"             # token ids from the file's own tokenizer
 ```
 
-- **Models**: `llama`, `qwen3` and `qwen35` (Qwen3.5: hybrid Gated DeltaNet and attention, 0.8B to 27B) architectures with byte-level BPE tokenizers: Qwen3, Qwen3.5, SmolLM2, Llama 3 family. Quantizations F32, F16, BF16, Q4_0, Q4_1, Q5_0, Q5_1, Q8_0, Q2_K to Q6_K. See [docs/MODELS.md](docs/MODELS.md) for what was tested and what is not supported.
+- **Models**: `llama`, `qwen2` (Qwen2 / Qwen2.5), `qwen3` and `qwen35` (Qwen3.5: hybrid Gated DeltaNet and attention, 0.8B to 27B) architectures with byte-level BPE tokenizers: Qwen2.5, Qwen3, Qwen3.5, SmolLM2, Llama 3 family. Quantizations F32, F16, BF16, Q4_0, Q4_1, Q5_0, Q5_1, Q8_0, Q2_K to Q6_K. See [docs/MODELS.md](docs/MODELS.md) for what was tested and what is not supported.
 - **Speed**: speculative decoding with a Qwen3.5 model's own prediction head makes the 9B answer at 99 tokens/s (2.2x) and the 4B at 145 tokens/s (1.8x) on an RTX 4060 (greedy; 1.5 to 1.6x when sampling); plain decode is 1.2 to 1.7 times llama.cpp on the same files on an RTX 2060 SUPER and 1.0 to 1.25 times on an RTX 4060 (measurement series and the prefill caveat in [docs/PERFORMANCE.md](docs/PERFORMANCE.md)); a 4-bit Qwen3.5-27B runs at about 9.7 tokens per second on that 8 GB card by keeping two thirds of the feed-forward layers in system memory and multiplying them with AVX2 kernels inside the CUDA graph.
 - **Memory**: KV-cache compression (`--kv int8|int4`), quantized weights read as they are (no conversion to fp16), a CPU/GPU split planner for models bigger than video memory.
 - **Structured output**: `response_format` `json_object` and `json_schema` (types, ordered properties with `required`, enums, array limits, `anyOf`, recursive `$ref`) are kept by constrained decoding with a byte-level automaton, not by hoping: the answer parses and follows the schema, also while streaming and while speculating.
 - **Speculative decoding** with the model's own multi-token-prediction head (Qwen3.5), **prompt lookup** for every model (repeated text is drafted from the conversation itself: up to 2x on code edits and quotes, nothing lost elsewhere) and prefix reuse across chat turns, including state snapshots for the recurrent layers.
 
-On a desktop RTX 4060 (8 GB, Windows, 4-bit files), measured against the llama.cpp that ships inside LM Studio 0.4.16 (same files, same prompts, greedy): plain decode is 1.5x LM Studio's engine on the 0.8B and 1.05 to 1.1x on the 4B and 9B; with prompt lookup and the model's prediction head the 9B writes ordinary prose at 79 tokens/s (LM Studio's engine: 43) and rewrites, JSON and quotes at 111 to 155; reading a prompt is 1.3 to 1.9x faster on the 0.8B and 1 to 24 percent slower on the 4B and 9B; the 9B holds 5.4 GiB of video memory against 5.1. llama.cpp has n-gram speculation of its own (off by default; 1.6 to 1.7x on edits with the one setting tried). Method, tables and caveats in [PERFORMANCE.md](docs/PERFORMANCE.md); `tools/bench_engines.py` repeats it on your machine.
+On a desktop RTX 4060 (8 GB, Windows, 4-bit files), measured against the llama.cpp that ships inside LM Studio 0.4.16, llama.cpp b11517 and Ollama 0.40.3 (same files, same prompts, greedy, one after the other in the same hour): plain decode is 1.4x faster than all three on the 0.8B, 10 to 12 percent faster on the 4B and 4 to 6 percent on the 9B; with prompt lookup and the model's prediction head the 9B writes ordinary prose at 79 tokens/s (LM Studio's engine: 43) and rewrites, JSON and quotes at 111 to 155; reading a prompt is 1.3 to 2x faster on the 0.8B, level on the 4B at about 600 tokens (0 to 10 percent behind at 2,000) and 5 to 18 percent slower on the 9B; the 9B holds 5.5 GiB of video memory against 5.2. llama.cpp has n-gram speculation of its own (off by default; 1.6 to 1.7x on edits with the one setting tried). Method, tables and caveats in [PERFORMANCE.md](docs/PERFORMANCE.md); `tools/bench_engines.py` repeats it on your machine.
 
 ## Also in this repository
 
@@ -85,10 +85,10 @@ The engine grew out of a from-scratch research stack: the same repository contai
 
 ## Status and limits
 
-- The engine needs an NVIDIA GPU. A CPU backend (for macOS and for computers without a GPU) and more architectures (Qwen2, Gemma, Mistral, mixture-of-experts) are on the [roadmap](docs/ROADMAP.md); until then Studio uses llama.cpp or an external server for those.
+- The engine needs an NVIDIA GPU. A CPU backend (for macOS and for computers without a GPU) and more architectures (Gemma, Mistral, mixture-of-experts) are on the [roadmap](docs/ROADMAP.md); until then Studio uses llama.cpp or an external server for those.
 - SentencePiece tokenizers (Llama 2, Mistral 7B v0.1, Gemma) and IQ-quantizations are not supported by the engine.
 - The Llama 3 chat format and tokenizer are implemented and unit-tested but have not been checked against real Llama 3 weights yet.
-- Prefill (reading a prompt) is slower than llama.cpp on the 4B and 9B models (0.6 to 0.85 times at 512 tokens on the measured cards); decode is as fast or faster.
+- Prefill (reading a prompt) is slower than llama.cpp's on the 9B (0.82 to 0.88 times on an RTX 4060) and, for long prompts, on the 4B (0.9 times at 2,000 tokens); decode is as fast or faster.
 - Forge Studio is new. The author ran it on Windows 11 with an RTX 4060 and on Ubuntu 24.04 (X11, RTX 2060 SUPER, chat with the CUDA engine verified); CI builds and unit-tests it on Windows, Linux and macOS, but nobody has run the window on a Mac yet: reports are welcome.
 
 ## License

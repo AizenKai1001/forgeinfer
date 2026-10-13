@@ -31,7 +31,7 @@ pub struct ModelEntry {
 }
 
 /// Architectures the ForgeInfer engine can run today.
-pub const FORGE_ARCHS: [&str; 3] = ["llama", "qwen3", "qwen35"];
+pub const FORGE_ARCHS: [&str; 4] = ["llama", "qwen2", "qwen3", "qwen35"];
 
 impl ModelEntry {
     pub fn forge_supported(&self) -> bool {
@@ -48,7 +48,7 @@ impl ModelEntry {
         }
         if !FORGE_ARCHS.contains(&self.arch.as_str()) {
             return Some(format!(
-                "the \"{}\" architecture is not supported yet (llama, qwen3 and qwen3.5 are)",
+                "the \"{}\" architecture is not supported yet (llama, qwen2, qwen3 and qwen3.5 are)",
                 self.arch
             ));
         }

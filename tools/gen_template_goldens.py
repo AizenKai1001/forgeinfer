@@ -7,7 +7,6 @@ import json
 import os
 import sys
 
-from transformers import AutoTokenizer
 
 ROOT = os.path.expanduser("~/forgeinfer/oracle/models")
 MODELS = {"smollm2": "HuggingFaceTB__SmolLM2-135M-Instruct", "qwen3": "Qwen__Qwen3-0.6B", "qwen35": "Qwen__Qwen3.5-0.8B"}
@@ -43,6 +42,8 @@ CONVERSATIONS = {
 
 
 def main() -> int:
+    from transformers import AutoTokenizer  # only the oracle run needs it: tools/gen_template_goldens_gguf.py imports the conversations above without it
+
     out_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "tests", "golden")
     os.makedirs(out_dir, exist_ok=True)
     for name, folder in MODELS.items():

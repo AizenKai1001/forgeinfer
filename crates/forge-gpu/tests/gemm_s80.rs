@@ -381,3 +381,48 @@ fn ampere_gemm_throughput() {
         }
     }
 }
+
+/// The fp16-accumulate NT kernels (`*_s80h`: the MMAs add 16 products in fp16, flushed into the fp32 accumulators after every k16 step; sm_80 and newer, below that the kernels run the fp32 form) against a CPU
+/// reference: the error stays far below an fp16 rounding step of the output for K up to 2,048, and the epilogues (fp16 out, fp32 out, add into fp32) write the right values.
+#[test]
+fn fp16_accumulate_gemms_match_the_cpu_reference() {
+    let Some((_dev, module, stream)) = setup() else {
+        return;
+    };
+    let h = |name: &str| {
+        let f = module.function(&format!("{name}_s80h")).unwrap();
+        f.set_max_dynamic_smem(SMEM as i32).unwrap();
+        f
+    };
+    for &(m, n, kk) in &[(130usize, 200usize, 96usize), (8, 64, 32), (256, 576, 576), (1024, 576, 2048), (200, 168, 64), (77, 4352, 1024)] {
+        let (ah, af) = rand_f16(m * kk, 11 + m as u64);
+        let (bh, bf) = rand_f16(n * kk, 12 + n as u64);
+        let want = cpu_gemm(&af, false, &bf, false, m, n, kk);
+        let scale = want.iter().fold(0f32, |mx, v| mx.max(v.abs())).max(1.0);
+        let da = DeviceBuffer::from_bytes(&bytes_of(&ah)).unwrap();
+        let db = DeviceBuffer::from_bytes(&bytes_of(&bh)).unwrap();
+        // fp32 out
+        let dc = DeviceBuffer::alloc(m * n * 4).unwrap();
+        launch(h("gemm_nt_f32"), SMEM, &stream, &da, &db, &dc, m, n, kk, kk, kk, n);
+        stream.synchronize().unwrap();
+        let got = dc.download_f32(m * n).unwrap();
+        let worst = got.iter().zip(&want).fold(0f32, |mx, (g, w)| mx.max((g - w).abs()));
+        eprintln!("gemm_nt_f32_s80h {m}x{n}x{kk}: max |diff| {worst:.2e} (max |value| {scale:.1})");
+        assert!(worst <= 4e-3 * scale, "gemm_nt_f32_s80h {m}x{n}x{kk}: {worst} against {scale}");
+        // add: C starts as the reference and receives the product again
+        let dadd = DeviceBuffer::from_bytes(&want.iter().flat_map(|v| v.to_le_bytes()).collect::<Vec<u8>>()).unwrap();
+        launch(h("gemm_nt_add"), SMEM, &stream, &da, &db, &dadd, m, n, kk, kk, kk, n);
+        stream.synchronize().unwrap();
+        let got = dadd.download_f32(m * n).unwrap();
+        let worst = got.iter().zip(&want).fold(0f32, |mx, (g, w)| mx.max((g - 2.0 * w).abs()));
+        assert!(worst <= 4e-3 * scale, "gemm_nt_add_s80h {m}x{n}x{kk}: {worst} against {scale}");
+        // fp16 out
+        let dh = DeviceBuffer::alloc(m * n * 2).unwrap();
+        launch(h("gemm_nt_f16"), SMEM, &stream, &da, &db, &dh, m, n, kk, kk, kk, n);
+        stream.synchronize().unwrap();
+        let mut raw = vec![0u8; m * n * 2];
+        dh.download(&mut raw).unwrap();
+        let worst = raw.chunks_exact(2).zip(&want).fold(0f32, |mx, (b, w)| mx.max((f16_to_f32(u16::from_le_bytes([b[0], b[1]])) - w).abs()));
+        assert!(worst <= 4e-3 * scale + 1e-3 * scale, "gemm_nt_f16_s80h {m}x{n}x{kk}: {worst} against {scale}");
+    }
+}

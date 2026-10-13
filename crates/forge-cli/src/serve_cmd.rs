@@ -29,6 +29,7 @@ fn parse_chat(name: &str) -> Option<ChatFormat> {
         "chatml" => ChatFormat::ChatMl,
         "smollm2" => ChatFormat::SmolLm2,
         "llama3" => ChatFormat::Llama3,
+        "qwen25" | "qwen2" => ChatFormat::Qwen25,
         "qwen3" => ChatFormat::Qwen3,
         "qwen35" => ChatFormat::Qwen35 {
             thinking_default: false,
@@ -63,7 +64,7 @@ pub fn serve(args: &[String]) -> i32 {
         Some(name) => match parse_chat(name) {
             Some(c) => Some(c),
             None => {
-                eprintln!("unknown --chat {name:?} (chatml, smollm2, llama3, qwen3, qwen35, qwen35-think)");
+                eprintln!("unknown --chat {name:?} (chatml, smollm2, llama3, qwen25, qwen3, qwen35, qwen35-think)");
                 return 2;
             }
         },

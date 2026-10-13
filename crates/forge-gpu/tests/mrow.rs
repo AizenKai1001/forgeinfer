@@ -652,8 +652,8 @@ fn multi_row_prefill_matches_the_gemm_path_hybrid() {
 }
 
 /// `qkv_prep_multi_kernel` (QK norm, RoPE and the cache append of N rows of a dense model) against a host reference: with norm weights (Qwen3) and without (null weights: the Llama-like models), full and
-/// partial rotary dimensions, rows at positions beyond the start of the cache. (Qwen3 with its norms removed is no substitute for a Llama model: it computes noise, and the three paths of the engine then
-/// differ from each other by far more than any bug would.)
+/// partial rotary dimensions, rows at positions beyond the start of the cache, and the biases of the q, k and v projections (Qwen2: added before the norm and the rotation). (Qwen3 with its norms removed is
+/// no substitute for a Llama model: it computes noise, and the three paths of the engine then differ from each other by far more than any bug would.)
 #[test]
 fn qkv_prep_multi_matches_the_reference() {
     let _gpu = common::gpu_lock();
@@ -661,13 +661,18 @@ fn qkv_prep_multi_matches_the_reference() {
     let f = func(&c, "qkv_prep_multi_kernel");
     let bytes = |v: &[f32]| -> Vec<u8> { v.iter().flat_map(|x| x.to_le_bytes()).collect() };
     let mut r = Lcg(77);
-    for &(nh, nkv, hd, rd, norms) in &[
-        (8usize, 2usize, 64usize, 64usize, true),
-        (8, 2, 64, 64, false),
-        (4, 2, 128, 128, true),
-        (4, 2, 128, 128, false),
-        (6, 3, 64, 32, true),
-        (6, 3, 64, 32, false),
+    for &(nh, nkv, hd, rd, norms, bias) in &[
+        (8usize, 2usize, 64usize, 64usize, true, false),
+        (8, 2, 64, 64, false, false),
+        (4, 2, 128, 128, true, false),
+        (4, 2, 128, 128, false, false),
+        (6, 3, 64, 32, true, false),
+        (6, 3, 64, 32, false, false),
+        // Qwen2 (14 q heads, 2 kv heads of 64: a group of 7) and the same shapes with biases and norms together
+        (14, 2, 64, 64, false, true),
+        (4, 2, 128, 128, false, true),
+        (6, 3, 64, 32, false, true),
+        (8, 2, 64, 64, true, true),
     ] {
         let (n, pos0, eps) = (5usize, 7usize, 1e-6f32);
         let (half, kvd, tbl) = (rd / 2, nkv * hd, pos0 + 5);
@@ -676,10 +681,15 @@ fn qkv_prep_multi_matches_the_reference() {
         let v: Vec<f32> = (0..n * kvd).map(|_| r.unit()).collect();
         let qw: Vec<f32> = (0..hd).map(|_| 0.5 + r.unit().abs()).collect();
         let kw: Vec<f32> = (0..hd).map(|_| 0.5 + r.unit().abs()).collect();
+        // Qwen2's biases are large (tens) in a few channels: the same here
+        let bqv: Vec<f32> = (0..nh * hd).map(|i| r.unit() * if i % 17 == 0 { 40.0 } else { 2.0 }).collect();
+        let bkv: Vec<f32> = (0..kvd).map(|i| r.unit() * if i % 13 == 0 { 60.0 } else { 2.0 }).collect();
+        let bvv: Vec<f32> = (0..kvd).map(|_| r.unit() * 3.0).collect();
         let cs: Vec<f32> = (0..tbl * half).map(|i| ((i % 97) as f32 * 0.07).cos()).collect();
         let sn: Vec<f32> = (0..tbl * half).map(|i| ((i % 97) as f32 * 0.07).sin()).collect();
         let up = |x: &[f32]| DeviceBuffer::from_bytes(&bytes(x)).unwrap();
         let (qb, kb, vb, qwb, kwb, cb, sb) = (up(&q), up(&k), up(&v), up(&qw), up(&kw), up(&cs), up(&sn));
+        let (bqb, bkb, bvb) = (up(&bqv), up(&bkv), up(&bvv));
         let mut st = Vec::new();
         for x in [0u32, pos0 as u32, 0, 0] {
             st.extend_from_slice(&x.to_le_bytes());
@@ -708,7 +718,10 @@ fn qkv_prep_multi_matches_the_reference() {
                 .i32(nkv as i32)
                 .i32(hd as i32)
                 .i32(rd as i32)
-                .f32(eps),
+                .f32(eps)
+                .ptr(if bias { bqb.ptr() } else { 0 })
+                .ptr(if bias { bkb.ptr() } else { 0 })
+                .ptr(if bias { bvb.ptr() } else { 0 }),
         )
         .unwrap();
         c.stream.synchronize().unwrap();
@@ -744,22 +757,28 @@ fn qkv_prep_multi_matches_the_reference() {
             raw.chunks_exact(2).map(|h| forge_core::half::f16_to_f32(u16::from_le_bytes([h[0], h[1]]))).collect()
         };
         let (got_k, got_v) = (half_vec(&kc), half_vec(&vc));
-        let what = format!("{nh} q heads, {nkv} kv heads, hd {hd}, rd {rd}, {}", if norms { "QK norm" } else { "no QK norm" });
+        let what = format!(
+            "{nh} q heads, {nkv} kv heads, hd {hd}, rd {rd}, {}, {}",
+            if norms { "QK norm" } else { "no QK norm" },
+            if bias { "biases" } else { "no biases" }
+        );
         for t in 0..n {
             let pos = pos0 + t;
             for h in 0..nh {
-                let want = head_ref(&q[(t * nh + h) * hd..(t * nh + h + 1) * hd], norms.then_some(&qw[..]), pos);
+                let src: Vec<f32> = (0..hd).map(|d| q[(t * nh + h) * hd + d] + if bias { bqv[h * hd + d] } else { 0.0 }).collect();
+                let want = head_ref(&src, norms.then_some(&qw[..]), pos);
                 for d in 0..hd {
                     let g = got_q[(t * nh + h) * hd + d] as f64;
                     assert!((g - want[d]).abs() <= 2e-5 * want[d].abs().max(1.0), "{what}: q row {t} head {h} dim {d}: {g} against {}", want[d]);
                 }
             }
             for h in 0..nkv {
-                let want = head_ref(&k[(t * nkv + h) * hd..(t * nkv + h + 1) * hd], norms.then_some(&kw[..]), pos);
+                let src: Vec<f32> = (0..hd).map(|d| k[(t * nkv + h) * hd + d] + if bias { bkv[h * hd + d] } else { 0.0 }).collect();
+                let want = head_ref(&src, norms.then_some(&kw[..]), pos);
                 for d in 0..hd {
                     let g = got_k[pos * kvd + h * hd + d] as f64;
                     assert!((g - want[d]).abs() <= 1.5e-3 * want[d].abs().max(1.0), "{what}: k row {t} head {h} dim {d}: {g} against {}", want[d]);
-                    let (gv, wv) = (got_v[pos * kvd + h * hd + d] as f64, v[(t * nkv + h) * hd + d] as f64);
+                    let (gv, wv) = (got_v[pos * kvd + h * hd + d] as f64, (v[(t * nkv + h) * hd + d] + if bias { bvv[h * hd + d] } else { 0.0 }) as f64);
                     assert!((gv - wv).abs() <= 1e-3 * wv.abs().max(1e-2), "{what}: v row {t} head {h} dim {d}: {gv} against {wv}");
                 }
             }

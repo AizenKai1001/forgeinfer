@@ -7,10 +7,19 @@ use forge_gguf::Gguf;
 pub enum Arch {
     /// Llama family (SmolLM2, Llama-3 ...): RMSNorm, GQA attention with RoPE, SwiGLU.
     Llama,
+    /// Qwen2 / Qwen2.5: as Llama (rotate-half RoPE, no QK-norm) plus a bias on the query, key and value projections.
+    Qwen2,
     /// Qwen3: as Llama plus RMSNorm on every query and key head before RoPE.
     Qwen3,
     /// Qwen3.5 (dense text decoder): three Gated DeltaNet layers (a fixed-size recurrent state) for every gated full-attention layer, partial RoPE, head width 256.
     Qwen35,
+}
+
+impl Arch {
+    /// RMSNorm on every query and key head before RoPE (Qwen3 and Qwen3.5)
+    pub fn has_qk_norm(self) -> bool {
+        matches!(self, Arch::Qwen3 | Arch::Qwen35)
+    }
 }
 
 /// The Gated DeltaNet (linear attention) layers of a hybrid model.
@@ -63,6 +72,8 @@ pub struct Config {
     pub rope_theta: f32,
     pub max_ctx: usize,
     pub qk_norm: bool,
+    /// the query, key and value projections carry a bias (Qwen2)
+    pub qkv_bias: bool,
     pub tie_embeddings: bool,
     /// head dimensions that rotate (the first `rotary_dim`, in pairs (i, i + rotary_dim/2)); equals `head_dim` unless the model uses partial RoPE
     pub rotary_dim: usize,
@@ -116,6 +127,7 @@ impl Config {
             .ok_or_else(|| Error::format("GGUF without general.architecture"))?;
         let arch = match a {
             "llama" => Arch::Llama,
+            "qwen2" => Arch::Qwen2,
             "qwen3" => Arch::Qwen3,
             "qwen35" => Arch::Qwen35,
             other => return Err(Error::unsupported(format!("model architecture {other:?}"))),
@@ -124,6 +136,9 @@ impl Config {
             g.get_u64(&format!("{a}.{k}"))
                 .ok_or_else(|| Error::format(format!("GGUF key {a}.{k} missing")))
         };
+        if let Some(t) = g.get_str(&format!("{a}.rope.scaling.type")).filter(|t| *t != "none") {
+            eprintln!("[model] note: the file asks for {t} rope scaling, which is not implemented: positions use plain RoPE");
+        }
         let n_embd = u("embedding_length")? as usize;
         let n_head = u("attention.head_count")? as usize;
         if n_head == 0 {
@@ -188,7 +203,8 @@ impl Config {
                 .unwrap_or(1e-5) as f32,
             rope_theta: g.get_f64(&format!("{a}.rope.freq_base")).unwrap_or(10000.0) as f32,
             max_ctx: g.get_u64(&format!("{a}.context_length")).unwrap_or(4096) as usize,
-            qk_norm: arch != Arch::Llama,
+            qk_norm: arch.has_qk_norm(),
+            qkv_bias: arch == Arch::Qwen2,
             tie_embeddings: g.tensor_info("output.weight").is_none(),
             rotary_dim,
             attn_gate,
@@ -201,6 +217,7 @@ impl Config {
         let mt = c["model_type"].as_str().unwrap_or("");
         let arch = match mt {
             "llama" => Arch::Llama,
+            "qwen2" => Arch::Qwen2,
             "qwen3" => Arch::Qwen3,
             "qwen3_5" | "qwen3_5_text" => Arch::Qwen35,
             other => {
@@ -209,6 +226,12 @@ impl Config {
                 )))
             }
         };
+        if arch == Arch::Qwen2 && c["use_sliding_window"].as_bool().unwrap_or(false) {
+            return Err(Error::unsupported("Qwen2 with sliding-window attention (use_sliding_window)"));
+        }
+        if !c["rope_scaling"].is_null() {
+            eprintln!("[model] note: config.json has rope_scaling, which is not implemented: positions use plain RoPE");
+        }
         // the multimodal Qwen3.5 repositories nest the text model
         let t = if arch == Arch::Qwen35 && !c["text_config"].is_null() {
             &c["text_config"]
@@ -261,7 +284,8 @@ impl Config {
             rms_eps: t["rms_norm_eps"].as_f64().unwrap_or(1e-5) as f32,
             rope_theta: rope_theta as f32,
             max_ctx: t["max_position_embeddings"].as_usize().unwrap_or(4096),
-            qk_norm: arch != Arch::Llama,
+            qk_norm: arch.has_qk_norm(),
+            qkv_bias: arch == Arch::Qwen2,
             tie_embeddings: t["tie_word_embeddings"]
                 .as_bool()
                 .or_else(|| c["tie_word_embeddings"].as_bool())

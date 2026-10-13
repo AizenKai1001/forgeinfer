@@ -6,7 +6,7 @@ pub mod template;
 
 pub use parse::{parse, CallFormat, Event, OutputParser, Parsed};
 pub use template::{
-    render_chatml, render_llama3, render_qwen3, render_qwen35, render_smollm2, split_think, today_dd_mon_yyyy, wire_to_template,
+    render_chatml, render_llama3, render_qwen25, render_qwen3, render_qwen35, render_smollm2, split_think, today_dd_mon_yyyy, wire_to_template,
 };
 
 use forge_core::{Json, Result};
@@ -19,6 +19,8 @@ pub enum ChatFormat {
     SmolLm2,
     /// Llama 3.x instruct models (`<|start_header_id|>` ... `<|eot_id|>`), no tools
     Llama3,
+    /// Qwen2 / Qwen2.5 instruct: ChatML with a default system turn and JSON tool calls, no thinking block
+    Qwen25,
     Qwen3,
     /// `thinking_default`: what an absent `enable_thinking` means for this checkpoint's template (false for 0.8B / 2B, true for 4B / 9B).
     Qwen35 {
@@ -39,6 +41,7 @@ impl ChatFormat {
             ChatFormat::ChatMl => render_chatml(messages, add_generation_prompt),
             ChatFormat::SmolLm2 => render_smollm2(messages, add_generation_prompt),
             ChatFormat::Llama3 => render_llama3(messages, add_generation_prompt, &today_dd_mon_yyyy()),
+            ChatFormat::Qwen25 => render_qwen25(messages, tools, add_generation_prompt),
             ChatFormat::Qwen3 => {
                 render_qwen3(messages, tools, add_generation_prompt, enable_thinking)
             }
@@ -56,7 +59,7 @@ impl ChatFormat {
     pub fn call_format(&self) -> Option<CallFormat> {
         match self {
             ChatFormat::ChatMl | ChatFormat::SmolLm2 | ChatFormat::Llama3 => None,
-            ChatFormat::Qwen3 => Some(CallFormat::Json),
+            ChatFormat::Qwen25 | ChatFormat::Qwen3 => Some(CallFormat::Json),
             ChatFormat::Qwen35 { .. } => Some(CallFormat::Xml),
         }
     }

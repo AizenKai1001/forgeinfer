@@ -328,6 +328,81 @@ pub fn render_qwen3(
 }
 
 // ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+// Qwen2 / Qwen2.5
+
+const Q25_SYSTEM: &str = "You are Qwen, created by Alibaba Cloud. You are a helpful assistant.";
+// as Qwen3's tail, except that the template writes the example call with DOUBLED braces ({{"name": ..}}: a Jinja string literal does not turn them into single ones)
+const Q25_TAIL: &str = "\n</tools>\n\nFor each function call, return a json object with function name and arguments within <tool_call></tool_call> XML tags:\n<tool_call>\n{{\"name\": <function-name>, \"arguments\": <args-json-object>}}\n</tool_call>";
+
+/// Qwen2 / Qwen2.5 instruct: ChatML with a default system turn when the conversation has none, tool calls as in Qwen3 (the same `<tools>` block and `<tool_call>` JSON), and no thinking block.
+/// `tools` come after the system text, which is the default text when the conversation has no system message.
+pub fn render_qwen25(messages: &[Json], tools: &[Json], add_generation_prompt: bool) -> Result<String> {
+    if messages.is_empty() {
+        return Err(err("no messages"));
+    }
+    let n = messages.len();
+    let first_is_system = role(&messages[0]) == "system";
+    let system = if first_is_system { content_str(&messages[0]) } else { Q25_SYSTEM };
+    let mut out = String::from("<|im_start|>system\n");
+    out.push_str(system);
+    if !tools.is_empty() {
+        out.push_str("\n\n");
+        out.push_str(Q3_HEAD);
+        for t in tools {
+            out.push('\n');
+            out.push_str(&py_json(t));
+        }
+        out.push_str(Q25_TAIL);
+    }
+    out.push_str("<|im_end|>\n");
+    for (i, m) in messages.iter().enumerate() {
+        let r = role(m);
+        let content = content_str(m);
+        let calls = tool_calls_of(m);
+        if r == "user" || (r == "system" && i > 0) || (r == "assistant" && calls.is_empty()) {
+            out.push_str("<|im_start|>");
+            out.push_str(r);
+            out.push('\n');
+            out.push_str(content);
+            out.push_str("<|im_end|>\n");
+        } else if r == "assistant" {
+            out.push_str("<|im_start|>assistant");
+            if !content.is_empty() {
+                out.push('\n');
+                out.push_str(content);
+            }
+            for tc in calls {
+                let f = function_of(tc);
+                out.push_str("\n<tool_call>\n{\"name\": \"");
+                out.push_str(f.get("name").and_then(|x| x.as_str()).unwrap_or(""));
+                out.push_str("\", \"arguments\": ");
+                match f.get("arguments") {
+                    Some(a) => out.push_str(&py_json(a)),
+                    None => out.push_str("null"),
+                }
+                out.push_str("}\n</tool_call>");
+            }
+            out.push_str("<|im_end|>\n");
+        } else if r == "tool" {
+            // consecutive tool results share one user turn
+            if i == 0 || role(&messages[i - 1]) != "tool" {
+                out.push_str("<|im_start|>user");
+            }
+            out.push_str("\n<tool_response>\n");
+            out.push_str(content);
+            out.push_str("\n</tool_response>");
+            if i == n - 1 || role(&messages[i + 1]) != "tool" {
+                out.push_str("<|im_end|>\n");
+            }
+        }
+    }
+    if add_generation_prompt {
+        out.push_str("<|im_start|>assistant\n");
+    }
+    Ok(out)
+}
+
+// ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
 // Qwen3.5
 
 const Q35_HEAD: &str = "# Tools\n\nYou have access to the following functions:\n\n<tools>";

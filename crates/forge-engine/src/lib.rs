@@ -265,6 +265,16 @@ fn default_chat(model_path: &std::path::Path, arch: Arch, n_embd: usize) -> Chat
     let name = model_path.to_string_lossy().to_lowercase();
     match arch {
         Arch::Qwen3 => ChatFormat::Qwen3,
+        // Qwen2 / Qwen2.5 instruct; other models built on this architecture (DeepSeek-R1 distills ...) bring a template of their own, which is not implemented: they get plain ChatML
+        Arch::Qwen2 => {
+            let template = gguf_chat_template(model_path).unwrap_or_default();
+            if template.is_empty() || template.contains("<|im_start|>") {
+                ChatFormat::Qwen25
+            } else {
+                eprintln!("[engine] the chat template of this model is not a ChatML dialect: prompts use plain ChatML (--chat selects another format)");
+                ChatFormat::ChatMl
+            }
+        }
         // the 0.8B and 2B templates default to answering without a thinking phase, the 4B and 9B think
         Arch::Qwen35 => ChatFormat::Qwen35 {
             thinking_default: n_embd > 2048,

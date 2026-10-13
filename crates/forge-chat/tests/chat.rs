@@ -1,4 +1,4 @@
-//! Chat templates against the golden renderings recorded from each model's own Jinja template (28 SmolLM2 + 56 Qwen3 + 56 Qwen3.5 cases, each also from the OpenAI wire form of the conversation),
+//! Chat templates against the golden renderings recorded from each model's own Jinja template (28 SmolLM2 + 56 Qwen3 + 56 Qwen3.5 + 40 Qwen2.5 cases, each also from the OpenAI wire form of the conversation),
 //! and the output parser against the table of `tools/ref_chat_templates.py` for every chunking.
 
 use forge_chat::*;
@@ -94,6 +94,12 @@ fn smollm2_renders_like_its_jinja_template() {
 #[test]
 fn qwen3_renders_like_its_jinja_template() {
     check("qwen3", ChatFormat::Qwen3);
+}
+
+/// Qwen2.5-0.5B-Instruct: the goldens are the Jinja template stored in its GGUF file (tools/gen_template_goldens_gguf.py), including the default system turn and the doubled braces of its tool-call example.
+#[test]
+fn qwen25_renders_like_its_jinja_template() {
+    check("qwen25", ChatFormat::Qwen25);
 }
 
 #[test]
