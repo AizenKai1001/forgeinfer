@@ -229,6 +229,14 @@ fn top_bar(app: &mut StudioApp, ui: &mut Ui) {
 }
 
 fn model_picker(app: &mut StudioApp, ui: &mut Ui) {
+    // in a narrow window (the minimum is 900 points) the picker shrinks and the status words go: the buttons on the right need about 225 points, and the side panel shows the state and Eject anyway
+    let avail = ui.available_width();
+    let narrow = avail < 640.0;
+    let picker_w = if narrow {
+        (avail - 225.0).clamp(140.0, 380.0)
+    } else {
+        380.0
+    };
     if app.settings.engine == EngineKind::External {
         let current = if app.external_pick.is_empty() {
             "no model found".to_string()
@@ -236,7 +244,7 @@ fn model_picker(app: &mut StudioApp, ui: &mut Ui) {
             app.external_pick.clone()
         };
         egui::ComboBox::from_id_salt("model_pick_ext")
-            .width(320.0)
+            .width(picker_w.min(320.0))
             .selected_text(current)
             .show_ui(ui, |ui| {
                 for m in app.external_models.clone() {
@@ -248,7 +256,9 @@ fn model_picker(app: &mut StudioApp, ui: &mut Ui) {
         if ui.button("Refresh").clicked() {
             app.actions.push(Action::RefreshExternal);
         }
-        muted(ui, &app.external_status.clone());
+        if !narrow {
+            muted(ui, &app.external_status.clone());
+        }
         return;
     }
     let state = app.engine.state();
@@ -257,7 +267,7 @@ fn model_picker(app: &mut StudioApp, ui: &mut Ui) {
         _ => "Select a model to load".to_string(),
     };
     let mut pick: Option<std::path::PathBuf> = None;
-    egui::ComboBox::from_id_salt("model_pick").width(380.0).selected_text(RichText::new(truncate(&current, 46)).color(theme::STRONG)).show_ui(ui, |ui| {
+    egui::ComboBox::from_id_salt("model_pick").width(picker_w).selected_text(RichText::new(truncate(&current, if narrow { 22 } else { 46 })).color(theme::STRONG)).show_ui(ui, |ui| {
         ui.set_min_width(460.0);
         let mut any = false;
         for e in app.library.iter().filter(|e| !e.projector && e.error.is_none()) {
@@ -282,14 +292,17 @@ fn model_picker(app: &mut StudioApp, ui: &mut Ui) {
     match state {
         EngineState::Loading { since, .. } => {
             ui.spinner();
-            ui.label(
-                RichText::new(format!(
-                    "loading ... {:.0} s",
-                    since.elapsed().as_secs_f32()
-                ))
-                .color(theme::WARN),
-            );
+            if !narrow {
+                ui.label(
+                    RichText::new(format!(
+                        "loading ... {:.0} s",
+                        since.elapsed().as_secs_f32()
+                    ))
+                    .color(theme::WARN),
+                );
+            }
         }
+        EngineState::Ready { .. } if narrow => {}
         EngineState::Ready { load_secs, .. } => {
             let spec = app.engine.current().is_some_and(|l| l.mtp.is_some());
             ui.label(RichText::new(format!("ready \u{00B7} {load_secs:.1} s{}", if spec { " \u{00B7} speculative" } else { "" })).small().color(theme::GOOD)).on_hover_text("Time to load. Speculative: the model's prediction head drafts tokens ahead for faster answers.");
@@ -676,7 +689,7 @@ fn input_box(app: &mut StudioApp, ui: &mut Ui) {
                         ui.add(
                             TextEdit::multiline(&mut app.input)
                                 .hint_text(if app.attachments.is_empty() {
-                                    "Message the model ...   (Enter sends, Shift+Enter adds a line, drop a file here to attach it)"
+                                    "Message the model ...   (Enter sends, Shift+Enter adds a line)"
                                 } else {
                                     "What should the model do with the file?   (Enter sends)"
                                 })
@@ -715,6 +728,16 @@ fn input_box(app: &mut StudioApp, ui: &mut Ui) {
                 });
             });
         });
+        if app.chat.messages.is_empty() && app.attachments.is_empty() && app.input.is_empty() {
+            ui.add_space(2.0);
+            ui.label(
+                RichText::new(
+                    "Tip: drop a text or code file on the window to attach it to your message.",
+                )
+                .small()
+                .color(theme::MUTED),
+            );
+        }
         if let Some(text) = context_meter(app) {
             ui.add_space(2.0);
             ui.with_layout(Layout::right_to_left(Align::Min), |ui| {
