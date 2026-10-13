@@ -183,6 +183,8 @@ Qwen3.5 is a hybrid: only one layer in four attends over the whole context, the 
 | 12,288 | 3,864 | 68.9 |
 | 24,576 | 3,266 | 63.4 |
 
+How far it goes on an 8 GB card (4B, `forge serve`, a fact planted in the middle of a synthetic prompt, which the answer must repeat; `tools/needle_check.py`): 16,000, 32,000, 64,000 tokens with the fp16 KV cache, and **129,000 tokens with `--kv int8`** (the 4B's KV cache is 4.2 GB at 128K positions in fp16 and 2.1 GB in int8; with fp16 the card runs out of video memory and the run does not finish): the prompt is read in 83 seconds (1,555 tokens/s) and the fact is found; decoding at that depth runs at 17 tokens/s.
+
 **The long-prompt work of 2026-10-13 (afternoon and evening).** A per-kernel profile of a 16,000-token prompt (`FORGE_KPROF=2 forge prefill-bench MODEL --native --tokens 16000`, the 4B) showed the attention kernel at 31 percent of the pass, the integer GEMMs at 48 and the Gated DeltaNet kernels at 14. Four changes, each measured against the previous state in the same hour (best of six passes):
 
 1. **Ampere attention kernels** (`flash_a80.cu`, sm_80 and newer; `FORGE_FLASH_A80=0` keeps the old ones). The old kernels were written for Turing: K and V tiles went through registers and the `m16n8k8` MMA form runs at half the tensor-core rate on Ampere. The new ones use `m16n8k16`, a double-buffered cp.async pipeline for the K and V tiles, no mask on tiles that lie entirely below the diagonal and the heaviest blocks first; all accumulators are fp32 and the results are **bit-identical to the old kernels** at head width 128 and 256. A prompt of 16,000 tokens of the dense Qwen3-1.7B (head width 128) is read 12 percent faster (6,000 to 6,680 tokens/s).
