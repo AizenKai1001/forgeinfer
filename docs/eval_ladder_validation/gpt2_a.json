@@ -1,0 +1,48 @@
+{
+ "model": "/mnt/data/forgeinfer-data/eval/ref_models/gpt2",
+ "params_m": 124.4,
+ "limit": 1000,
+ "tasks": {
+  "winogrande": {
+   "n": 1000,
+   "acc": 52.7,
+   "acc_norm": 52.7,
+   "acc_per_token": 52.7,
+   "seconds": 53.931699991226196
+  },
+  "openbookqa": {
+   "n": 500,
+   "acc": 16.4,
+   "acc_norm": 27.2,
+   "acc_per_token": 27.2,
+   "seconds": 31.939431190490723
+  },
+  "arc_easy": {
+   "n": 1000,
+   "acc": 44.4,
+   "acc_norm": 36.9,
+   "acc_per_token": 36.4,
+   "seconds": 129.72638297080994
+  },
+  "arc_challenge": {
+   "n": 1000,
+   "acc": 19.7,
+   "acc_norm": 23.0,
+   "acc_per_token": 22.9,
+   "seconds": 150.67728090286255
+  },
+  "piqa": {
+   "n": 1000,
+   "acc": 62.7,
+   "acc_norm": 62.3,
+   "acc_per_token": 63.1,
+   "seconds": 69.43316602706909
+  },
+  "lambada_openai": {
+   "n": 1000,
+   "acc": 32.3,
+   "perplexity": 39.228059536531084,
+   "seconds": 78.7596161365509
+  }
+ }
+}

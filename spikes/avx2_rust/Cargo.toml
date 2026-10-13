@@ -1,0 +1,13 @@
+[package]
+name = "spike_avx2_rust"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+# Throwaway feasibility spike: do stable-Rust std::arch AVX2 intrinsics reach the same speed as the C micro-benchmark (bench/cpu_micro.c)?
+[dependencies]
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1

@@ -1,0 +1,14 @@
+# A CPU test harness for eval_lambada.rs: the real forge-core / forge-tok crates, a stub Trainer (an oracle model, see stub_train/src/lib.rs), no GPU.
+#   cd tools/rust_patches/eval_lambada/test_stub && cargo run --release -- dummy.bin --tokenizer TOKENIZER.json --data lambada_openai.jsonl --limit 200 --seq 256
+#   (FAKE_MODE=wrong makes the stub model always wrong: acc 0 %, a huge perplexity). Expected for the oracle: acc 100 %, selfcheck 0.00000, word perplexity about exp(1.55 * 0.911) = 4.1.
+[package]
+name = "lamtest"
+version = "0.0.0"
+edition = "2021"
+
+[dependencies]
+forge-core = { path = "../../../../crates/forge-core" }
+forge-tok = { path = "../../../../crates/forge-tok" }
+forge-train = { path = "stub_train" }
+
+[workspace]

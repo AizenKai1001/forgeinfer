@@ -1,0 +1,56 @@
+{
+ "model": "/tmp/f1_test/models/pythia-160m",
+ "windows": 64,
+ "seq": 512,
+ "domains": {
+  "web": {
+   "bits_per_byte": 1.004857987308006,
+   "nats_per_token": 3.304326539440748,
+   "bytes_per_token": 4.7440887888048895,
+   "windows": 64,
+   "seconds": 31.75244665145874
+  },
+  "cosmo": {
+   "bits_per_byte": 0.8812139088933201,
+   "nats_per_token": 3.1610601208470865,
+   "bytes_per_token": 5.1751858592713695,
+   "windows": 64,
+   "seconds": 31.845412254333496
+  },
+  "fmath": {
+   "bits_per_byte": 1.2559769477297498,
+   "nats_per_token": 3.001143567765715,
+   "bytes_per_token": 3.4473044668834505,
+   "windows": 64,
+   "seconds": 29.97267508506775
+  },
+  "owmath": {
+   "bits_per_byte": 1.1714653711526266,
+   "nats_per_token": 3.0727245875295988,
+   "bytes_per_token": 3.7841532781159564,
+   "windows": 64,
+   "seconds": 30.09523582458496
+  },
+  "wiki": {
+   "bits_per_byte": 1.0764121262461719,
+   "nats_per_token": 3.2352637616442603,
+   "bytes_per_token": 4.336163511246534,
+   "windows": 64,
+   "seconds": 29.915287733078003
+  },
+  "books": {
+   "bits_per_byte": 1.176639096621714,
+   "nats_per_token": 3.2676810438537354,
+   "bytes_per_token": 4.006553284443751,
+   "windows": 64,
+   "seconds": 33.93656039237976
+  },
+  "python": {
+   "bits_per_byte": 0.7342823921306062,
+   "nats_per_token": 1.717904990079165,
+   "bytes_per_token": 3.3752859069849275,
+   "windows": 64,
+   "seconds": 37.900699615478516
+  }
+ }
+}

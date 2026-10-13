@@ -1,0 +1,338 @@
+{
+ "model": "SmolLM2-135M-Instruct",
+ "prompt_ids": [
+  6403,
+  1980,
+  253,
+  655,
+  28,
+  281,
+  253,
+  1165,
+  6560,
+  411,
+  260,
+  3426,
+  28
+ ],
+ "position": 12,
+ "layers": {
+  "0": {
+   "x_in": {
+    "file": "L0_x_in.f32",
+    "shape": [
+     576
+    ]
+   },
+   "h": {
+    "file": "L0_h.f32",
+    "shape": [
+     576
+    ]
+   },
+   "q": {
+    "file": "L0_q.f32",
+    "shape": [
+     9,
+     64
+    ]
+   },
+   "k": {
+    "file": "L0_k.f32",
+    "shape": [
+     13,
+     3,
+     64
+    ]
+   },
+   "v": {
+    "file": "L0_v.f32",
+    "shape": [
+     13,
+     3,
+     64
+    ]
+   },
+   "o": {
+    "file": "L0_o.f32",
+    "shape": [
+     576
+    ]
+   },
+   "x_mid": {
+    "file": "L0_x_mid.f32",
+    "shape": [
+     576
+    ]
+   },
+   "h2": {
+    "file": "L0_h2.f32",
+    "shape": [
+     576
+    ]
+   },
+   "g": {
+    "file": "L0_g.f32",
+    "shape": [
+     1536
+    ]
+   },
+   "u": {
+    "file": "L0_u.f32",
+    "shape": [
+     1536
+    ]
+   },
+   "a": {
+    "file": "L0_a.f32",
+    "shape": [
+     1536
+    ]
+   },
+   "x_out": {
+    "file": "L0_x_out.f32",
+    "shape": [
+     576
+    ]
+   }
+  },
+  "7": {
+   "x_in": {
+    "file": "L7_x_in.f32",
+    "shape": [
+     576
+    ]
+   },
+   "h": {
+    "file": "L7_h.f32",
+    "shape": [
+     576
+    ]
+   },
+   "q": {
+    "file": "L7_q.f32",
+    "shape": [
+     9,
+     64
+    ]
+   },
+   "k": {
+    "file": "L7_k.f32",
+    "shape": [
+     13,
+     3,
+     64
+    ]
+   },
+   "v": {
+    "file": "L7_v.f32",
+    "shape": [
+     13,
+     3,
+     64
+    ]
+   },
+   "o": {
+    "file": "L7_o.f32",
+    "shape": [
+     576
+    ]
+   },
+   "x_mid": {
+    "file": "L7_x_mid.f32",
+    "shape": [
+     576
+    ]
+   },
+   "h2": {
+    "file": "L7_h2.f32",
+    "shape": [
+     576
+    ]
+   },
+   "g": {
+    "file": "L7_g.f32",
+    "shape": [
+     1536
+    ]
+   },
+   "u": {
+    "file": "L7_u.f32",
+    "shape": [
+     1536
+    ]
+   },
+   "a": {
+    "file": "L7_a.f32",
+    "shape": [
+     1536
+    ]
+   },
+   "x_out": {
+    "file": "L7_x_out.f32",
+    "shape": [
+     576
+    ]
+   }
+  },
+  "15": {
+   "x_in": {
+    "file": "L15_x_in.f32",
+    "shape": [
+     576
+    ]
+   },
+   "h": {
+    "file": "L15_h.f32",
+    "shape": [
+     576
+    ]
+   },
+   "q": {
+    "file": "L15_q.f32",
+    "shape": [
+     9,
+     64
+    ]
+   },
+   "k": {
+    "file": "L15_k.f32",
+    "shape": [
+     13,
+     3,
+     64
+    ]
+   },
+   "v": {
+    "file": "L15_v.f32",
+    "shape": [
+     13,
+     3,
+     64
+    ]
+   },
+   "o": {
+    "file": "L15_o.f32",
+    "shape": [
+     576
+    ]
+   },
+   "x_mid": {
+    "file": "L15_x_mid.f32",
+    "shape": [
+     576
+    ]
+   },
+   "h2": {
+    "file": "L15_h2.f32",
+    "shape": [
+     576
+    ]
+   },
+   "g": {
+    "file": "L15_g.f32",
+    "shape": [
+     1536
+    ]
+   },
+   "u": {
+    "file": "L15_u.f32",
+    "shape": [
+     1536
+    ]
+   },
+   "a": {
+    "file": "L15_a.f32",
+    "shape": [
+     1536
+    ]
+   },
+   "x_out": {
+    "file": "L15_x_out.f32",
+    "shape": [
+     576
+    ]
+   }
+  },
+  "29": {
+   "x_in": {
+    "file": "L29_x_in.f32",
+    "shape": [
+     576
+    ]
+   },
+   "h": {
+    "file": "L29_h.f32",
+    "shape": [
+     576
+    ]
+   },
+   "q": {
+    "file": "L29_q.f32",
+    "shape": [
+     9,
+     64
+    ]
+   },
+   "k": {
+    "file": "L29_k.f32",
+    "shape": [
+     13,
+     3,
+     64
+    ]
+   },
+   "v": {
+    "file": "L29_v.f32",
+    "shape": [
+     13,
+     3,
+     64
+    ]
+   },
+   "o": {
+    "file": "L29_o.f32",
+    "shape": [
+     576
+    ]
+   },
+   "x_mid": {
+    "file": "L29_x_mid.f32",
+    "shape": [
+     576
+    ]
+   },
+   "h2": {
+    "file": "L29_h2.f32",
+    "shape": [
+     576
+    ]
+   },
+   "g": {
+    "file": "L29_g.f32",
+    "shape": [
+     1536
+    ]
+   },
+   "u": {
+    "file": "L29_u.f32",
+    "shape": [
+     1536
+    ]
+   },
+   "a": {
+    "file": "L29_a.f32",
+    "shape": [
+     1536
+    ]
+   },
+   "x_out": {
+    "file": "L29_x_out.f32",
+    "shape": [
+     576
+    ]
+   }
+  }
+ },
+ "note": "float32 little endian; per-token tensors are those of the last position; k and v hold all positions [T, kv_heads, head_dim] after RoPE"
+}

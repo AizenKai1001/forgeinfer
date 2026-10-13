@@ -1,0 +1,10 @@
+[package]
+name = "forge-quant"
+description = "ForgeInfer quantizer: GGUF block formats (Q8_0, Q4_0, Q5_0, Q4_K, Q5_K, Q6_K) encoded from f32 weights with an error-minimizing scale search, optionally weighted by the importance of each input column"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+forge-core = { path = "../forge-core" }
+forge-gguf = { path = "../forge-gguf" }

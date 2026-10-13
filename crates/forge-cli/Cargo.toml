@@ -1,0 +1,24 @@
+[package]
+name = "forge-cli"
+description = "ForgeInfer command line: run, tokenize, inspect"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "forge"
+path = "src/main.rs"
+
+[dependencies]
+forge-core = { path = "../forge-core" }
+forge-gguf = { path = "../forge-gguf" }
+forge-quant = { path = "../forge-quant" }
+forge-tok = { path = "../forge-tok" }
+forge-model = { path = "../forge-model" }
+forge-cuda = { path = "../forge-cuda" }
+forge-kernels = { path = "../forge-kernels" }
+forge-gpu = { path = "../forge-gpu" }
+forge-train = { path = "../forge-train" }
+forge-chat = { path = "../forge-chat" }
+forge-engine = { path = "../forge-engine" }
+forge-serve = { path = "../forge-serve" }

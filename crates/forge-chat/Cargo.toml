@@ -1,0 +1,9 @@
+[package]
+name = "forge-chat"
+description = "ForgeInfer chat layer: Jinja-free chat templates (SmolLM2, Qwen3, Qwen3.5) and an incremental parser for reasoning, answers and tool calls (std only)"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+forge-core = { path = "../forge-core" }

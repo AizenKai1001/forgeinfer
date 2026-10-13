@@ -1,0 +1,21 @@
+{
+ "model": "/tmp/f1_test/models/pythia-160m",
+ "params_m": 162.3,
+ "limit": 500,
+ "tasks": {
+  "openbookqa": {
+   "n": 500,
+   "acc": 15.0,
+   "acc_norm": 26.8,
+   "acc_per_token": 28.4,
+   "seconds": 31.373523950576782
+  },
+  "hellaswag": {
+   "n": 500,
+   "acc": 27.4,
+   "acc_norm": 32.0,
+   "acc_per_token": 32.4,
+   "seconds": 190.79248476028442
+  }
+ }
+}

@@ -1,0 +1,18 @@
+[package]
+name = "forge-engine"
+description = "ForgeInfer engine: a model on the GPU behind a request queue, prompt rendering and tokenization, prefix reuse, sampling, streaming events (reasoning, content, tool calls)"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+forge-core = { path = "../forge-core" }
+forge-gguf = { path = "../forge-gguf" }
+forge-tok = { path = "../forge-tok" }
+forge-model = { path = "../forge-model" }
+forge-gpu = { path = "../forge-gpu" }
+forge-chat = { path = "../forge-chat" }
+forge-train = { path = "../forge-train" }
+
+[dev-dependencies]
+forge-cuda = { path = "../forge-cuda" }

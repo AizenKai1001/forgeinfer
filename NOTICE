@@ -1,0 +1,18 @@
+ForgeInfer and Forge Studio
+Copyright 2026 AizenKai1001 and contributors
+
+Licensed under the Apache License, Version 2.0 (see LICENSE).
+
+Acknowledgements and third-party material
+
+- GGUF and ggml. The GGUF file format and the block layouts of the quantization formats (Q4_0 ... Q6_K) are those of the ggml project
+  (https://github.com/ggml-org/llama.cpp, MIT License, Copyright (c) 2023-2026 The ggml authors). ForgeInfer reads and writes the format with
+  its own code and contains no llama.cpp source. llama.cpp is used as a benchmark baseline and as an optional engine in Forge Studio.
+
+- Forge Studio (studio/) is built with third-party Rust crates under MIT or Apache-2.0 licenses, among them egui and eframe (Emil Ernerfeldt
+  and contributors), ureq, serde, serde_json and png. The crates under crates/ use no third-party crates.
+
+- tests/golden/NormalizationTest.txt is a data file of the Unicode Consortium (Unicode License v3). The other files in tests/golden are
+  results recorded from reference implementations (Hugging Face tokenizers and transformers, PyTorch, NumPy) for use as test oracles.
+
+- Language models are not part of this repository. Every model has its own license; read it before you use or redistribute a model.

@@ -1,0 +1,9 @@
+[package]
+name = "forge-gguf"
+description = "ForgeInfer weight containers: GGUF and safetensors readers, block-quantisation formats and their dequantisation (std only)"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+forge-core = { path = "../forge-core" }

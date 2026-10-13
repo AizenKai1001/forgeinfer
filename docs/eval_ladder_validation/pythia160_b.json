@@ -1,0 +1,20 @@
+{
+ "model": "/tmp/f1_test/models/pythia-160m",
+ "params_m": 162.3,
+ "limit": 1000,
+ "tasks": {
+  "lambada_openai": {
+   "n": 1000,
+   "acc": 33.2,
+   "perplexity": 38.934231756947376,
+   "seconds": 70.38098931312561
+  },
+  "sciq": {
+   "n": 1000,
+   "acc": 75.4,
+   "acc_norm": 67.7,
+   "acc_per_token": 70.3,
+   "seconds": 385.08439588546753
+  }
+ }
+}

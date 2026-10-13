@@ -1,0 +1,8 @@
+[package]
+name = "forge-core"
+description = "ForgeInfer core: errors, JSON, f16/bf16, mmap, small utilities (std only)"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]

@@ -1,0 +1,203 @@
+{
+ "config": {
+  "n_layer": 2,
+  "n_embd": 128,
+  "n_head": 2,
+  "n_kv": 1,
+  "hd": 64,
+  "n_ff": 256,
+  "vocab": 512,
+  "T": 64,
+  "B": 2,
+  "theta": 10000.0,
+  "qk_norm": true,
+  "untied": false,
+  "relu2": false,
+  "softcap": 0.0,
+  "lambdas": false,
+  "skips": false,
+  "ve_layers": [],
+  "ngram": [],
+  "ngram_bits": 0,
+  "ngram_dim": 0
+ },
+ "loss": 7.097679138183594,
+ "params": [
+  {
+   "name": "emb",
+   "shape": [
+    512,
+    128
+   ]
+  },
+  {
+   "name": "out_norm",
+   "shape": [
+    128
+   ]
+  },
+  {
+   "name": "l0.attn_norm",
+   "shape": [
+    128
+   ]
+  },
+  {
+   "name": "l0.wq",
+   "shape": [
+    128,
+    128
+   ]
+  },
+  {
+   "name": "l0.wk",
+   "shape": [
+    64,
+    128
+   ]
+  },
+  {
+   "name": "l0.wv",
+   "shape": [
+    64,
+    128
+   ]
+  },
+  {
+   "name": "l0.wo",
+   "shape": [
+    128,
+    128
+   ]
+  },
+  {
+   "name": "l0.q_norm",
+   "shape": [
+    64
+   ]
+  },
+  {
+   "name": "l0.k_norm",
+   "shape": [
+    64
+   ]
+  },
+  {
+   "name": "l0.ffn_norm",
+   "shape": [
+    128
+   ]
+  },
+  {
+   "name": "l0.w_gate",
+   "shape": [
+    256,
+    128
+   ]
+  },
+  {
+   "name": "l0.w_up",
+   "shape": [
+    256,
+    128
+   ]
+  },
+  {
+   "name": "l0.w_down",
+   "shape": [
+    128,
+    256
+   ]
+  },
+  {
+   "name": "l1.attn_norm",
+   "shape": [
+    128
+   ]
+  },
+  {
+   "name": "l1.wq",
+   "shape": [
+    128,
+    128
+   ]
+  },
+  {
+   "name": "l1.wk",
+   "shape": [
+    64,
+    128
+   ]
+  },
+  {
+   "name": "l1.wv",
+   "shape": [
+    64,
+    128
+   ]
+  },
+  {
+   "name": "l1.wo",
+   "shape": [
+    128,
+    128
+   ]
+  },
+  {
+   "name": "l1.q_norm",
+   "shape": [
+    64
+   ]
+  },
+  {
+   "name": "l1.k_norm",
+   "shape": [
+    64
+   ]
+  },
+  {
+   "name": "l1.ffn_norm",
+   "shape": [
+    128
+   ]
+  },
+  {
+   "name": "l1.w_gate",
+   "shape": [
+    256,
+    128
+   ]
+  },
+  {
+   "name": "l1.w_up",
+   "shape": [
+    256,
+    128
+   ]
+  },
+  {
+   "name": "l1.w_down",
+   "shape": [
+    128,
+    256
+   ]
+  }
+ ],
+ "adamw_losses_before_each_step": [
+  7.097679138183594,
+  4.220974922180176,
+  2.959871768951416,
+  1.4623290300369263,
+  0.6968814730644226
+ ],
+ "adamw": {
+  "lr": 0.01,
+  "betas": [
+   0.9,
+   0.95
+  ],
+  "eps": 1e-08,
+  "weight_decay": 0.1,
+  "steps": 5
+ }
+}

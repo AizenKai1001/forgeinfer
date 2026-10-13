@@ -1,0 +1,13 @@
+[package]
+name = "spike_threadpool"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+# Throwaway feasibility spike: what does one fork-join dispatch cost on the homelab (8 cores shared with services) for a condvar pool, a pure spin pool and a spin-then-yield-then-park pool?
+[dependencies]
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1

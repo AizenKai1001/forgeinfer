@@ -1,0 +1,27 @@
+[package]
+name = "forge-studio"
+version = "0.1.0"
+edition = "2021"
+description = "Forge Studio: a desktop app (egui) to chat with local models, manage GGUF files and run the ForgeInfer engine"
+license = "Apache-2.0"
+publish = false
+
+# its own workspace: the ForgeInfer engine crates stay "std only", only this app uses third-party crates
+[workspace]
+
+[dependencies]
+eframe = { version = "=0.36.2", default-features = false, features = ["default_fonts", "glow", "x11", "wayland"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+ureq = { version = "3", features = ["json"] }
+png = "0.17"
+forge-gguf = { path = "../crates/forge-gguf" }
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 4
+strip = "debuginfo"
+
+[profile.dev]
+opt-level = 1

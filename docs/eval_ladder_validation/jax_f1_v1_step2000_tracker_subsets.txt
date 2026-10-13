@@ -1,0 +1,5 @@
+checkpoint step 2000: 30 layers, d 576, relu2=True lambdas=True ve=[0, 1, 28, 29] softcap=0; JAX 0.11.2 on cpu:0
+HellaSwag validation, 1000 examples: acc 31.30 %  acc_norm 35.90 %  acc (per-token mean, llm.c style) 34.90 %   (330 s; chance 25 %)  [JAX, step 2000]
+arc_easy: 500 examples  acc 39.80 %  acc_norm 35.80 %   (chance 25.0 %, 164 s)  [JAX, step 2000]
+piqa: 500 examples  acc 58.20 %  acc_norm 57.60 %   (chance 50.0 %, 88 s)  [JAX, step 2000]
+winogrande: 500 examples  acc 48.20 %  acc_norm 48.20 %   (chance 50.0 %, 77 s)  [JAX, step 2000]

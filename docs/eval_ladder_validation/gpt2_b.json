@@ -1,0 +1,21 @@
+{
+ "model": "/mnt/data/forgeinfer-data/eval/ref_models/gpt2",
+ "params_m": 124.4,
+ "limit": 500,
+ "tasks": {
+  "sciq": {
+   "n": 500,
+   "acc": 76.8,
+   "acc_norm": 65.8,
+   "acc_per_token": 67.8,
+   "seconds": 221.94587993621826
+  },
+  "mmlu_cloze": {
+   "n": 500,
+   "acc": 25.6,
+   "acc_norm": 27.4,
+   "acc_per_token": 28.4,
+   "seconds": 149.82076168060303
+  }
+ }
+}

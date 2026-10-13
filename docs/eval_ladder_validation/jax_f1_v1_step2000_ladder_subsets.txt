@@ -1,0 +1,8 @@
+checkpoint step 2000: 30 layers, d 576, relu2=True lambdas=True ve=[0, 1, 28, 29] softcap=0; JAX 0.11.2 on cpu:0
+winogrande: 1000 examples  acc 50.00 %  acc_norm 50.00 %   (chance 50.0 %, 158 s)  [JAX, step 2000]
+openbookqa: 500 examples  acc 14.20 %  acc_norm 25.20 %   (chance 25.0 %, 159 s)  [JAX, step 2000]
+arc_easy: 1000 examples  acc 39.10 %  acc_norm 34.40 %   (chance 25.0 %, 336 s)  [JAX, step 2000]
+arc_challenge: 600 examples  acc 17.33 %  acc_norm 23.33 %   (chance 25.0 %, 214 s)  [JAX, step 2000]
+piqa: 1000 examples  acc 58.00 %  acc_norm 56.30 %   (chance 50.0 %, 211 s)  [JAX, step 2000]
+sciq: 300 examples  acc 68.33 %  acc_norm 59.00 %   (chance 25.0 %, 385 s)  [JAX, step 2000]
+mmlu_cloze: 500 examples  acc 24.40 %  acc_norm 24.00 %   (chance 25.0 %, 349 s)  [JAX, step 2000]

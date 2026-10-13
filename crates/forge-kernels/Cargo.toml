@@ -1,0 +1,9 @@
+[package]
+name = "forge-kernels"
+description = "ForgeInfer CUDA kernels: CUDA C++ sources compiled by build.rs (nvcc) into a cubin for sm_75 and PTX for newer GPUs, embedded in the binary"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+build = "build.rs"
+
+[dependencies]

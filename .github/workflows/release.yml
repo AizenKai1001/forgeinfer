@@ -1,0 +1,55 @@
+name: release
+
+# Push a tag such as v0.1.0 to build Forge Studio for Windows, Linux and macOS and attach the archives to a GitHub release.
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  studio:
+    strategy:
+      matrix:
+        include:
+          - os: windows-latest
+            name: windows-x86_64
+            bin: forge-studio.exe
+          - os: ubuntu-latest
+            name: linux-x86_64
+            bin: forge-studio
+          - os: macos-latest
+            name: macos-arm64
+            bin: forge-studio
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: studio
+      - name: build
+        working-directory: studio
+        run: cargo build --release
+      - name: package
+        shell: bash
+        run: |
+          mkdir -p dist
+          cp studio/target/release/${{ matrix.bin }} dist/
+          cp LICENSE NOTICE dist/
+          cd dist
+          if [ "${{ matrix.os }}" = "windows-latest" ]; then
+            7z a ../forge-studio-${{ github.ref_name }}-${{ matrix.name }}.zip .
+          else
+            tar czf ../forge-studio-${{ github.ref_name }}-${{ matrix.name }}.tar.gz .
+          fi
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            forge-studio-*.zip
+            forge-studio-*.tar.gz
+          body: |
+            Forge Studio ${{ github.ref_name }}: the desktop app, built from the tagged source. It runs models through the ForgeInfer engine (build it from source: see docs/GETTING_STARTED.md), llama.cpp's llama-server, or any OpenAI-compatible server.
+
+            Developed with Claude Code (Anthropic).

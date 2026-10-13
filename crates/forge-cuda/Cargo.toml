@@ -1,0 +1,9 @@
+[package]
+name = "forge-cuda"
+description = "ForgeInfer CUDA driver API bindings loaded at run time (dlopen), RAII wrappers for memory, streams, events, modules, kernels and graphs (std only)"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+forge-core = { path = "../forge-core" }

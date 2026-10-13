@@ -1,0 +1,14 @@
+{
+ "model": "/tmp/f1_test/f125_hf",
+ "params_m": 125.1,
+ "limit": 300,
+ "tasks": {
+  "hellaswag": {
+   "n": 300,
+   "acc": 22.333333333333332,
+   "acc_norm": 26.666666666666668,
+   "acc_per_token": 26.0,
+   "seconds": 97.86219501495361
+  }
+ }
+}

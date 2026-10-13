@@ -1,0 +1,63 @@
+{
+ "model": "/mnt/data/forgeinfer-data/eval/ref_models/gpt2",
+ "windows": 64,
+ "seq": 512,
+ "domains": {
+  "web": {
+   "bits_per_byte": 1.0154893223866381,
+   "nats_per_token": 3.3269101617275134,
+   "bytes_per_token": 4.72650641025641,
+   "windows": 64,
+   "truncated_windows": 0,
+   "seconds": 34.07881307601929
+  },
+  "cosmo": {
+   "bits_per_byte": 0.8852605672885308,
+   "nats_per_token": 3.209216528173419,
+   "bytes_per_token": 5.230009040745705,
+   "windows": 64,
+   "truncated_windows": 0,
+   "seconds": 35.19159269332886
+  },
+  "fmath": {
+   "bits_per_byte": 1.3601507558016503,
+   "nats_per_token": 3.105001578263473,
+   "bytes_per_token": 3.2934366722260373,
+   "windows": 64,
+   "truncated_windows": 0,
+   "seconds": 37.046677112579346
+  },
+  "owmath": {
+   "bits_per_byte": 1.2665555273224243,
+   "nats_per_token": 3.2013585046621476,
+   "bytes_per_token": 3.646570512820513,
+   "windows": 64,
+   "truncated_windows": 0,
+   "seconds": 37.409024715423584
+  },
+  "wiki": {
+   "bits_per_byte": 1.1424058975717548,
+   "nats_per_token": 3.470588118002923,
+   "bytes_per_token": 4.382855758582503,
+   "windows": 64,
+   "truncated_windows": 0,
+   "seconds": 32.83111834526062
+  },
+  "books": {
+   "bits_per_byte": 1.352454724174711,
+   "nats_per_token": 3.679658990415224,
+   "bytes_per_token": 3.9251781835979322,
+   "windows": 64,
+   "truncated_windows": 1,
+   "seconds": 44.92274522781372
+  },
+  "python": {
+   "bits_per_byte": 1.1730828982528825,
+   "nats_per_token": 1.819954624518472,
+   "bytes_per_token": 2.2382386746462686,
+   "windows": 64,
+   "truncated_windows": 8,
+   "seconds": 62.38107895851135
+  }
+ }
+}

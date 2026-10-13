@@ -1,0 +1,13 @@
+{
+  "default": "Forge-1 demo (step 10,000 + 300-step chat tune)",
+  "models": {
+    "Forge-1 demo (step 10,000 + 300-step chat tune)": {
+      "ckpt": "/mnt/data/forgeinfer-data/ckpt_f1_v1/sft_demo_s10000_step300.bin",
+      "note": "150M parameters, trained from scratch: an early snapshot (step 10,000) with a short chat fine-tune. Small and often wrong."
+    },
+    "Forge-1 base, step 12,500 (no chat tuning)": {
+      "ckpt": "/mnt/data/forgeinfer-data/ckpt_f1_v1/ckpt_s12500.bin",
+      "note": "the base model before any chat tuning: it continues text and does not follow the chat format, so expect odd answers"
+    }
+  }
+}

@@ -1,0 +1,4 @@
+[package]
+name = "forge-train"
+version = "0.0.0"
+edition = "2021"

@@ -1,0 +1,11 @@
+[package]
+name = "spike_cuda_ffi"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+# Throwaway feasibility spike: call the CUDA driver API from Rust with NO crates (our own dlopen + declarations), load a cubin built by nvcc, launch a kernel, capture a graph.
+[dependencies]
+
+[profile.release]
+opt-level = 3

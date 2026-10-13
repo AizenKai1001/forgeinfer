@@ -1,0 +1,55 @@
+{
+ "args": "--layers 24 --dim 1024 --heads 16 --kv 4 --ffn 4096 --steps 100000 --lr 1.0e-3 --muon-lr 1.0e-3 --value-emb 0,1,2,3,20,21,22,23 --lr-table-mult 100 --lr-emb-mult 3 --seq 2048 --tokens-per-step 65536 --warmup 100 --decay-frac 0.1 --min-lr-frac 0.05 --eval-every 250 --eval-early-until 1000 --eval-batches 8 --save-every 4000 --qk-norm --optim muon --muon-wd 0.05 --relu2 --lambdas --lr-scalar-mult 10 --cool-data @ds:forge-jax --cool-glob *.cool --cool-blend-frac 0.25 --cool-share 0.6 --async-steps 2 --async-io --time-limit-s 28000",
+ "data": "forge-tokens",
+ "micro": [
+  4,
+  2,
+  1
+ ],
+ "require_accelerator": true,
+ "code_dataset": "forge-jax-code",
+ "autotune": {
+  "candidates": [
+   {
+    "name": "muon-shard",
+    "flags": "--muon-shard"
+   },
+   {
+    "name": "lane",
+    "flags": "--attn-prep lane"
+   },
+   {
+    "name": "lane+shard",
+    "flags": "--attn-prep lane --muon-shard"
+   },
+   {
+    "name": "lane+shard+lean",
+    "flags": "--attn-prep lane --muon-shard --muon-lean --ns-barrier"
+   },
+   {
+    "name": "lane+shard+lean+ffnbf16",
+    "flags": "--attn-prep lane --muon-shard --muon-lean --ns-barrier --layer-opts ffnbf16"
+   },
+   {
+    "name": "lane+shard+lean+attn",
+    "flags": "--attn-prep lane --muon-shard --muon-lean --ns-barrier --remat-policy dots+attn"
+   },
+   {
+    "name": "lane+shard+lean+ffnbf16+attn",
+    "flags": "--attn-prep lane --muon-shard --muon-lean --ns-barrier --layer-opts ffnbf16 --remat-policy dots+attn"
+   },
+   {
+    "name": "lane+lean",
+    "flags": "--attn-prep lane --muon-lean --ns-barrier"
+   },
+   {
+    "name": "shard+qkv",
+    "flags": "--muon-shard --remat-policy dots+qkv"
+   }
+  ],
+  "budget_s": 1800,
+  "per_variant_s": 420,
+  "steps": 6,
+  "min_gain_pct": 2.0
+ }
+}

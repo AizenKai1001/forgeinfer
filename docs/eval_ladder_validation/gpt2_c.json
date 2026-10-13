@@ -1,0 +1,14 @@
+{
+ "model": "/mnt/data/forgeinfer-data/eval/ref_models/gpt2",
+ "params_m": 124.4,
+ "limit": 1000,
+ "tasks": {
+  "hellaswag": {
+   "n": 1000,
+   "acc": 28.4,
+   "acc_norm": 30.3,
+   "acc_per_token": 29.5,
+   "seconds": 335.9369158744812
+  }
+ }
+}

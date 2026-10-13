@@ -1,0 +1,122 @@
+{
+ "pythia-160m_zero-shot_step1000": {
+  "sha256": "7df1c4922635430aaedf6b36e590169010c6c8e3ad46e9ce4c38e869f49a0b66",
+  "model_args": "use_accelerate=True,pretrained=EleutherAI/pythia-v1.1-160m,revision=step1000",
+  "num_fewshot": 0,
+  "scores": {
+   "arc_easy": {
+    "acc": 30.64,
+    "acc_norm": 28.54
+   },
+   "arc_challenge": {
+    "acc": 18.69,
+    "acc_norm": 21.25
+   },
+   "piqa": {
+    "acc": 55.55,
+    "acc_norm": 54.95
+   },
+   "sciq": {
+    "acc": 42.7,
+    "acc_norm": 41.9
+   },
+   "winogrande": {
+    "acc": 50.83
+   },
+   "lambada_openai": {
+    "ppl": 2591.45,
+    "acc": 6.46
+   }
+  }
+ },
+ "pythia-160m_zero-shot_step13000": {
+  "sha256": "bba72f5d10d44c3da04163058b514859002f291d35d90e91c482c83274cbf5d9",
+  "model_args": "pretrained=EleutherAI/pythia-v1.1-160m,revision=step13000",
+  "num_fewshot": 0,
+  "scores": {
+   "arc_easy": {
+    "acc": 43.64,
+    "acc_norm": 39.77
+   },
+   "arc_challenge": {
+    "acc": 17.15,
+    "acc_norm": 23.38
+   },
+   "piqa": {
+    "acc": 61.32,
+    "acc_norm": 60.99
+   },
+   "sciq": {
+    "acc": 77.0,
+    "acc_norm": 67.8
+   },
+   "winogrande": {
+    "acc": 51.07
+   },
+   "lambada_openai": {
+    "ppl": 49.69,
+    "acc": 29.98
+   }
+  }
+ },
+ "pythia-160m_zero-shot_step143000": {
+  "sha256": "47d6986215acd4ab22ab5a82e75d49645bfbb757efc76b0d0f305d62a1362a60",
+  "model_args": "pretrained=EleutherAI/pythia-v1.1-160m,revision=step143000",
+  "num_fewshot": 0,
+  "scores": {
+   "arc_easy": {
+    "acc": 43.52,
+    "acc_norm": 39.65
+   },
+   "arc_challenge": {
+    "acc": 18.77,
+    "acc_norm": 23.29
+   },
+   "piqa": {
+    "acc": 62.73,
+    "acc_norm": 61.64
+   },
+   "sciq": {
+    "acc": 74.1,
+    "acc_norm": 66.8
+   },
+   "winogrande": {
+    "acc": 53.12
+   },
+   "lambada_openai": {
+    "ppl": 38.06,
+    "acc": 32.84
+   }
+  }
+ },
+ "pythia-160m_zero-shot_step3000": {
+  "sha256": "a793f236264e61a1a3dec14a3691384153ad328c2c62f180301e0874d8ba81c4",
+  "model_args": "pretrained=EleutherAI/pythia-v1.1-160m,revision=step3000",
+  "num_fewshot": 0,
+  "scores": {
+   "arc_easy": {
+    "acc": 39.27,
+    "acc_norm": 35.14
+   },
+   "arc_challenge": {
+    "acc": 16.3,
+    "acc_norm": 21.25
+   },
+   "piqa": {
+    "acc": 59.3,
+    "acc_norm": 58.43
+   },
+   "sciq": {
+    "acc": 65.3,
+    "acc_norm": 59.0
+   },
+   "winogrande": {
+    "acc": 52.64
+   },
+   "lambada_openai": {
+    "ppl": 135.02,
+    "acc": 22.76
+   }
+  }
+ }
+}

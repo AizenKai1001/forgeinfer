@@ -1,0 +1,18 @@
+--- a/crates/forge-cli/src/main.rs
++++ b/crates/forge-cli/src/main.rs
+@@ -8,6 +8,7 @@
+ mod chat_cmd;
+ mod data_cmds;
+ mod eval_cmd;
++mod eval_lambada;
+ mod quant_cmd;
+ mod serve_cmd;
+ mod train_cmd;
+@@ -199,6 +200,7 @@
+         Some("eval-hellaswag") => std::process::exit(eval_cmd::hellaswag(&args)),
+         Some("eval-mc") => std::process::exit(eval_cmd::mc(&args)),
+         Some("eval-ppl") => std::process::exit(eval_cmd::ppl(&args)),
++        Some("eval-lambada") => std::process::exit(eval_lambada::lambada(&args)),
+         Some("chat") => std::process::exit(chat_cmd::chat(&args)),
+         Some("ppl") => std::process::exit(quant_cmd::ppl(&args)),
+         Some("imatrix") => std::process::exit(quant_cmd::imatrix(&args)),

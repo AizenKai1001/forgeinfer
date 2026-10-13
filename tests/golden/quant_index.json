@@ -1,0 +1,65 @@
+{
+ "F16": {
+  "block_bytes": 2,
+  "block_values": 1,
+  "blocks": 64,
+  "source_tensor": "token_embd.weight",
+  "source_file": "SmolLM2-135M-Instruct-f16.gguf",
+  "min": -0.322265625,
+  "max": 0.21875
+ },
+ "Q8_0": {
+  "block_bytes": 34,
+  "block_values": 32,
+  "blocks": 64,
+  "source_tensor": "token_embd.weight",
+  "source_file": "SmolLM2-135M-Instruct-Q8_0.gguf",
+  "min": -1.1016769409179688,
+  "max": 1.0386962890625
+ },
+ "Q6_K": {
+  "block_bytes": 210,
+  "block_values": 256,
+  "blocks": 64,
+  "source_tensor": "blk.0.ffn_down.weight",
+  "source_file": "SmolLM2-135M-Instruct-Q6_K.gguf",
+  "min": -1.546783447265625,
+  "max": 1.4345169067382812
+ },
+ "Q5_0": {
+  "block_bytes": 22,
+  "block_values": 32,
+  "blocks": 64,
+  "source_tensor": "blk.0.ffn_gate.weight",
+  "source_file": "SmolLM2-135M-Instruct-Q4_K_M.gguf",
+  "min": -0.7041015625,
+  "max": 0.56640625
+ },
+ "Q4_K": {
+  "block_bytes": 144,
+  "block_values": 256,
+  "blocks": 64,
+  "source_tensor": "blk.11.ffn_down.weight",
+  "source_file": "SmolLM2-135M-Instruct-Q4_K_M.gguf",
+  "min": -0.9718780517578125,
+  "max": 0.8405780792236328
+ },
+ "Q4_1": {
+  "block_bytes": 20,
+  "block_values": 32,
+  "blocks": 64,
+  "source_tensor": "blk.0.ffn_down.weight",
+  "source_file": "SmolLM2-135M-Instruct-Q4_0.gguf",
+  "min": -1.337890625,
+  "max": 1.43017578125
+ },
+ "Q4_0": {
+  "block_bytes": 18,
+  "block_values": 32,
+  "blocks": 64,
+  "source_tensor": "blk.0.ffn_gate.weight",
+  "source_file": "SmolLM2-135M-Instruct-Q4_0.gguf",
+  "min": -0.63623046875,
+  "max": 0.58349609375
+ }
+}

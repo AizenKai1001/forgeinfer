@@ -1,0 +1,2645 @@
+{
+ "name": "qwen35",
+ "cases": [
+  {
+   "name": "plain_user",
+   "messages": [
+    {
+     "role": "user",
+     "content": "Hello!"
+    }
+   ],
+   "tools": null,
+   "add_generation_prompt": true,
+   "kwargs": {
+    "enable_thinking": true
+   },
+   "text": "<|im_start|>user\nHello!<|im_end|>\n<|im_start|>assistant\n<think>\n"
+  },
+  {
+   "name": "plain_user",
+   "messages": [
+    {
+     "role": "user",
+     "content": "Hello!"
+    }
+   ],
+   "tools": null,
+   "add_generation_prompt": true,
+   "kwargs": {
+    "enable_thinking": false
+   },
+   "text": "<|im_start|>user\nHello!<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n\n"
+  },
+  {
+   "name": "plain_user",
+   "messages": [
+    {
+     "role": "user",
+     "content": "Hello!"
+    }
+   ],
+   "tools": null,
+   "add_generation_prompt": false,
+   "kwargs": {
+    "enable_thinking": true
+   },
+   "text": "<|im_start|>user\nHello!<|im_end|>\n"
+  },
+  {
+   "name": "plain_user",
+   "messages": [
+    {
+     "role": "user",
+     "content": "Hello!"
+    }
+   ],
+   "tools": null,
+   "add_generation_prompt": false,
+   "kwargs": {
+    "enable_thinking": false
+   },
+   "text": "<|im_start|>user\nHello!<|im_end|>\n"
+  },
+  {
+   "name": "plain_user",
+   "messages": [
+    {
+     "role": "user",
+     "content": "Hello!"
+    }
+   ],
+   "tools": [
+    {
+     "type": "function",
+     "function": {
+      "name": "lookup",
+      "description": "Look something up in the encyclopedia.",
+      "parameters": {
+       "type": "object",
+       "properties": {
+        "query": {
+         "type": "string",
+         "description": "What to look for."
+        }
+       },
+       "required": [
+        "query"
+       ]
+      }
+     }
+    },
+    {
+     "type": "function",
+     "function": {
+      "name": "run_python",
+      "description": "Run a Python program and return what it printed.",
+      "parameters": {
+       "type": "object",
+       "properties": {
+        "code": {
+         "type": "string"
+        }
+       },
+       "required": [
+        "code"
+       ]
+      }
+     }
+    }
+   ],
+   "add_generation_prompt": true,
+   "kwargs": {
+    "enable_thinking": true
+   },
+   "text": "<|im_start|>system\n# Tools\n\nYou have access to the following functions:\n\n<tools>\n{\"type\": \"function\", \"function\": {\"name\": \"lookup\", \"description\": \"Look something up in the encyclopedia.\", \"parameters\": {\"type\": \"object\", \"properties\": {\"query\": {\"type\": \"string\", \"description\": \"What to look for.\"}}, \"required\": [\"query\"]}}}\n{\"type\": \"function\", \"function\": {\"name\": \"run_python\", \"description\": \"Run a Python program and return what it printed.\", \"parameters\": {\"type\": \"object\", \"properties\": {\"code\": {\"type\": \"string\"}}, \"required\": [\"code\"]}}}\n</tools>\n\nIf you choose to call a function ONLY reply in the following format with NO suffix:\n\n<tool_call>\n<function=example_function_name>\n<parameter=example_parameter_1>\nvalue_1\n</parameter>\n<parameter=example_parameter_2>\nThis is the value for the second parameter\nthat can span\nmultiple lines\n</parameter>\n</function>\n</tool_call>\n\n<IMPORTANT>\nReminder:\n- Function calls MUST follow the specified format: an inner <function=...></function> block must be nested within <tool_call></tool_call> XML tags\n- Required parameters MUST be specified\n- You may provide optional reasoning for your function call in natural language BEFORE the function call, but NOT after\n- If there is no function call available, answer the question like normal with your current knowledge and do not tell the user about function calls\n</IMPORTANT><|im_end|>\n<|im_start|>user\nHello!<|im_end|>\n<|im_start|>assistant\n<think>\n"
+  },
+  {
+   "name": "plain_user",
+   "messages": [
+    {
+     "role": "user",
+     "content": "Hello!"
+    }
+   ],
+   "tools": [
+    {
+     "type": "function",
+     "function": {
+      "name": "lookup",
+      "description": "Look something up in the encyclopedia.",
+      "parameters": {
+       "type": "object",
+       "properties": {
+        "query": {
+         "type": "string",
+         "description": "What to look for."
+        }
+       },
+       "required": [
+        "query"
+       ]
+      }
+     }
+    },
+    {
+     "type": "function",
+     "function": {
+      "name": "run_python",
+      "description": "Run a Python program and return what it printed.",
+      "parameters": {
+       "type": "object",
+       "properties": {
+        "code": {
+         "type": "string"
+        }
+       },
+       "required": [
+        "code"
+       ]
+      }
+     }
+    }
+   ],
+   "add_generation_prompt": true,
+   "kwargs": {
+    "enable_thinking": false
+   },
+   "text": "<|im_start|>system\n# Tools\n\nYou have access to the following functions:\n\n<tools>\n{\"type\": \"function\", \"function\": {\"name\": \"lookup\", \"description\": \"Look something up in the encyclopedia.\", \"parameters\": {\"type\": \"object\", \"properties\": {\"query\": {\"type\": \"string\", \"description\": \"What to look for.\"}}, \"required\": [\"query\"]}}}\n{\"type\": \"function\", \"function\": {\"name\": \"run_python\", \"description\": \"Run a Python program and return what it printed.\", \"parameters\": {\"type\": \"object\", \"properties\": {\"code\": {\"type\": \"string\"}}, \"required\": [\"code\"]}}}\n</tools>\n\nIf you choose to call a function ONLY reply in the following format with NO suffix:\n\n<tool_call>\n<function=example_function_name>\n<parameter=example_parameter_1>\nvalue_1\n</parameter>\n<parameter=example_parameter_2>\nThis is the value for the second parameter\nthat can span\nmultiple lines\n</parameter>\n</function>\n</tool_call>\n\n<IMPORTANT>\nReminder:\n- Function calls MUST follow the specified format: an inner <function=...></function> block must be nested within <tool_call></tool_call> XML tags\n- Required parameters MUST be specified\n- You may provide optional reasoning for your function call in natural language BEFORE the function call, but NOT after\n- If there is no function call available, answer the question like normal with your current knowledge and do not tell the user about function calls\n</IMPORTANT><|im_end|>\n<|im_start|>user\nHello!<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n\n"
+  },
+  {
+   "name": "plain_user",
+   "messages": [
+    {
+     "role": "user",
+     "content": "Hello!"
+    }
+   ],
+   "tools": [
+    {
+     "type": "function",
+     "function": {
+      "name": "lookup",
+      "description": "Look something up in the encyclopedia.",
+      "parameters": {
+       "type": "object",
+       "properties": {
+        "query": {
+         "type": "string",
+         "description": "What to look for."
+        }
+       },
+       "required": [
+        "query"
+       ]
+      }
+     }
+    },
+    {
+     "type": "function",
+     "function": {
+      "name": "run_python",
+      "description": "Run a Python program and return what it printed.",
+      "parameters": {
+       "type": "object",
+       "properties": {
+        "code": {
+         "type": "string"
+        }
+       },
+       "required": [
+        "code"
+       ]
+      }
+     }
+    }
+   ],
+   "add_generation_prompt": false,
+   "kwargs": {
+    "enable_thinking": true
+   },
+   "text": "<|im_start|>system\n# Tools\n\nYou have access to the following functions:\n\n<tools>\n{\"type\": \"function\", \"function\": {\"name\": \"lookup\", \"description\": \"Look something up in the encyclopedia.\", \"parameters\": {\"type\": \"object\", \"properties\": {\"query\": {\"type\": \"string\", \"description\": \"What to look for.\"}}, \"required\": [\"query\"]}}}\n{\"type\": \"function\", \"function\": {\"name\": \"run_python\", \"description\": \"Run a Python program and return what it printed.\", \"parameters\": {\"type\": \"object\", \"properties\": {\"code\": {\"type\": \"string\"}}, \"required\": [\"code\"]}}}\n</tools>\n\nIf you choose to call a function ONLY reply in the following format with NO suffix:\n\n<tool_call>\n<function=example_function_name>\n<parameter=example_parameter_1>\nvalue_1\n</parameter>\n<parameter=example_parameter_2>\nThis is the value for the second parameter\nthat can span\nmultiple lines\n</parameter>\n</function>\n</tool_call>\n\n<IMPORTANT>\nReminder:\n- Function calls MUST follow the specified format: an inner <function=...></function> block must be nested within <tool_call></tool_call> XML tags\n- Required parameters MUST be specified\n- You may provide optional reasoning for your function call in natural language BEFORE the function call, but NOT after\n- If there is no function call available, answer the question like normal with your current knowledge and do not tell the user about function calls\n</IMPORTANT><|im_end|>\n<|im_start|>user\nHello!<|im_end|>\n"
+  },
+  {
+   "name": "plain_user",
+   "messages": [
+    {
+     "role": "user",
+     "content": "Hello!"
+    }
+   ],
+   "tools": [
+    {
+     "type": "function",
+     "function": {
+      "name": "lookup",
+      "description": "Look something up in the encyclopedia.",
+      "parameters": {
+       "type": "object",
+       "properties": {
+        "query": {
+         "type": "string",
+         "description": "What to look for."
+        }
+       },
+       "required": [
+        "query"
+       ]
+      }
+     }
+    },
+    {
+     "type": "function",
+     "function": {
+      "name": "run_python",
+      "description": "Run a Python program and return what it printed.",
+      "parameters": {
+       "type": "object",
+       "properties": {
+        "code": {
+         "type": "string"
+        }
+       },
+       "required": [
+        "code"
+       ]
+      }
+     }
+    }
+   ],
+   "add_generation_prompt": false,
+   "kwargs": {
+    "enable_thinking": false
+   },
+   "text": "<|im_start|>system\n# Tools\n\nYou have access to the following functions:\n\n<tools>\n{\"type\": \"function\", \"function\": {\"name\": \"lookup\", \"description\": \"Look something up in the encyclopedia.\", \"parameters\": {\"type\": \"object\", \"properties\": {\"query\": {\"type\": \"string\", \"description\": \"What to look for.\"}}, \"required\": [\"query\"]}}}\n{\"type\": \"function\", \"function\": {\"name\": \"run_python\", \"description\": \"Run a Python program and return what it printed.\", \"parameters\": {\"type\": \"object\", \"properties\": {\"code\": {\"type\": \"string\"}}, \"required\": [\"code\"]}}}\n</tools>\n\nIf you choose to call a function ONLY reply in the following format with NO suffix:\n\n<tool_call>\n<function=example_function_name>\n<parameter=example_parameter_1>\nvalue_1\n</parameter>\n<parameter=example_parameter_2>\nThis is the value for the second parameter\nthat can span\nmultiple lines\n</parameter>\n</function>\n</tool_call>\n\n<IMPORTANT>\nReminder:\n- Function calls MUST follow the specified format: an inner <function=...></function> block must be nested within <tool_call></tool_call> XML tags\n- Required parameters MUST be specified\n- You may provide optional reasoning for your function call in natural language BEFORE the function call, but NOT after\n- If there is no function call available, answer the question like normal with your current knowledge and do not tell the user about function calls\n</IMPORTANT><|im_end|>\n<|im_start|>user\nHello!<|im_end|>\n"
+  },
+  {
+   "name": "system_user",
+   "messages": [
+    {
+     "role": "system",
+     "content": "You are Ember, a friendly assistant."
+    },
+    {
+     "role": "user",
+     "content": "What is the capital of France?"
+    }
+   ],
+   "tools": null,
+   "add_generation_prompt": true,
+   "kwargs": {
+    "enable_thinking": true
+   },
+   "text": "<|im_start|>system\nYou are Ember, a friendly assistant.<|im_end|>\n<|im_start|>user\nWhat is the capital of France?<|im_end|>\n<|im_start|>assistant\n<think>\n"
+  },
+  {
+   "name": "system_user",
+   "messages": [
+    {
+     "role": "system",
+     "content": "You are Ember, a friendly assistant."
+    },
+    {
+     "role": "user",
+     "content": "What is the capital of France?"
+    }
+   ],
+   "tools": null,
+   "add_generation_prompt": true,
+   "kwargs": {
+    "enable_thinking": false
+   },
+   "text": "<|im_start|>system\nYou are Ember, a friendly assistant.<|im_end|>\n<|im_start|>user\nWhat is the capital of France?<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n\n"
+  },
+  {
+   "name": "system_user",
+   "messages": [
+    {
+     "role": "system",
+     "content": "You are Ember, a friendly assistant."
+    },
+    {
+     "role": "user",
+     "content": "What is the capital of France?"
+    }
+   ],
+   "tools": null,
+   "add_generation_prompt": false,
+   "kwargs": {
+    "enable_thinking": true
+   },
+   "text": "<|im_start|>system\nYou are Ember, a friendly assistant.<|im_end|>\n<|im_start|>user\nWhat is the capital of France?<|im_end|>\n"
+  },
+  {
+   "name": "system_user",
+   "messages": [
+    {
+     "role": "system",
+     "content": "You are Ember, a friendly assistant."
+    },
+    {
+     "role": "user",
+     "content": "What is the capital of France?"
+    }
+   ],
+   "tools": null,
+   "add_generation_prompt": false,
+   "kwargs": {
+    "enable_thinking": false
+   },
+   "text": "<|im_start|>system\nYou are Ember, a friendly assistant.<|im_end|>\n<|im_start|>user\nWhat is the capital of France?<|im_end|>\n"
+  },
+  {
+   "name": "system_user",
+   "messages": [
+    {
+     "role": "system",
+     "content": "You are Ember, a friendly assistant."
+    },
+    {
+     "role": "user",
+     "content": "What is the capital of France?"
+    }
+   ],
+   "tools": [
+    {
+     "type": "function",
+     "function": {
+      "name": "lookup",
+      "description": "Look something up in the encyclopedia.",
+      "parameters": {
+       "type": "object",
+       "properties": {
+        "query": {
+         "type": "string",
+         "description": "What to look for."
+        }
+       },
+       "required": [
+        "query"
+       ]
+      }
+     }
+    },
+    {
+     "type": "function",
+     "function": {
+      "name": "run_python",
+      "description": "Run a Python program and return what it printed.",
+      "parameters": {
+       "type": "object",
+       "properties": {
+        "code": {
+         "type": "string"
+        }
+       },
+       "required": [
+        "code"
+       ]
+      }
+     }
+    }
+   ],
+   "add_generation_prompt": true,
+   "kwargs": {
+    "enable_thinking": true
+   },
+   "text": "<|im_start|>system\n# Tools\n\nYou have access to the following functions:\n\n<tools>\n{\"type\": \"function\", \"function\": {\"name\": \"lookup\", \"description\": \"Look something up in the encyclopedia.\", \"parameters\": {\"type\": \"object\", \"properties\": {\"query\": {\"type\": \"string\", \"description\": \"What to look for.\"}}, \"required\": [\"query\"]}}}\n{\"type\": \"function\", \"function\": {\"name\": \"run_python\", \"description\": \"Run a Python program and return what it printed.\", \"parameters\": {\"type\": \"object\", \"properties\": {\"code\": {\"type\": \"string\"}}, \"required\": [\"code\"]}}}\n</tools>\n\nIf you choose to call a function ONLY reply in the following format with NO suffix:\n\n<tool_call>\n<function=example_function_name>\n<parameter=example_parameter_1>\nvalue_1\n</parameter>\n<parameter=example_parameter_2>\nThis is the value for the second parameter\nthat can span\nmultiple lines\n</parameter>\n</function>\n</tool_call>\n\n<IMPORTANT>\nReminder:\n- Function calls MUST follow the specified format: an inner <function=...></function> block must be nested within <tool_call></tool_call> XML tags\n- Required parameters MUST be specified\n- You may provide optional reasoning for your function call in natural language BEFORE the function call, but NOT after\n- If there is no function call available, answer the question like normal with your current knowledge and do not tell the user about function calls\n</IMPORTANT>\n\nYou are Ember, a friendly assistant.<|im_end|>\n<|im_start|>user\nWhat is the capital of France?<|im_end|>\n<|im_start|>assistant\n<think>\n"
+  },
+  {
+   "name": "system_user",
+   "messages": [
+    {
+     "role": "system",
+     "content": "You are Ember, a friendly assistant."
+    },
+    {
+     "role": "user",
+     "content": "What is the capital of France?"
+    }
+   ],
+   "tools": [
+    {
+     "type": "function",
+     "function": {
+      "name": "lookup",
+      "description": "Look something up in the encyclopedia.",
+      "parameters": {
+       "type": "object",
+       "properties": {
+        "query": {
+         "type": "string",
+         "description": "What to look for."
+        }
+       },
+       "required": [
+        "query"
+       ]
+      }
+     }
+    },
+    {
+     "type": "function",
+     "function": {
+      "name": "run_python",
+      "description": "Run a Python program and return what it printed.",
+      "parameters": {
+       "type": "object",
+       "properties": {
+        "code": {
+         "type": "string"
+        }
+       },
+       "required": [
+        "code"
+       ]
+      }
+     }
+    }
+   ],
+   "add_generation_prompt": true,
+   "kwargs": {
+    "enable_thinking": false
+   },
+   "text": "<|im_start|>system\n# Tools\n\nYou have access to the following functions:\n\n<tools>\n{\"type\": \"function\", \"function\": {\"name\": \"lookup\", \"description\": \"Look something up in the encyclopedia.\", \"parameters\": {\"type\": \"object\", \"properties\": {\"query\": {\"type\": \"string\", \"description\": \"What to look for.\"}}, \"required\": [\"query\"]}}}\n{\"type\": \"function\", \"function\": {\"name\": \"run_python\", \"description\": \"Run a Python program and return what it printed.\", \"parameters\": {\"type\": \"object\", \"properties\": {\"code\": {\"type\": \"string\"}}, \"required\": [\"code\"]}}}\n</tools>\n\nIf you choose to call a function ONLY reply in the following format with NO suffix:\n\n<tool_call>\n<function=example_function_name>\n<parameter=example_parameter_1>\nvalue_1\n</parameter>\n<parameter=example_parameter_2>\nThis is the value for the second parameter\nthat can span\nmultiple lines\n</parameter>\n</function>\n</tool_call>\n\n<IMPORTANT>\nReminder:\n- Function calls MUST follow the specified format: an inner <function=...></function> block must be nested within <tool_call></tool_call> XML tags\n- Required parameters MUST be specified\n- You may provide optional reasoning for your function call in natural language BEFORE the function call, but NOT after\n- If there is no function call available, answer the question like normal with your current knowledge and do not tell the user about function calls\n</IMPORTANT>\n\nYou are Ember, a friendly assistant.<|im_end|>\n<|im_start|>user\nWhat is the capital of France?<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n\n"
+  },
+  {
+   "name": "system_user",
+   "messages": [
+    {
+     "role": "system",
+     "content": "You are Ember, a friendly assistant."
+    },
+    {
+     "role": "user",
+     "content": "What is the capital of France?"
+    }
+   ],
+   "tools": [
+    {
+     "type": "function",
+     "function": {
+      "name": "lookup",
+      "description": "Look something up in the encyclopedia.",
+      "parameters": {
+       "type": "object",
+       "properties": {
+        "query": {
+         "type": "string",
+         "description": "What to look for."
+        }
+       },
+       "required": [
+        "query"
+       ]
+      }
+     }
+    },
+    {
+     "type": "function",
+     "function": {
+      "name": "run_python",
+      "description": "Run a Python program and return what it printed.",
+      "parameters": {
+       "type": "object",
+       "properties": {
+        "code": {
+         "type": "string"
+        }
+       },
+       "required": [
+        "code"
+       ]
+      }
+     }
+    }
+   ],
+   "add_generation_prompt": false,
+   "kwargs": {
+    "enable_thinking": true
+   },
+   "text": "<|im_start|>system\n# Tools\n\nYou have access to the following functions:\n\n<tools>\n{\"type\": \"function\", \"function\": {\"name\": \"lookup\", \"description\": \"Look something up in the encyclopedia.\", \"parameters\": {\"type\": \"object\", \"properties\": {\"query\": {\"type\": \"string\", \"description\": \"What to look for.\"}}, \"required\": [\"query\"]}}}\n{\"type\": \"function\", \"function\": {\"name\": \"run_python\", \"description\": \"Run a Python program and return what it printed.\", \"parameters\": {\"type\": \"object\", \"properties\": {\"code\": {\"type\": \"string\"}}, \"required\": [\"code\"]}}}\n</tools>\n\nIf you choose to call a function ONLY reply in the following format with NO suffix:\n\n<tool_call>\n<function=example_function_name>\n<parameter=example_parameter_1>\nvalue_1\n</parameter>\n<parameter=example_parameter_2>\nThis is the value for the second parameter\nthat can span\nmultiple lines\n</parameter>\n</function>\n</tool_call>\n\n<IMPORTANT>\nReminder:\n- Function calls MUST follow the specified format: an inner <function=...></function> block must be nested within <tool_call></tool_call> XML tags\n- Required parameters MUST be specified\n- You may provide optional reasoning for your function call in natural language BEFORE the function call, but NOT after\n- If there is no function call available, answer the question like normal with your current knowledge and do not tell the user about function calls\n</IMPORTANT>\n\nYou are Ember, a friendly assistant.<|im_end|>\n<|im_start|>user\nWhat is the capital of France?<|im_end|>\n"
+  },
+  {
+   "name": "system_user",
+   "messages": [
+    {
+     "role": "system",
+     "content": "You are Ember, a friendly assistant."
+    },
+    {
+     "role": "user",
+     "content": "What is the capital of France?"
+    }
+   ],
+   "tools": [
+    {
+     "type": "function",
+     "function": {
+      "name": "lookup",
+      "description": "Look something up in the encyclopedia.",
+      "parameters": {
+       "type": "object",
+       "properties": {
+        "query": {
+         "type": "string",
+         "description": "What to look for."
+        }
+       },
+       "required": [
+        "query"
+       ]
+      }
+     }
+    },
+    {
+     "type": "function",
+     "function": {
+      "name": "run_python",
+      "description": "Run a Python program and return what it printed.",
+      "parameters": {
+       "type": "object",
+       "properties": {
+        "code": {
+         "type": "string"
+        }
+       },
+       "required": [
+        "code"
+       ]
+      }
+     }
+    }
+   ],
+   "add_generation_prompt": false,
+   "kwargs": {
+    "enable_thinking": false
+   },
+   "text": "<|im_start|>system\n# Tools\n\nYou have access to the following functions:\n\n<tools>\n{\"type\": \"function\", \"function\": {\"name\": \"lookup\", \"description\": \"Look something up in the encyclopedia.\", \"parameters\": {\"type\": \"object\", \"properties\": {\"query\": {\"type\": \"string\", \"description\": \"What to look for.\"}}, \"required\": [\"query\"]}}}\n{\"type\": \"function\", \"function\": {\"name\": \"run_python\", \"description\": \"Run a Python program and return what it printed.\", \"parameters\": {\"type\": \"object\", \"properties\": {\"code\": {\"type\": \"string\"}}, \"required\": [\"code\"]}}}\n</tools>\n\nIf you choose to call a function ONLY reply in the following format with NO suffix:\n\n<tool_call>\n<function=example_function_name>\n<parameter=example_parameter_1>\nvalue_1\n</parameter>\n<parameter=example_parameter_2>\nThis is the value for the second parameter\nthat can span\nmultiple lines\n</parameter>\n</function>\n</tool_call>\n\n<IMPORTANT>\nReminder:\n- Function calls MUST follow the specified format: an inner <function=...></function> block must be nested within <tool_call></tool_call> XML tags\n- Required parameters MUST be specified\n- You may provide optional reasoning for your function call in natural language BEFORE the function call, but NOT after\n- If there is no function call available, answer the question like normal with your current knowledge and do not tell the user about function calls\n</IMPORTANT>\n\nYou are Ember, a friendly assistant.<|im_end|>\n<|im_start|>user\nWhat is the capital of France?<|im_end|>\n"
+  },
+  {
+   "name": "multi_turn",
+   "messages": [
+    {
+     "role": "system",
+     "content": "Be brief."
+    },
+    {
+     "role": "user",
+     "content": "Hi"
+    },
+    {
+     "role": "assistant",
+     "content": "Hello! How can I help?"
+    },
+    {
+     "role": "user",
+     "content": "Tell me a joke."
+    }
+   ],
+   "tools": null,
+   "add_generation_prompt": true,
+   "kwargs": {
+    "enable_thinking": true
+   },
+   "text": "<|im_start|>system\nBe brief.<|im_end|>\n<|im_start|>user\nHi<|im_end|>\n<|im_start|>assistant\nHello! How can I help?<|im_end|>\n<|im_start|>user\nTell me a joke.<|im_end|>\n<|im_start|>assistant\n<think>\n"
+  },
+  {
+   "name": "multi_turn",
+   "messages": [
+    {
+     "role": "system",
+     "content": "Be brief."
+    },
+    {
+     "role": "user",
+     "content": "Hi"
+    },
+    {
+     "role": "assistant",
+     "content": "Hello! How can I help?"
+    },
+    {
+     "role": "user",
+     "content": "Tell me a joke."
+    }
+   ],
+   "tools": null,
+   "add_generation_prompt": true,
+   "kwargs": {
+    "enable_thinking": false
+   },
+   "text": "<|im_start|>system\nBe brief.<|im_end|>\n<|im_start|>user\nHi<|im_end|>\n<|im_start|>assistant\nHello! How can I help?<|im_end|>\n<|im_start|>user\nTell me a joke.<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n\n"
+  },
+  {
+   "name": "multi_turn",
+   "messages": [
+    {
+     "role": "system",
+     "content": "Be brief."
+    },
+    {
+     "role": "user",
+     "content": "Hi"
+    },
+    {
+     "role": "assistant",
+     "content": "Hello! How can I help?"
+    },
+    {
+     "role": "user",
+     "content": "Tell me a joke."
+    }
+   ],
+   "tools": null,
+   "add_generation_prompt": false,
+   "kwargs": {
+    "enable_thinking": true
+   },
+   "text": "<|im_start|>system\nBe brief.<|im_end|>\n<|im_start|>user\nHi<|im_end|>\n<|im_start|>assistant\nHello! How can I help?<|im_end|>\n<|im_start|>user\nTell me a joke.<|im_end|>\n"
+  },
+  {
+   "name": "multi_turn",
+   "messages": [
+    {
+     "role": "system",
+     "content": "Be brief."
+    },
+    {
+     "role": "user",
+     "content": "Hi"
+    },
+    {
+     "role": "assistant",
+     "content": "Hello! How can I help?"
+    },
+    {
+     "role": "user",
+     "content": "Tell me a joke."
+    }
+   ],
+   "tools": null,
+   "add_generation_prompt": false,
+   "kwargs": {
+    "enable_thinking": false
+   },
+   "text": "<|im_start|>system\nBe brief.<|im_end|>\n<|im_start|>user\nHi<|im_end|>\n<|im_start|>assistant\nHello! How can I help?<|im_end|>\n<|im_start|>user\nTell me a joke.<|im_end|>\n"
+  },
+  {
+   "name": "multi_turn",
+   "messages": [
+    {
+     "role": "system",
+     "content": "Be brief."
+    },
+    {
+     "role": "user",
+     "content": "Hi"
+    },
+    {
+     "role": "assistant",
+     "content": "Hello! How can I help?"
+    },
+    {
+     "role": "user",
+     "content": "Tell me a joke."
+    }
+   ],
+   "tools": [
+    {
+     "type": "function",
+     "function": {
+      "name": "lookup",
+      "description": "Look something up in the encyclopedia.",
+      "parameters": {
+       "type": "object",
+       "properties": {
+        "query": {
+         "type": "string",
+         "description": "What to look for."
+        }
+       },
+       "required": [
+        "query"
+       ]
+      }
+     }
+    },
+    {
+     "type": "function",
+     "function": {
+      "name": "run_python",
+      "description": "Run a Python program and return what it printed.",
+      "parameters": {
+       "type": "object",
+       "properties": {
+        "code": {
+         "type": "string"
+        }
+       },
+       "required": [
+        "code"
+       ]
+      }
+     }
+    }
+   ],
+   "add_generation_prompt": true,
+   "kwargs": {
+    "enable_thinking": true
+   },
+   "text": "<|im_start|>system\n# Tools\n\nYou have access to the following functions:\n\n<tools>\n{\"type\": \"function\", \"function\": {\"name\": \"lookup\", \"description\": \"Look something up in the encyclopedia.\", \"parameters\": {\"type\": \"object\", \"properties\": {\"query\": {\"type\": \"string\", \"description\": \"What to look for.\"}}, \"required\": [\"query\"]}}}\n{\"type\": \"function\", \"function\": {\"name\": \"run_python\", \"description\": \"Run a Python program and return what it printed.\", \"parameters\": {\"type\": \"object\", \"properties\": {\"code\": {\"type\": \"string\"}}, \"required\": [\"code\"]}}}\n</tools>\n\nIf you choose to call a function ONLY reply in the following format with NO suffix:\n\n<tool_call>\n<function=example_function_name>\n<parameter=example_parameter_1>\nvalue_1\n</parameter>\n<parameter=example_parameter_2>\nThis is the value for the second parameter\nthat can span\nmultiple lines\n</parameter>\n</function>\n</tool_call>\n\n<IMPORTANT>\nReminder:\n- Function calls MUST follow the specified format: an inner <function=...></function> block must be nested within <tool_call></tool_call> XML tags\n- Required parameters MUST be specified\n- You may provide optional reasoning for your function call in natural language BEFORE the function call, but NOT after\n- If there is no function call available, answer the question like normal with your current knowledge and do not tell the user about function calls\n</IMPORTANT>\n\nBe brief.<|im_end|>\n<|im_start|>user\nHi<|im_end|>\n<|im_start|>assistant\nHello! How can I help?<|im_end|>\n<|im_start|>user\nTell me a joke.<|im_end|>\n<|im_start|>assistant\n<think>\n"
+  },
+  {
+   "name": "multi_turn",
+   "messages": [
+    {
+     "role": "system",
+     "content": "Be brief."
+    },
+    {
+     "role": "user",
+     "content": "Hi"
+    },
+    {
+     "role": "assistant",
+     "content": "Hello! How can I help?"
+    },
+    {
+     "role": "user",
+     "content": "Tell me a joke."
+    }
+   ],
+   "tools": [
+    {
+     "type": "function",
+     "function": {
+      "name": "lookup",
+      "description": "Look something up in the encyclopedia.",
+      "parameters": {
+       "type": "object",
+       "properties": {
+        "query": {
+         "type": "string",
+         "description": "What to look for."
+        }
+       },
+       "required": [
+        "query"
+       ]
+      }
+     }
+    },
+    {
+     "type": "function",
+     "function": {
+      "name": "run_python",
+      "description": "Run a Python program and return what it printed.",
+      "parameters": {
+       "type": "object",
+       "properties": {
+        "code": {
+         "type": "string"
+        }
+       },
+       "required": [
+        "code"
+       ]
+      }
+     }
+    }
+   ],
+   "add_generation_prompt": true,
+   "kwargs": {
+    "enable_thinking": false
+   },
+   "text": "<|im_start|>system\n# Tools\n\nYou have access to the following functions:\n\n<tools>\n{\"type\": \"function\", \"function\": {\"name\": \"lookup\", \"description\": \"Look something up in the encyclopedia.\", \"parameters\": {\"type\": \"object\", \"properties\": {\"query\": {\"type\": \"string\", \"description\": \"What to look for.\"}}, \"required\": [\"query\"]}}}\n{\"type\": \"function\", \"function\": {\"name\": \"run_python\", \"description\": \"Run a Python program and return what it printed.\", \"parameters\": {\"type\": \"object\", \"properties\": {\"code\": {\"type\": \"string\"}}, \"required\": [\"code\"]}}}\n</tools>\n\nIf you choose to call a function ONLY reply in the following format with NO suffix:\n\n<tool_call>\n<function=example_function_name>\n<parameter=example_parameter_1>\nvalue_1\n</parameter>\n<parameter=example_parameter_2>\nThis is the value for the second parameter\nthat can span\nmultiple lines\n</parameter>\n</function>\n</tool_call>\n\n<IMPORTANT>\nReminder:\n- Function calls MUST follow the specified format: an inner <function=...></function> block must be nested within <tool_call></tool_call> XML tags\n- Required parameters MUST be specified\n- You may provide optional reasoning for your function call in natural language BEFORE the function call, but NOT after\n- If there is no function call available, answer the question like normal with your current knowledge and do not tell the user about function calls\n</IMPORTANT>\n\nBe brief.<|im_end|>\n<|im_start|>user\nHi<|im_end|>\n<|im_start|>assistant\nHello! How can I help?<|im_end|>\n<|im_start|>user\nTell me a joke.<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n\n"
+  },
+  {
+   "name": "multi_turn",
+   "messages": [
+    {
+     "role": "system",
+     "content": "Be brief."
+    },
+    {
+     "role": "user",
+     "content": "Hi"
+    },
+    {
+     "role": "assistant",
+     "content": "Hello! How can I help?"
+    },
+    {
+     "role": "user",
+     "content": "Tell me a joke."
+    }
+   ],
+   "tools": [
+    {
+     "type": "function",
+     "function": {
+      "name": "lookup",
+      "description": "Look something up in the encyclopedia.",
+      "parameters": {
+       "type": "object",
+       "properties": {
+        "query": {
+         "type": "string",
+         "description": "What to look for."
+        }
+       },
+       "required": [
+        "query"
+       ]
+      }
+     }
+    },
+    {
+     "type": "function",
+     "function": {
+      "name": "run_python",
+      "description": "Run a Python program and return what it printed.",
+      "parameters": {
+       "type": "object",
+       "properties": {
+        "code": {
+         "type": "string"
+        }
+       },
+       "required": [
+        "code"
+       ]
+      }
+     }
+    }
+   ],
+   "add_generation_prompt": false,
+   "kwargs": {
+    "enable_thinking": true
+   },
+   "text": "<|im_start|>system\n# Tools\n\nYou have access to the following functions:\n\n<tools>\n{\"type\": \"function\", \"function\": {\"name\": \"lookup\", \"description\": \"Look something up in the encyclopedia.\", \"parameters\": {\"type\": \"object\", \"properties\": {\"query\": {\"type\": \"string\", \"description\": \"What to look for.\"}}, \"required\": [\"query\"]}}}\n{\"type\": \"function\", \"function\": {\"name\": \"run_python\", \"description\": \"Run a Python program and return what it printed.\", \"parameters\": {\"type\": \"object\", \"properties\": {\"code\": {\"type\": \"string\"}}, \"required\": [\"code\"]}}}\n</tools>\n\nIf you choose to call a function ONLY reply in the following format with NO suffix:\n\n<tool_call>\n<function=example_function_name>\n<parameter=example_parameter_1>\nvalue_1\n</parameter>\n<parameter=example_parameter_2>\nThis is the value for the second parameter\nthat can span\nmultiple lines\n</parameter>\n</function>\n</tool_call>\n\n<IMPORTANT>\nReminder:\n- Function calls MUST follow the specified format: an inner <function=...></function> block must be nested within <tool_call></tool_call> XML tags\n- Required parameters MUST be specified\n- You may provide optional reasoning for your function call in natural language BEFORE the function call, but NOT after\n- If there is no function call available, answer the question like normal with your current knowledge and do not tell the user about function calls\n</IMPORTANT>\n\nBe brief.<|im_end|>\n<|im_start|>user\nHi<|im_end|>\n<|im_start|>assistant\nHello! How can I help?<|im_end|>\n<|im_start|>user\nTell me a joke.<|im_end|>\n"
+  },
+  {
+   "name": "multi_turn",
+   "messages": [
+    {
+     "role": "system",
+     "content": "Be brief."
+    },
+    {
+     "role": "user",
+     "content": "Hi"
+    },
+    {
+     "role": "assistant",
+     "content": "Hello! How can I help?"
+    },
+    {
+     "role": "user",
+     "content": "Tell me a joke."
+    }
+   ],
+   "tools": [
+    {
+     "type": "function",
+     "function": {
+      "name": "lookup",
+      "description": "Look something up in the encyclopedia.",
+      "parameters": {
+       "type": "object",
+       "properties": {
+        "query": {
+         "type": "string",
+         "description": "What to look for."
+        }
+       },
+       "required": [
+        "query"
+       ]
+      }
+     }
+    },
+    {
+     "type": "function",
+     "function": {
+      "name": "run_python",
+      "description": "Run a Python program and return what it printed.",
+      "parameters": {
+       "type": "object",
+       "properties": {
+        "code": {
+         "type": "string"
+        }
+       },
+       "required": [
+        "code"
+       ]
+      }
+     }
+    }
+   ],
+   "add_generation_prompt": false,
+   "kwargs": {
+    "enable_thinking": false
+   },
+   "text": "<|im_start|>system\n# Tools\n\nYou have access to the following functions:\n\n<tools>\n{\"type\": \"function\", \"function\": {\"name\": \"lookup\", \"description\": \"Look something up in the encyclopedia.\", \"parameters\": {\"type\": \"object\", \"properties\": {\"query\": {\"type\": \"string\", \"description\": \"What to look for.\"}}, \"required\": [\"query\"]}}}\n{\"type\": \"function\", \"function\": {\"name\": \"run_python\", \"description\": \"Run a Python program and return what it printed.\", \"parameters\": {\"type\": \"object\", \"properties\": {\"code\": {\"type\": \"string\"}}, \"required\": [\"code\"]}}}\n</tools>\n\nIf you choose to call a function ONLY reply in the following format with NO suffix:\n\n<tool_call>\n<function=example_function_name>\n<parameter=example_parameter_1>\nvalue_1\n</parameter>\n<parameter=example_parameter_2>\nThis is the value for the second parameter\nthat can span\nmultiple lines\n</parameter>\n</function>\n</tool_call>\n\n<IMPORTANT>\nReminder:\n- Function calls MUST follow the specified format: an inner <function=...></function> block must be nested within <tool_call></tool_call> XML tags\n- Required parameters MUST be specified\n- You may provide optional reasoning for your function call in natural language BEFORE the function call, but NOT after\n- If there is no function call available, answer the question like normal with your current knowledge and do not tell the user about function calls\n</IMPORTANT>\n\nBe brief.<|im_end|>\n<|im_start|>user\nHi<|im_end|>\n<|im_start|>assistant\nHello! How can I help?<|im_end|>\n<|im_start|>user\nTell me a joke.<|im_end|>\n"
+  },
+  {
+   "name": "ends_with_assistant",
+   "messages": [
+    {
+     "role": "user",
+     "content": "Say hi"
+    },
+    {
+     "role": "assistant",
+     "content": "Hi!"
+    }
+   ],
+   "tools": null,
+   "add_generation_prompt": true,
+   "kwargs": {
+    "enable_thinking": true
+   },
+   "text": "<|im_start|>user\nSay hi<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n\nHi!<|im_end|>\n<|im_start|>assistant\n<think>\n"
+  },
+  {
+   "name": "ends_with_assistant",
+   "messages": [
+    {
+     "role": "user",
+     "content": "Say hi"
+    },
+    {
+     "role": "assistant",
+     "content": "Hi!"
+    }
+   ],
+   "tools": null,
+   "add_generation_prompt": true,
+   "kwargs": {
+    "enable_thinking": false
+   },
+   "text": "<|im_start|>user\nSay hi<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n\nHi!<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n\n"
+  },
+  {
+   "name": "ends_with_assistant",
+   "messages": [
+    {
+     "role": "user",
+     "content": "Say hi"
+    },
+    {
+     "role": "assistant",
+     "content": "Hi!"
+    }
+   ],
+   "tools": null,
+   "add_generation_prompt": false,
+   "kwargs": {
+    "enable_thinking": true
+   },
+   "text": "<|im_start|>user\nSay hi<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n\nHi!<|im_end|>\n"
+  },
+  {
+   "name": "ends_with_assistant",
+   "messages": [
+    {
+     "role": "user",
+     "content": "Say hi"
+    },
+    {
+     "role": "assistant",
+     "content": "Hi!"
+    }
+   ],
+   "tools": null,
+   "add_generation_prompt": false,
+   "kwargs": {
+    "enable_thinking": false
+   },
+   "text": "<|im_start|>user\nSay hi<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n\nHi!<|im_end|>\n"
+  },
+  {
+   "name": "ends_with_assistant",
+   "messages": [
+    {
+     "role": "user",
+     "content": "Say hi"
+    },
+    {
+     "role": "assistant",
+     "content": "Hi!"
+    }
+   ],
+   "tools": [
+    {
+     "type": "function",
+     "function": {
+      "name": "lookup",
+      "description": "Look something up in the encyclopedia.",
+      "parameters": {
+       "type": "object",
+       "properties": {
+        "query": {
+         "type": "string",
+         "description": "What to look for."
+        }
+       },
+       "required": [
+        "query"
+       ]
+      }
+     }
+    },
+    {
+     "type": "function",
+     "function": {
+      "name": "run_python",
+      "description": "Run a Python program and return what it printed.",
+      "parameters": {
+       "type": "object",
+       "properties": {
+        "code": {
+         "type": "string"
+        }
+       },
+       "required": [
+        "code"
+       ]
+      }
+     }
+    }
+   ],
+   "add_generation_prompt": true,
+   "kwargs": {
+    "enable_thinking": true
+   },
+   "text": "<|im_start|>system\n# Tools\n\nYou have access to the following functions:\n\n<tools>\n{\"type\": \"function\", \"function\": {\"name\": \"lookup\", \"description\": \"Look something up in the encyclopedia.\", \"parameters\": {\"type\": \"object\", \"properties\": {\"query\": {\"type\": \"string\", \"description\": \"What to look for.\"}}, \"required\": [\"query\"]}}}\n{\"type\": \"function\", \"function\": {\"name\": \"run_python\", \"description\": \"Run a Python program and return what it printed.\", \"parameters\": {\"type\": \"object\", \"properties\": {\"code\": {\"type\": \"string\"}}, \"required\": [\"code\"]}}}\n</tools>\n\nIf you choose to call a function ONLY reply in the following format with NO suffix:\n\n<tool_call>\n<function=example_function_name>\n<parameter=example_parameter_1>\nvalue_1\n</parameter>\n<parameter=example_parameter_2>\nThis is the value for the second parameter\nthat can span\nmultiple lines\n</parameter>\n</function>\n</tool_call>\n\n<IMPORTANT>\nReminder:\n- Function calls MUST follow the specified format: an inner <function=...></function> block must be nested within <tool_call></tool_call> XML tags\n- Required parameters MUST be specified\n- You may provide optional reasoning for your function call in natural language BEFORE the function call, but NOT after\n- If there is no function call available, answer the question like normal with your current knowledge and do not tell the user about function calls\n</IMPORTANT><|im_end|>\n<|im_start|>user\nSay hi<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n\nHi!<|im_end|>\n<|im_start|>assistant\n<think>\n"
+  },
+  {
+   "name": "ends_with_assistant",
+   "messages": [
+    {
+     "role": "user",
+     "content": "Say hi"
+    },
+    {
+     "role": "assistant",
+     "content": "Hi!"
+    }
+   ],
+   "tools": [
+    {
+     "type": "function",
+     "function": {
+      "name": "lookup",
+      "description": "Look something up in the encyclopedia.",
+      "parameters": {
+       "type": "object",
+       "properties": {
+        "query": {
+         "type": "string",
+         "description": "What to look for."
+        }
+       },
+       "required": [
+        "query"
+       ]
+      }
+     }
+    },
+    {
+     "type": "function",
+     "function": {
+      "name": "run_python",
+      "description": "Run a Python program and return what it printed.",
+      "parameters": {
+       "type": "object",
+       "properties": {
+        "code": {
+         "type": "string"
+        }
+       },
+       "required": [
+        "code"
+       ]
+      }
+     }
+    }
+   ],
+   "add_generation_prompt": true,
+   "kwargs": {
+    "enable_thinking": false
+   },
+   "text": "<|im_start|>system\n# Tools\n\nYou have access to the following functions:\n\n<tools>\n{\"type\": \"function\", \"function\": {\"name\": \"lookup\", \"description\": \"Look something up in the encyclopedia.\", \"parameters\": {\"type\": \"object\", \"properties\": {\"query\": {\"type\": \"string\", \"description\": \"What to look for.\"}}, \"required\": [\"query\"]}}}\n{\"type\": \"function\", \"function\": {\"name\": \"run_python\", \"description\": \"Run a Python program and return what it printed.\", \"parameters\": {\"type\": \"object\", \"properties\": {\"code\": {\"type\": \"string\"}}, \"required\": [\"code\"]}}}\n</tools>\n\nIf you choose to call a function ONLY reply in the following format with NO suffix:\n\n<tool_call>\n<function=example_function_name>\n<parameter=example_parameter_1>\nvalue_1\n</parameter>\n<parameter=example_parameter_2>\nThis is the value for the second parameter\nthat can span\nmultiple lines\n</parameter>\n</function>\n</tool_call>\n\n<IMPORTANT>\nReminder:\n- Function calls MUST follow the specified format: an inner <function=...></function> block must be nested within <tool_call></tool_call> XML tags\n- Required parameters MUST be specified\n- You may provide optional reasoning for your function call in natural language BEFORE the function call, but NOT after\n- If there is no function call available, answer the question like normal with your current knowledge and do not tell the user about function calls\n</IMPORTANT><|im_end|>\n<|im_start|>user\nSay hi<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n\nHi!<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n\n"
+  },
+  {
+   "name": "ends_with_assistant",
+   "messages": [
+    {
+     "role": "user",
+     "content": "Say hi"
+    },
+    {
+     "role": "assistant",
+     "content": "Hi!"
+    }
+   ],
+   "tools": [
+    {
+     "type": "function",
+     "function": {
+      "name": "lookup",
+      "description": "Look something up in the encyclopedia.",
+      "parameters": {
+       "type": "object",
+       "properties": {
+        "query": {
+         "type": "string",
+         "description": "What to look for."
+        }
+       },
+       "required": [
+        "query"
+       ]
+      }
+     }
+    },
+    {
+     "type": "function",
+     "function": {
+      "name": "run_python",
+      "description": "Run a Python program and return what it printed.",
+      "parameters": {
+       "type": "object",
+       "properties": {
+        "code": {
+         "type": "string"
+        }
+       },
+       "required": [
+        "code"
+       ]
+      }
+     }
+    }
+   ],
+   "add_generation_prompt": false,
+   "kwargs": {
+    "enable_thinking": true
+   },
+   "text": "<|im_start|>system\n# Tools\n\nYou have access to the following functions:\n\n<tools>\n{\"type\": \"function\", \"function\": {\"name\": \"lookup\", \"description\": \"Look something up in the encyclopedia.\", \"parameters\": {\"type\": \"object\", \"properties\": {\"query\": {\"type\": \"string\", \"description\": \"What to look for.\"}}, \"required\": [\"query\"]}}}\n{\"type\": \"function\", \"function\": {\"name\": \"run_python\", \"description\": \"Run a Python program and return what it printed.\", \"parameters\": {\"type\": \"object\", \"properties\": {\"code\": {\"type\": \"string\"}}, \"required\": [\"code\"]}}}\n</tools>\n\nIf you choose to call a function ONLY reply in the following format with NO suffix:\n\n<tool_call>\n<function=example_function_name>\n<parameter=example_parameter_1>\nvalue_1\n</parameter>\n<parameter=example_parameter_2>\nThis is the value for the second parameter\nthat can span\nmultiple lines\n</parameter>\n</function>\n</tool_call>\n\n<IMPORTANT>\nReminder:\n- Function calls MUST follow the specified format: an inner <function=...></function> block must be nested within <tool_call></tool_call> XML tags\n- Required parameters MUST be specified\n- You may provide optional reasoning for your function call in natural language BEFORE the function call, but NOT after\n- If there is no function call available, answer the question like normal with your current knowledge and do not tell the user about function calls\n</IMPORTANT><|im_end|>\n<|im_start|>user\nSay hi<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n\nHi!<|im_end|>\n"
+  },
+  {
+   "name": "ends_with_assistant",
+   "messages": [
+    {
+     "role": "user",
+     "content": "Say hi"
+    },
+    {
+     "role": "assistant",
+     "content": "Hi!"
+    }
+   ],
+   "tools": [
+    {
+     "type": "function",
+     "function": {
+      "name": "lookup",
+      "description": "Look something up in the encyclopedia.",
+      "parameters": {
+       "type": "object",
+       "properties": {
+        "query": {
+         "type": "string",
+         "description": "What to look for."
+        }
+       },
+       "required": [
+        "query"
+       ]
+      }
+     }
+    },
+    {
+     "type": "function",
+     "function": {
+      "name": "run_python",
+      "description": "Run a Python program and return what it printed.",
+      "parameters": {
+       "type": "object",
+       "properties": {
+        "code": {
+         "type": "string"
+        }
+       },
+       "required": [
+        "code"
+       ]
+      }
+     }
+    }
+   ],
+   "add_generation_prompt": false,
+   "kwargs": {
+    "enable_thinking": false
+   },
+   "text": "<|im_start|>system\n# Tools\n\nYou have access to the following functions:\n\n<tools>\n{\"type\": \"function\", \"function\": {\"name\": \"lookup\", \"description\": \"Look something up in the encyclopedia.\", \"parameters\": {\"type\": \"object\", \"properties\": {\"query\": {\"type\": \"string\", \"description\": \"What to look for.\"}}, \"required\": [\"query\"]}}}\n{\"type\": \"function\", \"function\": {\"name\": \"run_python\", \"description\": \"Run a Python program and return what it printed.\", \"parameters\": {\"type\": \"object\", \"properties\": {\"code\": {\"type\": \"string\"}}, \"required\": [\"code\"]}}}\n</tools>\n\nIf you choose to call a function ONLY reply in the following format with NO suffix:\n\n<tool_call>\n<function=example_function_name>\n<parameter=example_parameter_1>\nvalue_1\n</parameter>\n<parameter=example_parameter_2>\nThis is the value for the second parameter\nthat can span\nmultiple lines\n</parameter>\n</function>\n</tool_call>\n\n<IMPORTANT>\nReminder:\n- Function calls MUST follow the specified format: an inner <function=...></function> block must be nested within <tool_call></tool_call> XML tags\n- Required parameters MUST be specified\n- You may provide optional reasoning for your function call in natural language BEFORE the function call, but NOT after\n- If there is no function call available, answer the question like normal with your current knowledge and do not tell the user about function calls\n</IMPORTANT><|im_end|>\n<|im_start|>user\nSay hi<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n\nHi!<|im_end|>\n"
+  },
+  {
+   "name": "unicode_and_newlines",
+   "messages": [
+    {
+     "role": "user",
+     "content": "Zażółć gęślą jaźń\n\nSecond paragraph with <tags> & symbols: {braces} [brackets] \"quotes\" 日本語"
+    }
+   ],
+   "tools": null,
+   "add_generation_prompt": true,
+   "kwargs": {
+    "enable_thinking": true
+   },
+   "text": "<|im_start|>user\nZażółć gęślą jaźń\n\nSecond paragraph with <tags> & symbols: {braces} [brackets] \"quotes\" 日本語<|im_end|>\n<|im_start|>assistant\n<think>\n"
+  },
+  {
+   "name": "unicode_and_newlines",
+   "messages": [
+    {
+     "role": "user",
+     "content": "Zażółć gęślą jaźń\n\nSecond paragraph with <tags> & symbols: {braces} [brackets] \"quotes\" 日本語"
+    }
+   ],
+   "tools": null,
+   "add_generation_prompt": true,
+   "kwargs": {
+    "enable_thinking": false
+   },
+   "text": "<|im_start|>user\nZażółć gęślą jaźń\n\nSecond paragraph with <tags> & symbols: {braces} [brackets] \"quotes\" 日本語<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n\n"
+  },
+  {
+   "name": "unicode_and_newlines",
+   "messages": [
+    {
+     "role": "user",
+     "content": "Zażółć gęślą jaźń\n\nSecond paragraph with <tags> & symbols: {braces} [brackets] \"quotes\" 日本語"
+    }
+   ],
+   "tools": null,
+   "add_generation_prompt": false,
+   "kwargs": {
+    "enable_thinking": true
+   },
+   "text": "<|im_start|>user\nZażółć gęślą jaźń\n\nSecond paragraph with <tags> & symbols: {braces} [brackets] \"quotes\" 日本語<|im_end|>\n"
+  },
+  {
+   "name": "unicode_and_newlines",
+   "messages": [
+    {
+     "role": "user",
+     "content": "Zażółć gęślą jaźń\n\nSecond paragraph with <tags> & symbols: {braces} [brackets] \"quotes\" 日本語"
+    }
+   ],
+   "tools": null,
+   "add_generation_prompt": false,
+   "kwargs": {
+    "enable_thinking": false
+   },
+   "text": "<|im_start|>user\nZażółć gęślą jaźń\n\nSecond paragraph with <tags> & symbols: {braces} [brackets] \"quotes\" 日本語<|im_end|>\n"
+  },
+  {
+   "name": "unicode_and_newlines",
+   "messages": [
+    {
+     "role": "user",
+     "content": "Zażółć gęślą jaźń\n\nSecond paragraph with <tags> & symbols: {braces} [brackets] \"quotes\" 日本語"
+    }
+   ],
+   "tools": [
+    {
+     "type": "function",
+     "function": {
+      "name": "lookup",
+      "description": "Look something up in the encyclopedia.",
+      "parameters": {
+       "type": "object",
+       "properties": {
+        "query": {
+         "type": "string",
+         "description": "What to look for."
+        }
+       },
+       "required": [
+        "query"
+       ]
+      }
+     }
+    },
+    {
+     "type": "function",
+     "function": {
+      "name": "run_python",
+      "description": "Run a Python program and return what it printed.",
+      "parameters": {
+       "type": "object",
+       "properties": {
+        "code": {
+         "type": "string"
+        }
+       },
+       "required": [
+        "code"
+       ]
+      }
+     }
+    }
+   ],
+   "add_generation_prompt": true,
+   "kwargs": {
+    "enable_thinking": true
+   },
+   "text": "<|im_start|>system\n# Tools\n\nYou have access to the following functions:\n\n<tools>\n{\"type\": \"function\", \"function\": {\"name\": \"lookup\", \"description\": \"Look something up in the encyclopedia.\", \"parameters\": {\"type\": \"object\", \"properties\": {\"query\": {\"type\": \"string\", \"description\": \"What to look for.\"}}, \"required\": [\"query\"]}}}\n{\"type\": \"function\", \"function\": {\"name\": \"run_python\", \"description\": \"Run a Python program and return what it printed.\", \"parameters\": {\"type\": \"object\", \"properties\": {\"code\": {\"type\": \"string\"}}, \"required\": [\"code\"]}}}\n</tools>\n\nIf you choose to call a function ONLY reply in the following format with NO suffix:\n\n<tool_call>\n<function=example_function_name>\n<parameter=example_parameter_1>\nvalue_1\n</parameter>\n<parameter=example_parameter_2>\nThis is the value for the second parameter\nthat can span\nmultiple lines\n</parameter>\n</function>\n</tool_call>\n\n<IMPORTANT>\nReminder:\n- Function calls MUST follow the specified format: an inner <function=...></function> block must be nested within <tool_call></tool_call> XML tags\n- Required parameters MUST be specified\n- You may provide optional reasoning for your function call in natural language BEFORE the function call, but NOT after\n- If there is no function call available, answer the question like normal with your current knowledge and do not tell the user about function calls\n</IMPORTANT><|im_end|>\n<|im_start|>user\nZażółć gęślą jaźń\n\nSecond paragraph with <tags> & symbols: {braces} [brackets] \"quotes\" 日本語<|im_end|>\n<|im_start|>assistant\n<think>\n"
+  },
+  {
+   "name": "unicode_and_newlines",
+   "messages": [
+    {
+     "role": "user",
+     "content": "Zażółć gęślą jaźń\n\nSecond paragraph with <tags> & symbols: {braces} [brackets] \"quotes\" 日本語"
+    }
+   ],
+   "tools": [
+    {
+     "type": "function",
+     "function": {
+      "name": "lookup",
+      "description": "Look something up in the encyclopedia.",
+      "parameters": {
+       "type": "object",
+       "properties": {
+        "query": {
+         "type": "string",
+         "description": "What to look for."
+        }
+       },
+       "required": [
+        "query"
+       ]
+      }
+     }
+    },
+    {
+     "type": "function",
+     "function": {
+      "name": "run_python",
+      "description": "Run a Python program and return what it printed.",
+      "parameters": {
+       "type": "object",
+       "properties": {
+        "code": {
+         "type": "string"
+        }
+       },
+       "required": [
+        "code"
+       ]
+      }
+     }
+    }
+   ],
+   "add_generation_prompt": true,
+   "kwargs": {
+    "enable_thinking": false
+   },
+   "text": "<|im_start|>system\n# Tools\n\nYou have access to the following functions:\n\n<tools>\n{\"type\": \"function\", \"function\": {\"name\": \"lookup\", \"description\": \"Look something up in the encyclopedia.\", \"parameters\": {\"type\": \"object\", \"properties\": {\"query\": {\"type\": \"string\", \"description\": \"What to look for.\"}}, \"required\": [\"query\"]}}}\n{\"type\": \"function\", \"function\": {\"name\": \"run_python\", \"description\": \"Run a Python program and return what it printed.\", \"parameters\": {\"type\": \"object\", \"properties\": {\"code\": {\"type\": \"string\"}}, \"required\": [\"code\"]}}}\n</tools>\n\nIf you choose to call a function ONLY reply in the following format with NO suffix:\n\n<tool_call>\n<function=example_function_name>\n<parameter=example_parameter_1>\nvalue_1\n</parameter>\n<parameter=example_parameter_2>\nThis is the value for the second parameter\nthat can span\nmultiple lines\n</parameter>\n</function>\n</tool_call>\n\n<IMPORTANT>\nReminder:\n- Function calls MUST follow the specified format: an inner <function=...></function> block must be nested within <tool_call></tool_call> XML tags\n- Required parameters MUST be specified\n- You may provide optional reasoning for your function call in natural language BEFORE the function call, but NOT after\n- If there is no function call available, answer the question like normal with your current knowledge and do not tell the user about function calls\n</IMPORTANT><|im_end|>\n<|im_start|>user\nZażółć gęślą jaźń\n\nSecond paragraph with <tags> & symbols: {braces} [brackets] \"quotes\" 日本語<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n\n"
+  },
+  {
+   "name": "unicode_and_newlines",
+   "messages": [
+    {
+     "role": "user",
+     "content": "Zażółć gęślą jaźń\n\nSecond paragraph with <tags> & symbols: {braces} [brackets] \"quotes\" 日本語"
+    }
+   ],
+   "tools": [
+    {
+     "type": "function",
+     "function": {
+      "name": "lookup",
+      "description": "Look something up in the encyclopedia.",
+      "parameters": {
+       "type": "object",
+       "properties": {
+        "query": {
+         "type": "string",
+         "description": "What to look for."
+        }
+       },
+       "required": [
+        "query"
+       ]
+      }
+     }
+    },
+    {
+     "type": "function",
+     "function": {
+      "name": "run_python",
+      "description": "Run a Python program and return what it printed.",
+      "parameters": {
+       "type": "object",
+       "properties": {
+        "code": {
+         "type": "string"
+        }
+       },
+       "required": [
+        "code"
+       ]
+      }
+     }
+    }
+   ],
+   "add_generation_prompt": false,
+   "kwargs": {
+    "enable_thinking": true
+   },
+   "text": "<|im_start|>system\n# Tools\n\nYou have access to the following functions:\n\n<tools>\n{\"type\": \"function\", \"function\": {\"name\": \"lookup\", \"description\": \"Look something up in the encyclopedia.\", \"parameters\": {\"type\": \"object\", \"properties\": {\"query\": {\"type\": \"string\", \"description\": \"What to look for.\"}}, \"required\": [\"query\"]}}}\n{\"type\": \"function\", \"function\": {\"name\": \"run_python\", \"description\": \"Run a Python program and return what it printed.\", \"parameters\": {\"type\": \"object\", \"properties\": {\"code\": {\"type\": \"string\"}}, \"required\": [\"code\"]}}}\n</tools>\n\nIf you choose to call a function ONLY reply in the following format with NO suffix:\n\n<tool_call>\n<function=example_function_name>\n<parameter=example_parameter_1>\nvalue_1\n</parameter>\n<parameter=example_parameter_2>\nThis is the value for the second parameter\nthat can span\nmultiple lines\n</parameter>\n</function>\n</tool_call>\n\n<IMPORTANT>\nReminder:\n- Function calls MUST follow the specified format: an inner <function=...></function> block must be nested within <tool_call></tool_call> XML tags\n- Required parameters MUST be specified\n- You may provide optional reasoning for your function call in natural language BEFORE the function call, but NOT after\n- If there is no function call available, answer the question like normal with your current knowledge and do not tell the user about function calls\n</IMPORTANT><|im_end|>\n<|im_start|>user\nZażółć gęślą jaźń\n\nSecond paragraph with <tags> & symbols: {braces} [brackets] \"quotes\" 日本語<|im_end|>\n"
+  },
+  {
+   "name": "unicode_and_newlines",
+   "messages": [
+    {
+     "role": "user",
+     "content": "Zażółć gęślą jaźń\n\nSecond paragraph with <tags> & symbols: {braces} [brackets] \"quotes\" 日本語"
+    }
+   ],
+   "tools": [
+    {
+     "type": "function",
+     "function": {
+      "name": "lookup",
+      "description": "Look something up in the encyclopedia.",
+      "parameters": {
+       "type": "object",
+       "properties": {
+        "query": {
+         "type": "string",
+         "description": "What to look for."
+        }
+       },
+       "required": [
+        "query"
+       ]
+      }
+     }
+    },
+    {
+     "type": "function",
+     "function": {
+      "name": "run_python",
+      "description": "Run a Python program and return what it printed.",
+      "parameters": {
+       "type": "object",
+       "properties": {
+        "code": {
+         "type": "string"
+        }
+       },
+       "required": [
+        "code"
+       ]
+      }
+     }
+    }
+   ],
+   "add_generation_prompt": false,
+   "kwargs": {
+    "enable_thinking": false
+   },
+   "text": "<|im_start|>system\n# Tools\n\nYou have access to the following functions:\n\n<tools>\n{\"type\": \"function\", \"function\": {\"name\": \"lookup\", \"description\": \"Look something up in the encyclopedia.\", \"parameters\": {\"type\": \"object\", \"properties\": {\"query\": {\"type\": \"string\", \"description\": \"What to look for.\"}}, \"required\": [\"query\"]}}}\n{\"type\": \"function\", \"function\": {\"name\": \"run_python\", \"description\": \"Run a Python program and return what it printed.\", \"parameters\": {\"type\": \"object\", \"properties\": {\"code\": {\"type\": \"string\"}}, \"required\": [\"code\"]}}}\n</tools>\n\nIf you choose to call a function ONLY reply in the following format with NO suffix:\n\n<tool_call>\n<function=example_function_name>\n<parameter=example_parameter_1>\nvalue_1\n</parameter>\n<parameter=example_parameter_2>\nThis is the value for the second parameter\nthat can span\nmultiple lines\n</parameter>\n</function>\n</tool_call>\n\n<IMPORTANT>\nReminder:\n- Function calls MUST follow the specified format: an inner <function=...></function> block must be nested within <tool_call></tool_call> XML tags\n- Required parameters MUST be specified\n- You may provide optional reasoning for your function call in natural language BEFORE the function call, but NOT after\n- If there is no function call available, answer the question like normal with your current knowledge and do not tell the user about function calls\n</IMPORTANT><|im_end|>\n<|im_start|>user\nZażółć gęślą jaźń\n\nSecond paragraph with <tags> & symbols: {braces} [brackets] \"quotes\" 日本語<|im_end|>\n"
+  },
+  {
+   "name": "tool_round_trip",
+   "messages": [
+    {
+     "role": "system",
+     "content": "You are Ember."
+    },
+    {
+     "role": "user",
+     "content": "Who wrote Hamlet?"
+    },
+    {
+     "role": "assistant",
+     "content": "",
+     "tool_calls": [
+      {
+       "id": "call_1",
+       "type": "function",
+       "function": {
+        "name": "lookup",
+        "arguments": {
+         "query": "Hamlet author"
+        }
+       }
+      }
+     ]
+    },
+    {
+     "role": "tool",
+     "tool_call_id": "call_1",
+     "name": "lookup",
+     "content": "Hamlet is a tragedy by William Shakespeare."
+    },
+    {
+     "role": "assistant",
+     "content": "William Shakespeare wrote Hamlet."
+    },
+    {
+     "role": "user",
+     "content": "And Macbeth?"
+    }
+   ],
+   "tools": null,
+   "add_generation_prompt": true,
+   "kwargs": {
+    "enable_thinking": true
+   },
+   "text": "<|im_start|>system\nYou are Ember.<|im_end|>\n<|im_start|>user\nWho wrote Hamlet?<|im_end|>\n<|im_start|>assistant\n<tool_call>\n<function=lookup>\n<parameter=query>\nHamlet author\n</parameter>\n</function>\n</tool_call><|im_end|>\n<|im_start|>user\n<tool_response>\nHamlet is a tragedy by William Shakespeare.\n</tool_response><|im_end|>\n<|im_start|>assistant\nWilliam Shakespeare wrote Hamlet.<|im_end|>\n<|im_start|>user\nAnd Macbeth?<|im_end|>\n<|im_start|>assistant\n<think>\n"
+  },
+  {
+   "name": "tool_round_trip",
+   "messages": [
+    {
+     "role": "system",
+     "content": "You are Ember."
+    },
+    {
+     "role": "user",
+     "content": "Who wrote Hamlet?"
+    },
+    {
+     "role": "assistant",
+     "content": "",
+     "tool_calls": [
+      {
+       "id": "call_1",
+       "type": "function",
+       "function": {
+        "name": "lookup",
+        "arguments": {
+         "query": "Hamlet author"
+        }
+       }
+      }
+     ]
+    },
+    {
+     "role": "tool",
+     "tool_call_id": "call_1",
+     "name": "lookup",
+     "content": "Hamlet is a tragedy by William Shakespeare."
+    },
+    {
+     "role": "assistant",
+     "content": "William Shakespeare wrote Hamlet."
+    },
+    {
+     "role": "user",
+     "content": "And Macbeth?"
+    }
+   ],
+   "tools": null,
+   "add_generation_prompt": true,
+   "kwargs": {
+    "enable_thinking": false
+   },
+   "text": "<|im_start|>system\nYou are Ember.<|im_end|>\n<|im_start|>user\nWho wrote Hamlet?<|im_end|>\n<|im_start|>assistant\n<tool_call>\n<function=lookup>\n<parameter=query>\nHamlet author\n</parameter>\n</function>\n</tool_call><|im_end|>\n<|im_start|>user\n<tool_response>\nHamlet is a tragedy by William Shakespeare.\n</tool_response><|im_end|>\n<|im_start|>assistant\nWilliam Shakespeare wrote Hamlet.<|im_end|>\n<|im_start|>user\nAnd Macbeth?<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n\n"
+  },
+  {
+   "name": "tool_round_trip",
+   "messages": [
+    {
+     "role": "system",
+     "content": "You are Ember."
+    },
+    {
+     "role": "user",
+     "content": "Who wrote Hamlet?"
+    },
+    {
+     "role": "assistant",
+     "content": "",
+     "tool_calls": [
+      {
+       "id": "call_1",
+       "type": "function",
+       "function": {
+        "name": "lookup",
+        "arguments": {
+         "query": "Hamlet author"
+        }
+       }
+      }
+     ]
+    },
+    {
+     "role": "tool",
+     "tool_call_id": "call_1",
+     "name": "lookup",
+     "content": "Hamlet is a tragedy by William Shakespeare."
+    },
+    {
+     "role": "assistant",
+     "content": "William Shakespeare wrote Hamlet."
+    },
+    {
+     "role": "user",
+     "content": "And Macbeth?"
+    }
+   ],
+   "tools": null,
+   "add_generation_prompt": false,
+   "kwargs": {
+    "enable_thinking": true
+   },
+   "text": "<|im_start|>system\nYou are Ember.<|im_end|>\n<|im_start|>user\nWho wrote Hamlet?<|im_end|>\n<|im_start|>assistant\n<tool_call>\n<function=lookup>\n<parameter=query>\nHamlet author\n</parameter>\n</function>\n</tool_call><|im_end|>\n<|im_start|>user\n<tool_response>\nHamlet is a tragedy by William Shakespeare.\n</tool_response><|im_end|>\n<|im_start|>assistant\nWilliam Shakespeare wrote Hamlet.<|im_end|>\n<|im_start|>user\nAnd Macbeth?<|im_end|>\n"
+  },
+  {
+   "name": "tool_round_trip",
+   "messages": [
+    {
+     "role": "system",
+     "content": "You are Ember."
+    },
+    {
+     "role": "user",
+     "content": "Who wrote Hamlet?"
+    },
+    {
+     "role": "assistant",
+     "content": "",
+     "tool_calls": [
+      {
+       "id": "call_1",
+       "type": "function",
+       "function": {
+        "name": "lookup",
+        "arguments": {
+         "query": "Hamlet author"
+        }
+       }
+      }
+     ]
+    },
+    {
+     "role": "tool",
+     "tool_call_id": "call_1",
+     "name": "lookup",
+     "content": "Hamlet is a tragedy by William Shakespeare."
+    },
+    {
+     "role": "assistant",
+     "content": "William Shakespeare wrote Hamlet."
+    },
+    {
+     "role": "user",
+     "content": "And Macbeth?"
+    }
+   ],
+   "tools": null,
+   "add_generation_prompt": false,
+   "kwargs": {
+    "enable_thinking": false
+   },
+   "text": "<|im_start|>system\nYou are Ember.<|im_end|>\n<|im_start|>user\nWho wrote Hamlet?<|im_end|>\n<|im_start|>assistant\n<tool_call>\n<function=lookup>\n<parameter=query>\nHamlet author\n</parameter>\n</function>\n</tool_call><|im_end|>\n<|im_start|>user\n<tool_response>\nHamlet is a tragedy by William Shakespeare.\n</tool_response><|im_end|>\n<|im_start|>assistant\nWilliam Shakespeare wrote Hamlet.<|im_end|>\n<|im_start|>user\nAnd Macbeth?<|im_end|>\n"
+  },
+  {
+   "name": "tool_round_trip",
+   "messages": [
+    {
+     "role": "system",
+     "content": "You are Ember."
+    },
+    {
+     "role": "user",
+     "content": "Who wrote Hamlet?"
+    },
+    {
+     "role": "assistant",
+     "content": "",
+     "tool_calls": [
+      {
+       "id": "call_1",
+       "type": "function",
+       "function": {
+        "name": "lookup",
+        "arguments": {
+         "query": "Hamlet author"
+        }
+       }
+      }
+     ]
+    },
+    {
+     "role": "tool",
+     "tool_call_id": "call_1",
+     "name": "lookup",
+     "content": "Hamlet is a tragedy by William Shakespeare."
+    },
+    {
+     "role": "assistant",
+     "content": "William Shakespeare wrote Hamlet."
+    },
+    {
+     "role": "user",
+     "content": "And Macbeth?"
+    }
+   ],
+   "tools": [
+    {
+     "type": "function",
+     "function": {
+      "name": "lookup",
+      "description": "Look something up in the encyclopedia.",
+      "parameters": {
+       "type": "object",
+       "properties": {
+        "query": {
+         "type": "string",
+         "description": "What to look for."
+        }
+       },
+       "required": [
+        "query"
+       ]
+      }
+     }
+    },
+    {
+     "type": "function",
+     "function": {
+      "name": "run_python",
+      "description": "Run a Python program and return what it printed.",
+      "parameters": {
+       "type": "object",
+       "properties": {
+        "code": {
+         "type": "string"
+        }
+       },
+       "required": [
+        "code"
+       ]
+      }
+     }
+    }
+   ],
+   "add_generation_prompt": true,
+   "kwargs": {
+    "enable_thinking": true
+   },
+   "text": "<|im_start|>system\n# Tools\n\nYou have access to the following functions:\n\n<tools>\n{\"type\": \"function\", \"function\": {\"name\": \"lookup\", \"description\": \"Look something up in the encyclopedia.\", \"parameters\": {\"type\": \"object\", \"properties\": {\"query\": {\"type\": \"string\", \"description\": \"What to look for.\"}}, \"required\": [\"query\"]}}}\n{\"type\": \"function\", \"function\": {\"name\": \"run_python\", \"description\": \"Run a Python program and return what it printed.\", \"parameters\": {\"type\": \"object\", \"properties\": {\"code\": {\"type\": \"string\"}}, \"required\": [\"code\"]}}}\n</tools>\n\nIf you choose to call a function ONLY reply in the following format with NO suffix:\n\n<tool_call>\n<function=example_function_name>\n<parameter=example_parameter_1>\nvalue_1\n</parameter>\n<parameter=example_parameter_2>\nThis is the value for the second parameter\nthat can span\nmultiple lines\n</parameter>\n</function>\n</tool_call>\n\n<IMPORTANT>\nReminder:\n- Function calls MUST follow the specified format: an inner <function=...></function> block must be nested within <tool_call></tool_call> XML tags\n- Required parameters MUST be specified\n- You may provide optional reasoning for your function call in natural language BEFORE the function call, but NOT after\n- If there is no function call available, answer the question like normal with your current knowledge and do not tell the user about function calls\n</IMPORTANT>\n\nYou are Ember.<|im_end|>\n<|im_start|>user\nWho wrote Hamlet?<|im_end|>\n<|im_start|>assistant\n<tool_call>\n<function=lookup>\n<parameter=query>\nHamlet author\n</parameter>\n</function>\n</tool_call><|im_end|>\n<|im_start|>user\n<tool_response>\nHamlet is a tragedy by William Shakespeare.\n</tool_response><|im_end|>\n<|im_start|>assistant\nWilliam Shakespeare wrote Hamlet.<|im_end|>\n<|im_start|>user\nAnd Macbeth?<|im_end|>\n<|im_start|>assistant\n<think>\n"
+  },
+  {
+   "name": "tool_round_trip",
+   "messages": [
+    {
+     "role": "system",
+     "content": "You are Ember."
+    },
+    {
+     "role": "user",
+     "content": "Who wrote Hamlet?"
+    },
+    {
+     "role": "assistant",
+     "content": "",
+     "tool_calls": [
+      {
+       "id": "call_1",
+       "type": "function",
+       "function": {
+        "name": "lookup",
+        "arguments": {
+         "query": "Hamlet author"
+        }
+       }
+      }
+     ]
+    },
+    {
+     "role": "tool",
+     "tool_call_id": "call_1",
+     "name": "lookup",
+     "content": "Hamlet is a tragedy by William Shakespeare."
+    },
+    {
+     "role": "assistant",
+     "content": "William Shakespeare wrote Hamlet."
+    },
+    {
+     "role": "user",
+     "content": "And Macbeth?"
+    }
+   ],
+   "tools": [
+    {
+     "type": "function",
+     "function": {
+      "name": "lookup",
+      "description": "Look something up in the encyclopedia.",
+      "parameters": {
+       "type": "object",
+       "properties": {
+        "query": {
+         "type": "string",
+         "description": "What to look for."
+        }
+       },
+       "required": [
+        "query"
+       ]
+      }
+     }
+    },
+    {
+     "type": "function",
+     "function": {
+      "name": "run_python",
+      "description": "Run a Python program and return what it printed.",
+      "parameters": {
+       "type": "object",
+       "properties": {
+        "code": {
+         "type": "string"
+        }
+       },
+       "required": [
+        "code"
+       ]
+      }
+     }
+    }
+   ],
+   "add_generation_prompt": true,
+   "kwargs": {
+    "enable_thinking": false
+   },
+   "text": "<|im_start|>system\n# Tools\n\nYou have access to the following functions:\n\n<tools>\n{\"type\": \"function\", \"function\": {\"name\": \"lookup\", \"description\": \"Look something up in the encyclopedia.\", \"parameters\": {\"type\": \"object\", \"properties\": {\"query\": {\"type\": \"string\", \"description\": \"What to look for.\"}}, \"required\": [\"query\"]}}}\n{\"type\": \"function\", \"function\": {\"name\": \"run_python\", \"description\": \"Run a Python program and return what it printed.\", \"parameters\": {\"type\": \"object\", \"properties\": {\"code\": {\"type\": \"string\"}}, \"required\": [\"code\"]}}}\n</tools>\n\nIf you choose to call a function ONLY reply in the following format with NO suffix:\n\n<tool_call>\n<function=example_function_name>\n<parameter=example_parameter_1>\nvalue_1\n</parameter>\n<parameter=example_parameter_2>\nThis is the value for the second parameter\nthat can span\nmultiple lines\n</parameter>\n</function>\n</tool_call>\n\n<IMPORTANT>\nReminder:\n- Function calls MUST follow the specified format: an inner <function=...></function> block must be nested within <tool_call></tool_call> XML tags\n- Required parameters MUST be specified\n- You may provide optional reasoning for your function call in natural language BEFORE the function call, but NOT after\n- If there is no function call available, answer the question like normal with your current knowledge and do not tell the user about function calls\n</IMPORTANT>\n\nYou are Ember.<|im_end|>\n<|im_start|>user\nWho wrote Hamlet?<|im_end|>\n<|im_start|>assistant\n<tool_call>\n<function=lookup>\n<parameter=query>\nHamlet author\n</parameter>\n</function>\n</tool_call><|im_end|>\n<|im_start|>user\n<tool_response>\nHamlet is a tragedy by William Shakespeare.\n</tool_response><|im_end|>\n<|im_start|>assistant\nWilliam Shakespeare wrote Hamlet.<|im_end|>\n<|im_start|>user\nAnd Macbeth?<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n\n"
+  },
+  {
+   "name": "tool_round_trip",
+   "messages": [
+    {
+     "role": "system",
+     "content": "You are Ember."
+    },
+    {
+     "role": "user",
+     "content": "Who wrote Hamlet?"
+    },
+    {
+     "role": "assistant",
+     "content": "",
+     "tool_calls": [
+      {
+       "id": "call_1",
+       "type": "function",
+       "function": {
+        "name": "lookup",
+        "arguments": {
+         "query": "Hamlet author"
+        }
+       }
+      }
+     ]
+    },
+    {
+     "role": "tool",
+     "tool_call_id": "call_1",
+     "name": "lookup",
+     "content": "Hamlet is a tragedy by William Shakespeare."
+    },
+    {
+     "role": "assistant",
+     "content": "William Shakespeare wrote Hamlet."
+    },
+    {
+     "role": "user",
+     "content": "And Macbeth?"
+    }
+   ],
+   "tools": [
+    {
+     "type": "function",
+     "function": {
+      "name": "lookup",
+      "description": "Look something up in the encyclopedia.",
+      "parameters": {
+       "type": "object",
+       "properties": {
+        "query": {
+         "type": "string",
+         "description": "What to look for."
+        }
+       },
+       "required": [
+        "query"
+       ]
+      }
+     }
+    },
+    {
+     "type": "function",
+     "function": {
+      "name": "run_python",
+      "description": "Run a Python program and return what it printed.",
+      "parameters": {
+       "type": "object",
+       "properties": {
+        "code": {
+         "type": "string"
+        }
+       },
+       "required": [
+        "code"
+       ]
+      }
+     }
+    }
+   ],
+   "add_generation_prompt": false,
+   "kwargs": {
+    "enable_thinking": true
+   },
+   "text": "<|im_start|>system\n# Tools\n\nYou have access to the following functions:\n\n<tools>\n{\"type\": \"function\", \"function\": {\"name\": \"lookup\", \"description\": \"Look something up in the encyclopedia.\", \"parameters\": {\"type\": \"object\", \"properties\": {\"query\": {\"type\": \"string\", \"description\": \"What to look for.\"}}, \"required\": [\"query\"]}}}\n{\"type\": \"function\", \"function\": {\"name\": \"run_python\", \"description\": \"Run a Python program and return what it printed.\", \"parameters\": {\"type\": \"object\", \"properties\": {\"code\": {\"type\": \"string\"}}, \"required\": [\"code\"]}}}\n</tools>\n\nIf you choose to call a function ONLY reply in the following format with NO suffix:\n\n<tool_call>\n<function=example_function_name>\n<parameter=example_parameter_1>\nvalue_1\n</parameter>\n<parameter=example_parameter_2>\nThis is the value for the second parameter\nthat can span\nmultiple lines\n</parameter>\n</function>\n</tool_call>\n\n<IMPORTANT>\nReminder:\n- Function calls MUST follow the specified format: an inner <function=...></function> block must be nested within <tool_call></tool_call> XML tags\n- Required parameters MUST be specified\n- You may provide optional reasoning for your function call in natural language BEFORE the function call, but NOT after\n- If there is no function call available, answer the question like normal with your current knowledge and do not tell the user about function calls\n</IMPORTANT>\n\nYou are Ember.<|im_end|>\n<|im_start|>user\nWho wrote Hamlet?<|im_end|>\n<|im_start|>assistant\n<tool_call>\n<function=lookup>\n<parameter=query>\nHamlet author\n</parameter>\n</function>\n</tool_call><|im_end|>\n<|im_start|>user\n<tool_response>\nHamlet is a tragedy by William Shakespeare.\n</tool_response><|im_end|>\n<|im_start|>assistant\nWilliam Shakespeare wrote Hamlet.<|im_end|>\n<|im_start|>user\nAnd Macbeth?<|im_end|>\n"
+  },
+  {
+   "name": "tool_round_trip",
+   "messages": [
+    {
+     "role": "system",
+     "content": "You are Ember."
+    },
+    {
+     "role": "user",
+     "content": "Who wrote Hamlet?"
+    },
+    {
+     "role": "assistant",
+     "content": "",
+     "tool_calls": [
+      {
+       "id": "call_1",
+       "type": "function",
+       "function": {
+        "name": "lookup",
+        "arguments": {
+         "query": "Hamlet author"
+        }
+       }
+      }
+     ]
+    },
+    {
+     "role": "tool",
+     "tool_call_id": "call_1",
+     "name": "lookup",
+     "content": "Hamlet is a tragedy by William Shakespeare."
+    },
+    {
+     "role": "assistant",
+     "content": "William Shakespeare wrote Hamlet."
+    },
+    {
+     "role": "user",
+     "content": "And Macbeth?"
+    }
+   ],
+   "tools": [
+    {
+     "type": "function",
+     "function": {
+      "name": "lookup",
+      "description": "Look something up in the encyclopedia.",
+      "parameters": {
+       "type": "object",
+       "properties": {
+        "query": {
+         "type": "string",
+         "description": "What to look for."
+        }
+       },
+       "required": [
+        "query"
+       ]
+      }
+     }
+    },
+    {
+     "type": "function",
+     "function": {
+      "name": "run_python",
+      "description": "Run a Python program and return what it printed.",
+      "parameters": {
+       "type": "object",
+       "properties": {
+        "code": {
+         "type": "string"
+        }
+       },
+       "required": [
+        "code"
+       ]
+      }
+     }
+    }
+   ],
+   "add_generation_prompt": false,
+   "kwargs": {
+    "enable_thinking": false
+   },
+   "text": "<|im_start|>system\n# Tools\n\nYou have access to the following functions:\n\n<tools>\n{\"type\": \"function\", \"function\": {\"name\": \"lookup\", \"description\": \"Look something up in the encyclopedia.\", \"parameters\": {\"type\": \"object\", \"properties\": {\"query\": {\"type\": \"string\", \"description\": \"What to look for.\"}}, \"required\": [\"query\"]}}}\n{\"type\": \"function\", \"function\": {\"name\": \"run_python\", \"description\": \"Run a Python program and return what it printed.\", \"parameters\": {\"type\": \"object\", \"properties\": {\"code\": {\"type\": \"string\"}}, \"required\": [\"code\"]}}}\n</tools>\n\nIf you choose to call a function ONLY reply in the following format with NO suffix:\n\n<tool_call>\n<function=example_function_name>\n<parameter=example_parameter_1>\nvalue_1\n</parameter>\n<parameter=example_parameter_2>\nThis is the value for the second parameter\nthat can span\nmultiple lines\n</parameter>\n</function>\n</tool_call>\n\n<IMPORTANT>\nReminder:\n- Function calls MUST follow the specified format: an inner <function=...></function> block must be nested within <tool_call></tool_call> XML tags\n- Required parameters MUST be specified\n- You may provide optional reasoning for your function call in natural language BEFORE the function call, but NOT after\n- If there is no function call available, answer the question like normal with your current knowledge and do not tell the user about function calls\n</IMPORTANT>\n\nYou are Ember.<|im_end|>\n<|im_start|>user\nWho wrote Hamlet?<|im_end|>\n<|im_start|>assistant\n<tool_call>\n<function=lookup>\n<parameter=query>\nHamlet author\n</parameter>\n</function>\n</tool_call><|im_end|>\n<|im_start|>user\n<tool_response>\nHamlet is a tragedy by William Shakespeare.\n</tool_response><|im_end|>\n<|im_start|>assistant\nWilliam Shakespeare wrote Hamlet.<|im_end|>\n<|im_start|>user\nAnd Macbeth?<|im_end|>\n"
+  },
+  {
+   "name": "two_tool_calls",
+   "messages": [
+    {
+     "role": "user",
+     "content": "Compute 17*23 and look up Paris."
+    },
+    {
+     "role": "assistant",
+     "content": "I will do both.",
+     "tool_calls": [
+      {
+       "id": "a",
+       "type": "function",
+       "function": {
+        "name": "run_python",
+        "arguments": {
+         "code": "print(17*23)"
+        }
+       }
+      },
+      {
+       "id": "b",
+       "type": "function",
+       "function": {
+        "name": "lookup",
+        "arguments": {
+         "query": "Paris"
+        }
+       }
+      }
+     ]
+    },
+    {
+     "role": "tool",
+     "tool_call_id": "a",
+     "name": "run_python",
+     "content": "391"
+    },
+    {
+     "role": "tool",
+     "tool_call_id": "b",
+     "name": "lookup",
+     "content": "Paris is the capital of France."
+    }
+   ],
+   "tools": null,
+   "add_generation_prompt": true,
+   "kwargs": {
+    "enable_thinking": true
+   },
+   "text": "<|im_start|>user\nCompute 17*23 and look up Paris.<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n\nI will do both.\n\n<tool_call>\n<function=run_python>\n<parameter=code>\nprint(17*23)\n</parameter>\n</function>\n</tool_call>\n<tool_call>\n<function=lookup>\n<parameter=query>\nParis\n</parameter>\n</function>\n</tool_call><|im_end|>\n<|im_start|>user\n<tool_response>\n391\n</tool_response>\n<tool_response>\nParis is the capital of France.\n</tool_response><|im_end|>\n<|im_start|>assistant\n<think>\n"
+  },
+  {
+   "name": "two_tool_calls",
+   "messages": [
+    {
+     "role": "user",
+     "content": "Compute 17*23 and look up Paris."
+    },
+    {
+     "role": "assistant",
+     "content": "I will do both.",
+     "tool_calls": [
+      {
+       "id": "a",
+       "type": "function",
+       "function": {
+        "name": "run_python",
+        "arguments": {
+         "code": "print(17*23)"
+        }
+       }
+      },
+      {
+       "id": "b",
+       "type": "function",
+       "function": {
+        "name": "lookup",
+        "arguments": {
+         "query": "Paris"
+        }
+       }
+      }
+     ]
+    },
+    {
+     "role": "tool",
+     "tool_call_id": "a",
+     "name": "run_python",
+     "content": "391"
+    },
+    {
+     "role": "tool",
+     "tool_call_id": "b",
+     "name": "lookup",
+     "content": "Paris is the capital of France."
+    }
+   ],
+   "tools": null,
+   "add_generation_prompt": true,
+   "kwargs": {
+    "enable_thinking": false
+   },
+   "text": "<|im_start|>user\nCompute 17*23 and look up Paris.<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n\nI will do both.\n\n<tool_call>\n<function=run_python>\n<parameter=code>\nprint(17*23)\n</parameter>\n</function>\n</tool_call>\n<tool_call>\n<function=lookup>\n<parameter=query>\nParis\n</parameter>\n</function>\n</tool_call><|im_end|>\n<|im_start|>user\n<tool_response>\n391\n</tool_response>\n<tool_response>\nParis is the capital of France.\n</tool_response><|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n\n"
+  },
+  {
+   "name": "two_tool_calls",
+   "messages": [
+    {
+     "role": "user",
+     "content": "Compute 17*23 and look up Paris."
+    },
+    {
+     "role": "assistant",
+     "content": "I will do both.",
+     "tool_calls": [
+      {
+       "id": "a",
+       "type": "function",
+       "function": {
+        "name": "run_python",
+        "arguments": {
+         "code": "print(17*23)"
+        }
+       }
+      },
+      {
+       "id": "b",
+       "type": "function",
+       "function": {
+        "name": "lookup",
+        "arguments": {
+         "query": "Paris"
+        }
+       }
+      }
+     ]
+    },
+    {
+     "role": "tool",
+     "tool_call_id": "a",
+     "name": "run_python",
+     "content": "391"
+    },
+    {
+     "role": "tool",
+     "tool_call_id": "b",
+     "name": "lookup",
+     "content": "Paris is the capital of France."
+    }
+   ],
+   "tools": null,
+   "add_generation_prompt": false,
+   "kwargs": {
+    "enable_thinking": true
+   },
+   "text": "<|im_start|>user\nCompute 17*23 and look up Paris.<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n\nI will do both.\n\n<tool_call>\n<function=run_python>\n<parameter=code>\nprint(17*23)\n</parameter>\n</function>\n</tool_call>\n<tool_call>\n<function=lookup>\n<parameter=query>\nParis\n</parameter>\n</function>\n</tool_call><|im_end|>\n<|im_start|>user\n<tool_response>\n391\n</tool_response>\n<tool_response>\nParis is the capital of France.\n</tool_response><|im_end|>\n"
+  },
+  {
+   "name": "two_tool_calls",
+   "messages": [
+    {
+     "role": "user",
+     "content": "Compute 17*23 and look up Paris."
+    },
+    {
+     "role": "assistant",
+     "content": "I will do both.",
+     "tool_calls": [
+      {
+       "id": "a",
+       "type": "function",
+       "function": {
+        "name": "run_python",
+        "arguments": {
+         "code": "print(17*23)"
+        }
+       }
+      },
+      {
+       "id": "b",
+       "type": "function",
+       "function": {
+        "name": "lookup",
+        "arguments": {
+         "query": "Paris"
+        }
+       }
+      }
+     ]
+    },
+    {
+     "role": "tool",
+     "tool_call_id": "a",
+     "name": "run_python",
+     "content": "391"
+    },
+    {
+     "role": "tool",
+     "tool_call_id": "b",
+     "name": "lookup",
+     "content": "Paris is the capital of France."
+    }
+   ],
+   "tools": null,
+   "add_generation_prompt": false,
+   "kwargs": {
+    "enable_thinking": false
+   },
+   "text": "<|im_start|>user\nCompute 17*23 and look up Paris.<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n\nI will do both.\n\n<tool_call>\n<function=run_python>\n<parameter=code>\nprint(17*23)\n</parameter>\n</function>\n</tool_call>\n<tool_call>\n<function=lookup>\n<parameter=query>\nParis\n</parameter>\n</function>\n</tool_call><|im_end|>\n<|im_start|>user\n<tool_response>\n391\n</tool_response>\n<tool_response>\nParis is the capital of France.\n</tool_response><|im_end|>\n"
+  },
+  {
+   "name": "two_tool_calls",
+   "messages": [
+    {
+     "role": "user",
+     "content": "Compute 17*23 and look up Paris."
+    },
+    {
+     "role": "assistant",
+     "content": "I will do both.",
+     "tool_calls": [
+      {
+       "id": "a",
+       "type": "function",
+       "function": {
+        "name": "run_python",
+        "arguments": {
+         "code": "print(17*23)"
+        }
+       }
+      },
+      {
+       "id": "b",
+       "type": "function",
+       "function": {
+        "name": "lookup",
+        "arguments": {
+         "query": "Paris"
+        }
+       }
+      }
+     ]
+    },
+    {
+     "role": "tool",
+     "tool_call_id": "a",
+     "name": "run_python",
+     "content": "391"
+    },
+    {
+     "role": "tool",
+     "tool_call_id": "b",
+     "name": "lookup",
+     "content": "Paris is the capital of France."
+    }
+   ],
+   "tools": [
+    {
+     "type": "function",
+     "function": {
+      "name": "lookup",
+      "description": "Look something up in the encyclopedia.",
+      "parameters": {
+       "type": "object",
+       "properties": {
+        "query": {
+         "type": "string",
+         "description": "What to look for."
+        }
+       },
+       "required": [
+        "query"
+       ]
+      }
+     }
+    },
+    {
+     "type": "function",
+     "function": {
+      "name": "run_python",
+      "description": "Run a Python program and return what it printed.",
+      "parameters": {
+       "type": "object",
+       "properties": {
+        "code": {
+         "type": "string"
+        }
+       },
+       "required": [
+        "code"
+       ]
+      }
+     }
+    }
+   ],
+   "add_generation_prompt": true,
+   "kwargs": {
+    "enable_thinking": true
+   },
+   "text": "<|im_start|>system\n# Tools\n\nYou have access to the following functions:\n\n<tools>\n{\"type\": \"function\", \"function\": {\"name\": \"lookup\", \"description\": \"Look something up in the encyclopedia.\", \"parameters\": {\"type\": \"object\", \"properties\": {\"query\": {\"type\": \"string\", \"description\": \"What to look for.\"}}, \"required\": [\"query\"]}}}\n{\"type\": \"function\", \"function\": {\"name\": \"run_python\", \"description\": \"Run a Python program and return what it printed.\", \"parameters\": {\"type\": \"object\", \"properties\": {\"code\": {\"type\": \"string\"}}, \"required\": [\"code\"]}}}\n</tools>\n\nIf you choose to call a function ONLY reply in the following format with NO suffix:\n\n<tool_call>\n<function=example_function_name>\n<parameter=example_parameter_1>\nvalue_1\n</parameter>\n<parameter=example_parameter_2>\nThis is the value for the second parameter\nthat can span\nmultiple lines\n</parameter>\n</function>\n</tool_call>\n\n<IMPORTANT>\nReminder:\n- Function calls MUST follow the specified format: an inner <function=...></function> block must be nested within <tool_call></tool_call> XML tags\n- Required parameters MUST be specified\n- You may provide optional reasoning for your function call in natural language BEFORE the function call, but NOT after\n- If there is no function call available, answer the question like normal with your current knowledge and do not tell the user about function calls\n</IMPORTANT><|im_end|>\n<|im_start|>user\nCompute 17*23 and look up Paris.<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n\nI will do both.\n\n<tool_call>\n<function=run_python>\n<parameter=code>\nprint(17*23)\n</parameter>\n</function>\n</tool_call>\n<tool_call>\n<function=lookup>\n<parameter=query>\nParis\n</parameter>\n</function>\n</tool_call><|im_end|>\n<|im_start|>user\n<tool_response>\n391\n</tool_response>\n<tool_response>\nParis is the capital of France.\n</tool_response><|im_end|>\n<|im_start|>assistant\n<think>\n"
+  },
+  {
+   "name": "two_tool_calls",
+   "messages": [
+    {
+     "role": "user",
+     "content": "Compute 17*23 and look up Paris."
+    },
+    {
+     "role": "assistant",
+     "content": "I will do both.",
+     "tool_calls": [
+      {
+       "id": "a",
+       "type": "function",
+       "function": {
+        "name": "run_python",
+        "arguments": {
+         "code": "print(17*23)"
+        }
+       }
+      },
+      {
+       "id": "b",
+       "type": "function",
+       "function": {
+        "name": "lookup",
+        "arguments": {
+         "query": "Paris"
+        }
+       }
+      }
+     ]
+    },
+    {
+     "role": "tool",
+     "tool_call_id": "a",
+     "name": "run_python",
+     "content": "391"
+    },
+    {
+     "role": "tool",
+     "tool_call_id": "b",
+     "name": "lookup",
+     "content": "Paris is the capital of France."
+    }
+   ],
+   "tools": [
+    {
+     "type": "function",
+     "function": {
+      "name": "lookup",
+      "description": "Look something up in the encyclopedia.",
+      "parameters": {
+       "type": "object",
+       "properties": {
+        "query": {
+         "type": "string",
+         "description": "What to look for."
+        }
+       },
+       "required": [
+        "query"
+       ]
+      }
+     }
+    },
+    {
+     "type": "function",
+     "function": {
+      "name": "run_python",
+      "description": "Run a Python program and return what it printed.",
+      "parameters": {
+       "type": "object",
+       "properties": {
+        "code": {
+         "type": "string"
+        }
+       },
+       "required": [
+        "code"
+       ]
+      }
+     }
+    }
+   ],
+   "add_generation_prompt": true,
+   "kwargs": {
+    "enable_thinking": false
+   },
+   "text": "<|im_start|>system\n# Tools\n\nYou have access to the following functions:\n\n<tools>\n{\"type\": \"function\", \"function\": {\"name\": \"lookup\", \"description\": \"Look something up in the encyclopedia.\", \"parameters\": {\"type\": \"object\", \"properties\": {\"query\": {\"type\": \"string\", \"description\": \"What to look for.\"}}, \"required\": [\"query\"]}}}\n{\"type\": \"function\", \"function\": {\"name\": \"run_python\", \"description\": \"Run a Python program and return what it printed.\", \"parameters\": {\"type\": \"object\", \"properties\": {\"code\": {\"type\": \"string\"}}, \"required\": [\"code\"]}}}\n</tools>\n\nIf you choose to call a function ONLY reply in the following format with NO suffix:\n\n<tool_call>\n<function=example_function_name>\n<parameter=example_parameter_1>\nvalue_1\n</parameter>\n<parameter=example_parameter_2>\nThis is the value for the second parameter\nthat can span\nmultiple lines\n</parameter>\n</function>\n</tool_call>\n\n<IMPORTANT>\nReminder:\n- Function calls MUST follow the specified format: an inner <function=...></function> block must be nested within <tool_call></tool_call> XML tags\n- Required parameters MUST be specified\n- You may provide optional reasoning for your function call in natural language BEFORE the function call, but NOT after\n- If there is no function call available, answer the question like normal with your current knowledge and do not tell the user about function calls\n</IMPORTANT><|im_end|>\n<|im_start|>user\nCompute 17*23 and look up Paris.<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n\nI will do both.\n\n<tool_call>\n<function=run_python>\n<parameter=code>\nprint(17*23)\n</parameter>\n</function>\n</tool_call>\n<tool_call>\n<function=lookup>\n<parameter=query>\nParis\n</parameter>\n</function>\n</tool_call><|im_end|>\n<|im_start|>user\n<tool_response>\n391\n</tool_response>\n<tool_response>\nParis is the capital of France.\n</tool_response><|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n\n"
+  },
+  {
+   "name": "two_tool_calls",
+   "messages": [
+    {
+     "role": "user",
+     "content": "Compute 17*23 and look up Paris."
+    },
+    {
+     "role": "assistant",
+     "content": "I will do both.",
+     "tool_calls": [
+      {
+       "id": "a",
+       "type": "function",
+       "function": {
+        "name": "run_python",
+        "arguments": {
+         "code": "print(17*23)"
+        }
+       }
+      },
+      {
+       "id": "b",
+       "type": "function",
+       "function": {
+        "name": "lookup",
+        "arguments": {
+         "query": "Paris"
+        }
+       }
+      }
+     ]
+    },
+    {
+     "role": "tool",
+     "tool_call_id": "a",
+     "name": "run_python",
+     "content": "391"
+    },
+    {
+     "role": "tool",
+     "tool_call_id": "b",
+     "name": "lookup",
+     "content": "Paris is the capital of France."
+    }
+   ],
+   "tools": [
+    {
+     "type": "function",
+     "function": {
+      "name": "lookup",
+      "description": "Look something up in the encyclopedia.",
+      "parameters": {
+       "type": "object",
+       "properties": {
+        "query": {
+         "type": "string",
+         "description": "What to look for."
+        }
+       },
+       "required": [
+        "query"
+       ]
+      }
+     }
+    },
+    {
+     "type": "function",
+     "function": {
+      "name": "run_python",
+      "description": "Run a Python program and return what it printed.",
+      "parameters": {
+       "type": "object",
+       "properties": {
+        "code": {
+         "type": "string"
+        }
+       },
+       "required": [
+        "code"
+       ]
+      }
+     }
+    }
+   ],
+   "add_generation_prompt": false,
+   "kwargs": {
+    "enable_thinking": true
+   },
+   "text": "<|im_start|>system\n# Tools\n\nYou have access to the following functions:\n\n<tools>\n{\"type\": \"function\", \"function\": {\"name\": \"lookup\", \"description\": \"Look something up in the encyclopedia.\", \"parameters\": {\"type\": \"object\", \"properties\": {\"query\": {\"type\": \"string\", \"description\": \"What to look for.\"}}, \"required\": [\"query\"]}}}\n{\"type\": \"function\", \"function\": {\"name\": \"run_python\", \"description\": \"Run a Python program and return what it printed.\", \"parameters\": {\"type\": \"object\", \"properties\": {\"code\": {\"type\": \"string\"}}, \"required\": [\"code\"]}}}\n</tools>\n\nIf you choose to call a function ONLY reply in the following format with NO suffix:\n\n<tool_call>\n<function=example_function_name>\n<parameter=example_parameter_1>\nvalue_1\n</parameter>\n<parameter=example_parameter_2>\nThis is the value for the second parameter\nthat can span\nmultiple lines\n</parameter>\n</function>\n</tool_call>\n\n<IMPORTANT>\nReminder:\n- Function calls MUST follow the specified format: an inner <function=...></function> block must be nested within <tool_call></tool_call> XML tags\n- Required parameters MUST be specified\n- You may provide optional reasoning for your function call in natural language BEFORE the function call, but NOT after\n- If there is no function call available, answer the question like normal with your current knowledge and do not tell the user about function calls\n</IMPORTANT><|im_end|>\n<|im_start|>user\nCompute 17*23 and look up Paris.<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n\nI will do both.\n\n<tool_call>\n<function=run_python>\n<parameter=code>\nprint(17*23)\n</parameter>\n</function>\n</tool_call>\n<tool_call>\n<function=lookup>\n<parameter=query>\nParis\n</parameter>\n</function>\n</tool_call><|im_end|>\n<|im_start|>user\n<tool_response>\n391\n</tool_response>\n<tool_response>\nParis is the capital of France.\n</tool_response><|im_end|>\n"
+  },
+  {
+   "name": "two_tool_calls",
+   "messages": [
+    {
+     "role": "user",
+     "content": "Compute 17*23 and look up Paris."
+    },
+    {
+     "role": "assistant",
+     "content": "I will do both.",
+     "tool_calls": [
+      {
+       "id": "a",
+       "type": "function",
+       "function": {
+        "name": "run_python",
+        "arguments": {
+         "code": "print(17*23)"
+        }
+       }
+      },
+      {
+       "id": "b",
+       "type": "function",
+       "function": {
+        "name": "lookup",
+        "arguments": {
+         "query": "Paris"
+        }
+       }
+      }
+     ]
+    },
+    {
+     "role": "tool",
+     "tool_call_id": "a",
+     "name": "run_python",
+     "content": "391"
+    },
+    {
+     "role": "tool",
+     "tool_call_id": "b",
+     "name": "lookup",
+     "content": "Paris is the capital of France."
+    }
+   ],
+   "tools": [
+    {
+     "type": "function",
+     "function": {
+      "name": "lookup",
+      "description": "Look something up in the encyclopedia.",
+      "parameters": {
+       "type": "object",
+       "properties": {
+        "query": {
+         "type": "string",
+         "description": "What to look for."
+        }
+       },
+       "required": [
+        "query"
+       ]
+      }
+     }
+    },
+    {
+     "type": "function",
+     "function": {
+      "name": "run_python",
+      "description": "Run a Python program and return what it printed.",
+      "parameters": {
+       "type": "object",
+       "properties": {
+        "code": {
+         "type": "string"
+        }
+       },
+       "required": [
+        "code"
+       ]
+      }
+     }
+    }
+   ],
+   "add_generation_prompt": false,
+   "kwargs": {
+    "enable_thinking": false
+   },
+   "text": "<|im_start|>system\n# Tools\n\nYou have access to the following functions:\n\n<tools>\n{\"type\": \"function\", \"function\": {\"name\": \"lookup\", \"description\": \"Look something up in the encyclopedia.\", \"parameters\": {\"type\": \"object\", \"properties\": {\"query\": {\"type\": \"string\", \"description\": \"What to look for.\"}}, \"required\": [\"query\"]}}}\n{\"type\": \"function\", \"function\": {\"name\": \"run_python\", \"description\": \"Run a Python program and return what it printed.\", \"parameters\": {\"type\": \"object\", \"properties\": {\"code\": {\"type\": \"string\"}}, \"required\": [\"code\"]}}}\n</tools>\n\nIf you choose to call a function ONLY reply in the following format with NO suffix:\n\n<tool_call>\n<function=example_function_name>\n<parameter=example_parameter_1>\nvalue_1\n</parameter>\n<parameter=example_parameter_2>\nThis is the value for the second parameter\nthat can span\nmultiple lines\n</parameter>\n</function>\n</tool_call>\n\n<IMPORTANT>\nReminder:\n- Function calls MUST follow the specified format: an inner <function=...></function> block must be nested within <tool_call></tool_call> XML tags\n- Required parameters MUST be specified\n- You may provide optional reasoning for your function call in natural language BEFORE the function call, but NOT after\n- If there is no function call available, answer the question like normal with your current knowledge and do not tell the user about function calls\n</IMPORTANT><|im_end|>\n<|im_start|>user\nCompute 17*23 and look up Paris.<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n\nI will do both.\n\n<tool_call>\n<function=run_python>\n<parameter=code>\nprint(17*23)\n</parameter>\n</function>\n</tool_call>\n<tool_call>\n<function=lookup>\n<parameter=query>\nParis\n</parameter>\n</function>\n</tool_call><|im_end|>\n<|im_start|>user\n<tool_response>\n391\n</tool_response>\n<tool_response>\nParis is the capital of France.\n</tool_response><|im_end|>\n"
+  }
+ ]
+}

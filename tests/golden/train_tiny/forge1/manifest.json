@@ -1,0 +1,383 @@
+{
+ "config": {
+  "n_layer": 4,
+  "n_embd": 64,
+  "n_head": 2,
+  "n_kv": 1,
+  "hd": 64,
+  "n_ff": 128,
+  "vocab": 256,
+  "T": 64,
+  "B": 2,
+  "theta": 10000.0,
+  "qk_norm": true,
+  "untied": true,
+  "relu2": true,
+  "softcap": 1.5,
+  "lambdas": true,
+  "skips": true,
+  "ve_layers": [
+   0,
+   2
+  ],
+  "ngram": [
+   2,
+   3
+  ],
+  "ngram_bits": 7,
+  "ngram_dim": 32
+ },
+ "loss": 5.748234272003174,
+ "params": [
+  {
+   "name": "emb",
+   "shape": [
+    256,
+    64
+   ]
+  },
+  {
+   "name": "out_norm",
+   "shape": [
+    64
+   ]
+  },
+  {
+   "name": "l0.attn_norm",
+   "shape": [
+    64
+   ]
+  },
+  {
+   "name": "l0.wq",
+   "shape": [
+    128,
+    64
+   ]
+  },
+  {
+   "name": "l0.wk",
+   "shape": [
+    64,
+    64
+   ]
+  },
+  {
+   "name": "l0.wv",
+   "shape": [
+    64,
+    64
+   ]
+  },
+  {
+   "name": "l0.wo",
+   "shape": [
+    64,
+    128
+   ]
+  },
+  {
+   "name": "l0.q_norm",
+   "shape": [
+    64
+   ]
+  },
+  {
+   "name": "l0.k_norm",
+   "shape": [
+    64
+   ]
+  },
+  {
+   "name": "l0.ffn_norm",
+   "shape": [
+    64
+   ]
+  },
+  {
+   "name": "l0.w_up",
+   "shape": [
+    128,
+    64
+   ]
+  },
+  {
+   "name": "l0.w_down",
+   "shape": [
+    64,
+    128
+   ]
+  },
+  {
+   "name": "l1.attn_norm",
+   "shape": [
+    64
+   ]
+  },
+  {
+   "name": "l1.wq",
+   "shape": [
+    128,
+    64
+   ]
+  },
+  {
+   "name": "l1.wk",
+   "shape": [
+    64,
+    64
+   ]
+  },
+  {
+   "name": "l1.wv",
+   "shape": [
+    64,
+    64
+   ]
+  },
+  {
+   "name": "l1.wo",
+   "shape": [
+    64,
+    128
+   ]
+  },
+  {
+   "name": "l1.q_norm",
+   "shape": [
+    64
+   ]
+  },
+  {
+   "name": "l1.k_norm",
+   "shape": [
+    64
+   ]
+  },
+  {
+   "name": "l1.ffn_norm",
+   "shape": [
+    64
+   ]
+  },
+  {
+   "name": "l1.w_up",
+   "shape": [
+    128,
+    64
+   ]
+  },
+  {
+   "name": "l1.w_down",
+   "shape": [
+    64,
+    128
+   ]
+  },
+  {
+   "name": "l2.attn_norm",
+   "shape": [
+    64
+   ]
+  },
+  {
+   "name": "l2.wq",
+   "shape": [
+    128,
+    64
+   ]
+  },
+  {
+   "name": "l2.wk",
+   "shape": [
+    64,
+    64
+   ]
+  },
+  {
+   "name": "l2.wv",
+   "shape": [
+    64,
+    64
+   ]
+  },
+  {
+   "name": "l2.wo",
+   "shape": [
+    64,
+    128
+   ]
+  },
+  {
+   "name": "l2.q_norm",
+   "shape": [
+    64
+   ]
+  },
+  {
+   "name": "l2.k_norm",
+   "shape": [
+    64
+   ]
+  },
+  {
+   "name": "l2.ffn_norm",
+   "shape": [
+    64
+   ]
+  },
+  {
+   "name": "l2.w_up",
+   "shape": [
+    128,
+    64
+   ]
+  },
+  {
+   "name": "l2.w_down",
+   "shape": [
+    64,
+    128
+   ]
+  },
+  {
+   "name": "l3.attn_norm",
+   "shape": [
+    64
+   ]
+  },
+  {
+   "name": "l3.wq",
+   "shape": [
+    128,
+    64
+   ]
+  },
+  {
+   "name": "l3.wk",
+   "shape": [
+    64,
+    64
+   ]
+  },
+  {
+   "name": "l3.wv",
+   "shape": [
+    64,
+    64
+   ]
+  },
+  {
+   "name": "l3.wo",
+   "shape": [
+    64,
+    128
+   ]
+  },
+  {
+   "name": "l3.q_norm",
+   "shape": [
+    64
+   ]
+  },
+  {
+   "name": "l3.k_norm",
+   "shape": [
+    64
+   ]
+  },
+  {
+   "name": "l3.ffn_norm",
+   "shape": [
+    64
+   ]
+  },
+  {
+   "name": "l3.w_up",
+   "shape": [
+    128,
+    64
+   ]
+  },
+  {
+   "name": "l3.w_down",
+   "shape": [
+    64,
+    128
+   ]
+  },
+  {
+   "name": "head",
+   "shape": [
+    256,
+    64
+   ]
+  },
+  {
+   "name": "ve0",
+   "shape": [
+    256,
+    64
+   ]
+  },
+  {
+   "name": "ve2",
+   "shape": [
+    256,
+    64
+   ]
+  },
+  {
+   "name": "ng2",
+   "shape": [
+    128,
+    32
+   ]
+  },
+  {
+   "name": "ng3",
+   "shape": [
+    128,
+    32
+   ]
+  },
+  {
+   "name": "ngw",
+   "shape": [
+    64,
+    32
+   ]
+  },
+  {
+   "name": "lam",
+   "shape": [
+    4,
+    3
+   ]
+  },
+  {
+   "name": "velam",
+   "shape": [
+    2,
+    2
+   ]
+  }
+ ],
+ "adamw_losses_before_each_step": [
+  5.748234272003174,
+  4.77397346496582,
+  4.668385028839111,
+  4.210865020751953,
+  4.03486442565918
+ ],
+ "adamw": {
+  "lr": 0.01,
+  "betas": [
+   0.9,
+   0.95
+  ],
+  "eps": 1e-08,
+  "weight_decay": 0.1,
+  "steps": 5
+ }
+}

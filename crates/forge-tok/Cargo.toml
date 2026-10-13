@@ -1,0 +1,10 @@
+[package]
+name = "forge-tok"
+description = "ForgeInfer tokenizer: byte-level BPE (GPT-2 / Qwen2 / Qwen3.5 pre-tokenizers), NFC, chat templates, BPE trainer (std only)"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+forge-core = { path = "../forge-core" }
+forge-gguf = { path = "../forge-gguf" }
