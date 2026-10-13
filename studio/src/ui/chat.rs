@@ -634,7 +634,7 @@ fn input_box(app: &mut StudioApp, ui: &mut Ui) {
         Frame::new().fill(theme::CARD).corner_radius(CornerRadius::same(14)).stroke(Stroke::new(1.0, theme::BORDER)).inner_margin(Margin::symmetric(12, 8)).show(ui, |ui| {
             ui.set_width(ui.available_width());
             ui.horizontal(|ui| {
-                let button_w = 92.0;
+                let button_w = 92.0 + 78.0;
                 let edit_w = (ui.available_width() - button_w - 12.0).max(120.0);
                 let enter_sends = KeyboardShortcut::new(Modifiers::SHIFT, Key::Enter);
                 let resp = ScrollArea::vertical()
@@ -663,12 +663,18 @@ fn input_box(app: &mut StudioApp, ui: &mut Ui) {
                             app.actions.push(Action::Stop);
                         }
                     } else {
+                        // (added first, drawn last in this right-to-left row: it sits left of Send)
+                        let think = app.settings.gen.thinking;
                         let can = !app.input.trim().is_empty() && app.active_endpoint().is_some();
                         if primary_enabled(ui, !app.input.trim().is_empty(), "Send").clicked() || (enter && can) {
                             app.actions.push(Action::Send);
                             app.focus_input = true;
                         } else if enter && !can && !app.input.trim().is_empty() {
                             app.actions.push(Action::Send);
+                        }
+                        let chip = egui::Button::new(RichText::new(format!("Think: {}", think.short())).small().color(if think == crate::settings::ThinkingMode::Off { theme::MUTED } else { theme::TEXT })).frame(false);
+                        if ui.add(chip).on_hover_text("Whether the model reasons before it answers (Qwen3 and Qwen3.5). auto: the model's own default (the 4B and larger think, which can take a minute on a simple question); off: answers directly; on: always thinks. Click to change.").clicked() {
+                            app.settings.gen.thinking = think.next();
                         }
                     }
                 });
@@ -707,7 +713,7 @@ fn params(app: &mut StudioApp, ui: &mut Ui) {
                 }
             });
         });
-        muted(ui, "For Qwen3 and Qwen3.5. The small Qwen3.5 models answer directly unless told to think.");
+        muted(ui, "For Qwen3 and Qwen3.5. The 0.8B and 2B answer directly unless told to think; the 4B and larger think first (also on the quick switch beside Send).");
         section(ui, "System prompt");
         ui.add(TextEdit::multiline(&mut app.settings.system_prompt).desired_rows(5).desired_width(f32::INFINITY).hint_text("You are a helpful assistant."));
         muted(ui, "Sent first in every conversation.");

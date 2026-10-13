@@ -1,0 +1,35 @@
+{
+  "model_dirs": [
+    "<repo>\\studio\\home_think\\models",
+    "C:/Users/you\\.lmstudio\\models"
+  ],
+  "download_dir": "<repo>\\studio\\home_think\\models",
+  "engine": "forge",
+  "forge_binary": "",
+  "llama_server": "",
+  "external_url": "http://127.0.0.1:11434",
+  "external_key": "",
+  "context_len": 8192,
+  "kv_cache": "fp16",
+  "spec_depth": 0,
+  "speculative": true,
+  "lookup": true,
+  "port": 1234,
+  "serve_on_lan": false,
+  "api_key": "",
+  "gen": {
+    "temperature": 0.7,
+    "top_p": 0.9,
+    "top_k": 40,
+    "min_p": 0.0,
+    "repeat_penalty": 1.05,
+    "max_tokens": 0,
+    "thinking": "off"
+  },
+  "system_prompt": "",
+  "last_model": "<dev>\\llama.cpp\\models\\Qwen3.5-4B-Q4_K_M.gguf",
+  "auto_load_last": false,
+  "idle_eject_minutes": 0,
+  "extra_args": "",
+  "zoom": 1.0
+}

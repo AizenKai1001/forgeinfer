@@ -85,6 +85,24 @@ impl ThinkingMode {
             ThinkingMode::Off => "Answer directly",
         }
     }
+
+    /// The word on the chat's quick switch.
+    pub fn short(self) -> &'static str {
+        match self {
+            ThinkingMode::Default => "auto",
+            ThinkingMode::On => "on",
+            ThinkingMode::Off => "off",
+        }
+    }
+
+    /// The next mode of the quick switch: auto, off, on, auto.
+    pub fn next(self) -> ThinkingMode {
+        match self {
+            ThinkingMode::Default => ThinkingMode::Off,
+            ThinkingMode::Off => ThinkingMode::On,
+            ThinkingMode::On => ThinkingMode::Default,
+        }
+    }
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
