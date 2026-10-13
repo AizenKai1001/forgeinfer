@@ -14,7 +14,7 @@ use crate::engine::EngineState;
 use crate::markdown::{self, MdStyle};
 use crate::settings::EngineKind;
 use crate::theme;
-use crate::util::{human_bytes, human_secs, truncate};
+use crate::util::{human_bytes, human_count, human_secs, truncate};
 
 const COLUMN: f32 = 880.0;
 
@@ -385,18 +385,21 @@ fn empty_state(app: &mut StudioApp, ui: &mut Ui) {
             }
             ui.add_space(10.0);
         }
-        if let EngineState::Failed { message, .. } = app.engine.state() {
+        if let EngineState::Failed { model, message } = app.engine.state() {
             let m = message.to_lowercase();
-            if m.contains("no_device") || m.contains("cuinit") || m.contains("nvcuda") || m.contains("no cuda") {
-                ui.allocate_ui_with_layout(egui::vec2(560.0, 0.0), Layout::top_down(Align::Min), |ui| {
-                    banner(ui, "The ForgeInfer engine needs an NVIDIA graphics card with an up-to-date driver, and none was found. In Settings the engine can be the llama.cpp server (any GPU, or the CPU) or a server that is already running.", theme::WARN, theme::CARD)
-                });
-                ui.add_space(8.0);
-                if primary_button(ui, "Open Settings").clicked() {
-                    app.screen = crate::app::Screen::Settings;
+            let no_gpu = m.contains("no_device") || m.contains("cuinit") || m.contains("nvcuda") || m.contains("no cuda");
+            ui.allocate_ui_with_layout(egui::vec2(560.0, 0.0), Layout::top_down(Align::Min), |ui| {
+                banner(ui, &format!("{model} did not load: {message}"), theme::BAD, theme::CARD);
+                if no_gpu {
+                    ui.add_space(6.0);
+                    banner(ui, "The ForgeInfer engine needs an NVIDIA graphics card with an up-to-date driver, and none was found. In Settings the engine can be the llama.cpp server (any GPU, or the CPU) or a server that is already running.", theme::WARN, theme::CARD);
                 }
-                ui.add_space(10.0);
+            });
+            ui.add_space(8.0);
+            if no_gpu && primary_button(ui, "Open Settings").clicked() {
+                app.screen = crate::app::Screen::Settings;
             }
+            ui.add_space(10.0);
         }
         if ready {
             ui.label(RichText::new("Ask anything below.").color(theme::TEXT));
@@ -691,6 +694,14 @@ fn input_box(app: &mut StudioApp, ui: &mut Ui) {
                     if let Some(i) = remove {
                         app.actions.push(Action::RemoveAttachment(i));
                     }
+                    // what the model would have to read, against the context it was loaded with
+                    let chars: usize = app.chat.api_messages(&app.settings.system_prompt).iter().map(|(_, t)| t.chars().count()).sum::<usize>()
+                        + app.attachments.iter().map(|a| a.text.chars().count() + 24).sum::<usize>()
+                        + app.input.chars().count();
+                    let tokens = crate::chats::estimate_tokens(chars);
+                    let ctx = app.settings.context_len as usize;
+                    let over = tokens + 300 > ctx;
+                    ui.label(RichText::new(format!("about {} of {} tokens{}", human_count(tokens as u64), human_count(ctx as u64), if over { ": too long, raise the context length in Settings or attach less" } else { "" })).small().color(if over { theme::BAD } else { theme::MUTED }));
                 });
                 ui.add_space(4.0);
             }

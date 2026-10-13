@@ -27,7 +27,9 @@
     "thinking": "off"
   },
   "system_prompt": "",
-  "last_model": "<dev>\\llama.cpp\\models\\Qwen3.5-9B-Q4_K_M.gguf",
+  "presets": [],
+  "preset": "",
+  "last_model": "<dev>\\llama.cpp\\models\\Qwen3.5-0.8B-Q4_K_M.gguf",
   "auto_load_last": false,
   "idle_eject_minutes": 0,
   "extra_args": "",
