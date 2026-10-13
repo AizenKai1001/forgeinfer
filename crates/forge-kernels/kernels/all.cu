@@ -10,6 +10,7 @@
 #include "gemm.cu"
 #include "gemm_s80.cu"
 #include "gemm_q.cu"
+#include "gemm_mmq.cu"
 #include "prefill.cu"
 #include "prefill_h.cu"
 #include "flash.cu"

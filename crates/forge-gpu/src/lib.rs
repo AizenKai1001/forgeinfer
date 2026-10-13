@@ -239,6 +239,12 @@ struct Kernels {
     gemmq: Vec<Function>,
     /// the same with fp16 accumulators (one k16 step per partial sum, sm_80 and newer: twice the tensor-core rate on GeForce cards), used when FORGE_F16ACC=1
     gemmq_h: Vec<Function>,
+    /// the integer tensor-core GEMMs of gemm_mmq.cu (int8 activations, Q4_K / Q5_K / Q6_K weights read in place; sm_80 and newer, `MMQ_SMEM` / `MMQ6_SMEM` bytes of shared memory): [Q4_K, Q5_K, Q6_K] x [fp16 out, fp32 out, fp32 add]
+    mmq: Vec<Function>,
+    /// the device accepted the shared-memory size of `mmq`
+    mmq_ok: bool,
+    /// fp16 [M][K] -> int8 plus a scale and a sum per 32 values (the activation arrays of the decode kernels and the input of `mmq`)
+    quant_rows_h: Function,
     /// the plain tensor-core GEMMs of gemm_s80.cu (cp.async pipeline, m16n8k16; sm_80 and newer): C (+)= A B^T for contiguous A [M][K] and B [N][K], [fp16 out, fp32 out, fp32 add]; `gemm_s80h` accumulates in fp16
     /// (flushed into fp32 after every k16 step): 41 against 31 TFLOPs on the RTX 4060. They multiply a dequantized weight matrix (the long chunks of a prompt) and need `S80_SMEM` bytes of shared memory.
     gemm_s80: Vec<Function>,
@@ -867,6 +873,17 @@ impl GpuModel {
                 })
                 .collect()
         };
+        // the integer prompt GEMMs (gemm_mmq.cu) need sm_80 and 98,304 bytes of dynamic shared memory (the opt-in limit of a block is 99 KB on Ampere GeForce and Ada)
+        let mmq = ["q4k", "q5k", "q6k"]
+            .iter()
+            .flat_map(|f| ["f16", "f32", "add"].iter().map(move |e| format!("mmq_{f}_{e}")))
+            .map(|n| module.function(&n))
+            .collect::<Result<Vec<_>>>()?;
+        let mmq_ok = dev.info.cc_major >= 8
+            && mmq
+                .iter()
+                .enumerate()
+                .all(|(i, f)| f.set_max_dynamic_smem(if i / 3 == 2 { MMQ6_SMEM } else { MMQ_SMEM } as i32).is_ok());
         let k = Kernels {
             embed: module.function("embed_kernel")?,
             embed_q8: module.function("embed_q8_kernel")?,
@@ -969,6 +986,9 @@ impl GpuModel {
                 })
                 .map(|n| module.function(&n))
                 .collect::<Result<Vec<_>>>()?,
+            mmq,
+            mmq_ok,
+            quant_rows_h: module.function("quant_rows_h_kernel")?,
             embed_batch: module.function("embed_batch_kernel")?,
             rmsnorm_rows: module.function("rmsnorm_rows_kernel")?,
             colsq: module.function("colsq_accum_kernel")?,
@@ -1657,6 +1677,12 @@ pub struct GpuSession<'m> {
     f16acc: bool,
     /// the dequantize-then-multiply path of the prompt GEMMs uses the Ampere kernels of gemm_s80.cu (sm_80 and newer; FORGE_PLAIN_S80=0 keeps the Turing-style ones of gemm.cu)
     plain_s80: bool,
+    /// the Q4_K, Q5_K and Q6_K matrices of a prompt chunk of at least `mmq_min_m` tokens are multiplied by the integer tensor-core GEMMs of gemm_mmq.cu: the activations are quantized to int8 with one scale per 32 values (the
+    /// numerics of the decode kernels and of llama.cpp's mul_mat_q kernels) and the weights stay 4-bit. On by default from compute capability 8.0 (FORGE_MMQ=0 turns it off, FORGE_MMQ_MIN_M=N sets the shortest chunk, 16)
+    mmq: bool,
+    mmq_min_m: usize,
+    /// the int8 activation buffers could not be allocated (a model that fills the card): the integer GEMMs stay off for the rest of the session
+    mmq_no_mem: std::cell::Cell<bool>,
     /// calibration passes that start or stop inside the network (`eval_chunk_resid`): the residual stream to start from / the one the pass ended with
     resid_in: Option<Vec<f32>>,
     resid_out: Option<Vec<f32>>,
@@ -1703,6 +1729,18 @@ struct PrefillBufs {
     wblk: [DeviceBuffer; 2],
     /// hybrid models only
     hy: Option<HybridBufs>,
+    /// the int8 copy of an activation matrix for the integer GEMMs (see `GpuSession::mmq`), taken when the first of them runs
+    qa: std::sync::OnceLock<QaBufs>,
+}
+
+/// int8 activations [rows][kmax] with the scale (fp32) and the fp16 minimum operand per 32 values ([rows][kmax / 32] each, in the tile layout quant_rows_h_kernel writes): the input arrays of gemm_mmq.cu.
+/// `rows` is a multiple of the 128-row tile.
+struct QaBufs {
+    q: DeviceBuffer,
+    d: DeviceBuffer,
+    s: DeviceBuffer,
+    rows: usize,
+    kmax: usize,
 }
 
 impl PrefillBufs {
@@ -1765,6 +1803,14 @@ pub const PREFILL_CHUNK: usize = 1024;
 
 /// Dynamic shared memory of the plain Ampere GEMMs (gemm_s80.cu: three stages of two 128 x 32 half tiles are 49,152 bytes; the kernel file reserves 52,224 for its largest layout)
 const S80_SMEM: u32 = 52224;
+
+/// The longest chunk the multi-row path takes when the integer GEMMs are on (`mrow::MROW_MAX_DEFAULT` otherwise)
+const MROW_MAX_MMQ: usize = 32;
+
+/// Dynamic shared memory of the integer GEMMs (gemm_mmq.cu `Smem`: two stages of the activation tile and the packed weights, the decoded scales and minimum operands)
+const MMQ_SMEM: u32 = 81920;
+/// ... and of the Q6_K one (`Smem6`: the weights take 112 bytes per row and stage, the scales 16 + 8 floats per column)
+const MMQ6_SMEM: u32 = 98304;
 
 /// Bytes of the always-present dequantization scratch for small matrices (see `PrefillBufs::wscratch_small`): matrices of up to 2 M weights.
 const WSCRATCH_SMALL: usize = 4 << 20;
@@ -1842,6 +1888,7 @@ impl<'m> GpuSession<'m> {
             None => matches!((m.dev.info.cc_major, m.dev.info.cc_minor), (8, 6) | (8, 9)),
         };
         let plain_s80 = m.dev.info.cc_major >= 8 && std::env::var("FORGE_PLAIN_S80").map(|v| v != "0").unwrap_or(true);
+        let mmq_on = m.k.mmq_ok && std::env::var("FORGE_MMQ").map(|v| v != "0").unwrap_or(true);
         let mut s = GpuSession {
             m,
             max_ctx,
@@ -1916,6 +1963,12 @@ impl<'m> GpuSession<'m> {
             stats: None,
             f16acc,
             plain_s80,
+            mmq: mmq_on,
+            mmq_min_m: std::env::var("FORGE_MMQ_MIN_M")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(16),
+            mmq_no_mem: std::cell::Cell::new(false),
             fused_max: if std::env::var("FORGE_NO_FUSED").is_ok() {
                 [0; 3]
             } else {
@@ -1940,6 +1993,9 @@ impl<'m> GpuSession<'m> {
                     }
                 } else if kvq_cfg.is_some() {
                     0
+                } else if mmq_on {
+                    // with the integer GEMMs the GEMM path beats groups of 16 rows from the third group on (48 tokens of the 9B: 891 against 616 tokens/s; at 32 they are level)
+                    MROW_MAX_MMQ
                 } else {
                     mrow::MROW_MAX_DEFAULT
                 }),
@@ -3110,6 +3166,11 @@ impl<'m> GpuSession<'m> {
         self.fused_max = if on { [usize::MAX; 3] } else { [0; 3] };
     }
 
+    /// The integer GEMMs of gemm_mmq.cu on or off (for A/B tests; stays off where the device cannot run them).
+    pub fn set_mmq(&mut self, on: bool) {
+        self.mmq = on && self.m.k.mmq_ok;
+    }
+
     /// The fused GEMMs accumulate in fp16 (for A/B tests; ignored below compute capability 8).
     pub fn set_f16acc(&mut self, on: bool) {
         self.f16acc = on && self.m.dev.info.cc_major >= 8;
@@ -3207,6 +3268,37 @@ impl<'m> GpuSession<'m> {
         if g.is_host() && self.pipe.is_some() && g.qf.is_some() && self.pf.is_some() {
             return self.gemm_host(epi, a, g, c, m, n, k, ldc);
         }
+        // Q4_K weights and a chunk long enough for the 128-row tiles: the integer GEMM on int8 activations
+        let mmq_fmt = match g.qf {
+            Some(QFmt::Q4_K) => Some(0),
+            Some(QFmt::Q5_K) => Some(1),
+            Some(QFmt::Q6_K) => Some(2),
+            _ => None,
+        };
+        if let (true, Some(mf), true) = (self.mmq, mmq_fmt, !g.is_host() && m >= self.mmq_min_m && k % 256 == 0 && n % 8 == 0 && ldc % 2 == 0) {
+            if let Some((aq, ad, asum)) = self.quant_acts(a, m, k)? {
+                let p = g.ptrs();
+                return self.m.k.mmq[mf * 3 + epi.min(2)].launch(
+                    (((n + 127) / 128) as u32, ((m + 127) / 128) as u32, 1),
+                    (256, 1, 1),
+                    if mf == 2 { MMQ6_SMEM } else { MMQ_SMEM },
+                    &self.stream,
+                    &Args::new()
+                        .ptr(aq)
+                        .ptr(ad)
+                        .ptr(asum)
+                        .ptr(p[0])
+                        .ptr(p[1])
+                        .ptr(p[2])
+                        .ptr(p[3])
+                        .ptr(c)
+                        .i32(m as i32)
+                        .i32(n as i32)
+                        .i32(k as i32)
+                        .i32(ldc as i32),
+                );
+            }
+        }
         // (a matrix in host memory goes through the dequantizing pass instead: the fused kernels read every weight once per tile of the output, which over PCIe is a multiple of the matrix)
         if let (Some(fi), true, 0) = (fmt_index, fmt_index.map_or(false, |f| m <= self.fused_max[f]) && !g.is_host(), k % 256) {
             let p = g.ptrs();
@@ -3262,6 +3354,65 @@ impl<'m> GpuSession<'m> {
             _ => kn.gemm_f32_add,
         };
         self.gemm(f, a, w16, c, m, n, k, ldc)
+    }
+
+    /// Quantize the fp16 activations `a` [m][k] to int8 with a scale and a minimum operand per 32 values (the arrays gemm_mmq.cu reads) and return the device addresses of (q, d, s); None when the buffers cannot hold m x k.
+    fn quant_acts(&self, a: u64, m: usize, k: usize) -> Result<Option<(u64, u64, u64)>> {
+        let Some(pf) = self.pf.as_ref() else {
+            return Ok(None);
+        };
+        if self.mmq_no_mem.get() {
+            return Ok(None);
+        }
+        let qa = match pf.qa.get() {
+            Some(b) => b,
+            None => {
+                let c = &self.m.cfg;
+                let kmax = c
+                    .n_embd
+                    .max(c.q_dim())
+                    .max(c.n_ff)
+                    .max(c.delta.as_ref().map_or(0, |d| d.value_dim()));
+                let rows = (prefill_chunk_len().max(EVAL_ROWS) + 127) / 128 * 128;
+                let made = (|| -> Result<QaBufs> {
+                    Ok(QaBufs {
+                        q: DeviceBuffer::alloc(rows * kmax)?,
+                        d: DeviceBuffer::alloc(rows * kmax / 32 * 4)?,
+                        s: DeviceBuffer::alloc(rows * kmax / 32 * 2)?,
+                        rows,
+                        kmax,
+                    })
+                })();
+                match made {
+                    Ok(b) => {
+                        let _ = pf.qa.set(b);
+                        pf.qa.get().expect("just set")
+                    }
+                    Err(e) => {
+                        eprintln!("[gpu] the int8 activation buffers of the integer GEMMs ({:.0} MiB) do not fit ({e}): those GEMMs stay off", (rows * kmax + rows * kmax / 32 * 6) as f64 / (1u64 << 20) as f64);
+                        self.mmq_no_mem.set(true);
+                        return Ok(None);
+                    }
+                }
+            }
+        };
+        if m > qa.rows || k > qa.kmax {
+            return Ok(None);
+        }
+        self.m.k.quant_rows_h.launch(
+            (m as u32, 1, 1),
+            (256, 1, 1),
+            0,
+            &self.stream,
+            &Args::new()
+                .ptr(a)
+                .ptr(qa.q.ptr())
+                .ptr(qa.d.ptr())
+                .ptr(qa.s.ptr())
+                .i32(m as i32)
+                .i32(k as i32),
+        )?;
+        Ok(Some((qa.q.ptr(), qa.d.ptr(), qa.s.ptr())))
     }
 
     /// C (+)= A B^T with the Ampere kernels of gemm_s80.cu (A [m][k] and B [n][k] contiguous fp16): fp16 accumulation (flushed into fp32 after every k16 step) when `f16acc`, else fp32. `epi`: 0 fp16 out, 1 fp32 out,
@@ -3502,6 +3653,7 @@ impl<'m> GpuSession<'m> {
                 },
                 wblk: [DeviceBuffer::alloc(blk)?, DeviceBuffer::alloc(blk)?],
                 hy: None,
+                qa: std::sync::OnceLock::new(),
             });
         }
         Ok(())
@@ -3568,6 +3720,7 @@ impl<'m> GpuSession<'m> {
                     })?,
                     next_tok: DeviceBuffer::alloc(pfc * 4)?,
                 }),
+                qa: std::sync::OnceLock::new(),
             });
         }
         Ok(())

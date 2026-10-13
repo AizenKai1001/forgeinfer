@@ -116,6 +116,7 @@ fn main() {
     println!("cargo:rerun-if-changed=kernels");
     println!("cargo:rerun-if-env-changed=NVCC");
     println!("cargo:rerun-if-env-changed=FORGE_NO_SM80");
+    println!("cargo:rerun-if-env-changed=FORGE_DEV_ARCH_ONLY");
     println!("cargo:rerun-if-env-changed=FORGE_CUDA_ARCHS");
     println!("cargo:rerun-if-env-changed=NVCC_CCBIN");
     let out = PathBuf::from(env::var("OUT_DIR").unwrap());
@@ -158,6 +159,25 @@ fn main() {
         "-Xptxas",
         "-v",
     ];
+    // FORGE_DEV_ARCH_ONLY=1 (development builds for one GPU): only the native cubins of FORGE_CUDA_ARCHS are compiled, the portable images stay empty (one nvcc run of about 90 s instead of five)
+    if env::var("FORGE_DEV_ARCH_ONLY").map(|v| v == "1").unwrap_or(false) && !archs.is_empty() {
+        for f in [&cubin, &ptx, &cubin80, &ptx80] {
+            std::fs::write(f, b"").unwrap();
+        }
+        for a in &archs {
+            let status = Command::new(&nvcc)
+                .arg("-cubin")
+                .arg(format!("-arch=sm_{a}"))
+                .args(common)
+                .arg("-o")
+                .arg(out.join(format!("forge_sm{a}.cubin")))
+                .arg(&src)
+                .status()
+                .expect("failed to run nvcc");
+            assert!(status.success(), "nvcc failed (cubin sm_{a})");
+        }
+        return;
+    }
     let status = Command::new(&nvcc)
         .args(["-cubin", "-arch=sm_75"])
         .args(common)

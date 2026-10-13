@@ -56,6 +56,8 @@ fn fused_dequantizing_gemms_agree_with_dequantize_then_gemm() {
     let gpu = GpuModel::upload(&model, Fmt::Native, 0).unwrap();
     drop(model);
     let mut sess = GpuSession::new(&gpu, 1100).unwrap();
+    // (the int8 GEMMs take these matrices first when they are on: this test compares the two fp16 paths)
+    sess.set_mmq(false);
     let mut results = Vec::new();
     for fused in [false, true] {
         sess.set_fused(fused);
@@ -94,5 +96,68 @@ fn fused_dequantizing_gemms_agree_with_dequantize_then_gemm() {
         "the fused GEMMs change the logits: cosine {cos}"
     );
     assert_eq!(argmax(&results[0]), argmax(&results[1]));
+    assert!(results[1].iter().all(|v| v.is_finite()));
+}
+
+/// The integer tensor-core GEMMs (int8 activations with one scale per 32 values, Q4_K / Q5_K weights read in place) against the fp16 GEMMs on the same weights: the logits of the last prompt token must stay
+/// close (the activation quantization is the only difference; `forge ppl` measures 4e-4 KL on the 0.8B and the 9B). The speed of both is printed.
+#[test]
+fn int8_prompt_gemms_agree_with_the_fp16_path() {
+    let path = std::env::var("FORGE_VARIANTS_MODEL")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| {
+            models_dir().join("unsloth__Qwen3.5-0.8B-GGUF/Qwen3.5-0.8B-Q4_K_M.gguf")
+        });
+    if !path.exists() || Device::count().unwrap_or(0) == 0 {
+        eprintln!("skipped: model or CUDA device missing");
+        return;
+    }
+    let gold = Json::from_file(
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../tests/golden/fwd_qwen35.json"),
+    )
+    .unwrap();
+    let mut ids: Vec<u32> = Vec::new();
+    for p in gold["prompts"].as_array().unwrap() {
+        ids.extend(
+            p["ids"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|v| v.as_u64().unwrap() as u32),
+        );
+    }
+    ids.truncate(1000);
+    let model = Model::load_native(&path).unwrap();
+    let gpu = GpuModel::upload(&model, Fmt::Native, 0).unwrap();
+    drop(model);
+    let mut sess = GpuSession::new(&gpu, 1100).unwrap();
+    let mut results = Vec::new();
+    for mmq in [false, true] {
+        sess.set_mmq(mmq);
+        sess.reset().unwrap();
+        sess.prefill_batched(&ids).unwrap();
+        let logits = sess.logits().unwrap();
+        let mut best = f64::MAX;
+        for _ in 0..3 {
+            sess.reset().unwrap();
+            let t0 = std::time::Instant::now();
+            sess.prefill_batched(&ids).unwrap();
+            best = best.min(t0.elapsed().as_secs_f64());
+        }
+        eprintln!(
+            "int8 GEMMs = {mmq}: prefill of {} tokens in {:.1} ms = {:.0} tokens/s",
+            ids.len(),
+            best * 1e3,
+            ids.len() as f64 / best
+        );
+        results.push(logits);
+    }
+    let cos = cosine(&results[0], &results[1]);
+    eprintln!(
+        "logits: cosine {cos:.7}, top-1 {} / {}",
+        argmax(&results[0]),
+        argmax(&results[1])
+    );
+    assert!(cos > 0.998, "the int8 GEMMs change the logits: cosine {cos}");
     assert!(results[1].iter().all(|v| v.is_finite()));
 }
