@@ -35,6 +35,8 @@ POST /apply-template            the rendered prompt of a chat request
 POST /tokenize, /detokenize
 ```
 
+**Structured output**: `response_format: {"type": "json_object"}` makes the answer a JSON object by construction: the grammar of RFC 8259 is checked byte by byte (a token that spells several structural characters is judged as a whole), the candidates that would break it are removed before every draw, the generation ends when the top-level object is closed, and a reasoning block is switched off (nothing can come before the `{`). It composes with sampling, streaming, the prediction head and the prompt lookup (a draft that breaks the grammar is just a draft that differs). Checked on the 4B and the 9B: 20 requests each, greedy and sampled, streamed and not, every answer that was not cut by `max_tokens` parsed. `response_format` types other than `json_object` and `text` (JSON Schema is the next one) are refused with a 400 instead of being answered with unchecked JSON.
+
 Request fields understood: `temperature`, `top_p`, `top_k`, `min_p`, `repetition_penalty`, `seed`, `stop`, `max_tokens` / `max_completion_tokens`, `stream`, `stream_options.include_usage`, `tools`, and `chat_template_kwargs.enable_thinking` (or `reasoning_effort: "none"`) for thinking models. A streamed answer sends the assistant role first, `reasoning_content` deltas for thinking text, then `content`, a final chunk with the finish reason, a usage chunk with `timings` (prompt and predicted tokens per second), and `[DONE]`. Closing the connection cancels the generation. Requests are queued (`--queue`); a full queue answers 429.
 
 ## Other subcommands

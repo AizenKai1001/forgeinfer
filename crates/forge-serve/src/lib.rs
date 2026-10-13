@@ -321,6 +321,20 @@ fn sampling_from(j: &Json) -> SamplingParams {
             .and_then(|v| v.as_f64())
             .map(|v| v as f32),
         seed: j.get("seed").and_then(|v| v.as_u64()),
+        json_object: false,
+    }
+}
+
+/// `response_format`: `{"type": "json_object"}` constrains the answer to a JSON object. `text` (or nothing) is the default; `json_schema` is not supported yet and is refused instead of being
+/// answered with unchecked JSON.
+fn json_mode(body: &Json) -> Result<bool, String> {
+    match body.get("response_format") {
+        None => Ok(false),
+        Some(rf) => match rf.get("type").and_then(|t| t.as_str()) {
+            None | Some("text") => Ok(false),
+            Some("json_object") => Ok(true),
+            Some(other) => Err(format!("response_format type {other:?} is not supported: use \"json_object\" or \"text\"")),
+        },
     }
 }
 
@@ -365,6 +379,7 @@ fn chat_request(body: &Json) -> Result<Request, String> {
     if tools.len() > 64 {
         return Err("at most 64 tools".into());
     }
+    let json = json_mode(body)?;
     let mut enable_thinking = body
         .get("chat_template_kwargs")
         .and_then(|k| k.get("enable_thinking"))
@@ -372,6 +387,10 @@ fn chat_request(body: &Json) -> Result<Request, String> {
     if enable_thinking.is_none()
         && body.get("reasoning_effort").and_then(|v| v.as_str()) == Some("none")
     {
+        enable_thinking = Some(false);
+    }
+    if json {
+        // the constraint governs the whole answer: there is no room for a reasoning block in front of it
         enable_thinking = Some(false);
     }
     let max_tokens = match (
@@ -389,7 +408,10 @@ fn chat_request(body: &Json) -> Result<Request, String> {
             tools,
             enable_thinking,
         },
-        sampling: sampling_from(body),
+        sampling: SamplingParams {
+            json_object: json,
+            ..sampling_from(body)
+        },
         max_tokens,
         stop: stops_from(body),
     })
@@ -1051,3 +1073,31 @@ pub fn serve(engine: Arc<Engine>, cfg: ServerConfig) -> std::io::Result<()> {
     }
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use forge_engine::Prompt;
+
+    fn request(body: &str) -> Result<Request, String> {
+        chat_request(&Json::parse(body).unwrap())
+    }
+
+    #[test]
+    fn response_format_json_object_constrains_the_answer_and_switches_thinking_off() {
+        let plain = request(r#"{"messages": [{"role": "user", "content": "hi"}]}"#).unwrap();
+        assert!(!plain.sampling.json_object);
+        let text = request(r#"{"messages": [{"role": "user", "content": "hi"}], "response_format": {"type": "text"}}"#).unwrap();
+        assert!(!text.sampling.json_object);
+        let json = request(r#"{"messages": [{"role": "user", "content": "hi"}], "temperature": 0.3, "chat_template_kwargs": {"enable_thinking": true}, "response_format": {"type": "json_object"}}"#).unwrap();
+        assert!(json.sampling.json_object);
+        assert_eq!(json.sampling.temperature, Some(0.3), "the other sampling fields are kept");
+        match json.prompt {
+            Prompt::Chat { enable_thinking, .. } => assert_eq!(enable_thinking, Some(false), "a reasoning block cannot come before a constrained answer"),
+            Prompt::Raw(_) => panic!("a chat request"),
+        }
+        let err = request(r#"{"messages": [{"role": "user", "content": "hi"}], "response_format": {"type": "json_schema", "json_schema": {"name": "x", "schema": {}}}}"#).err().unwrap();
+        assert!(err.contains("json_schema") && err.contains("not supported"), "{err}");
+    }
+}
+

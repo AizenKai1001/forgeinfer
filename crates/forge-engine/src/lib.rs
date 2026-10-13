@@ -4,6 +4,7 @@
 //! rendered (chat template of the model family) and tokenized, the longest prefix shared with the tokens already in the KV cache is kept (prefix reuse), the rest is prefilled (tensor-core GEMM path
 //! for long prompts), then tokens are sampled one by one; the text goes through a UTF-8 safe detokenizer, a stop-string matcher and the reasoning / tool-call parser, and comes out as `Event`s.
 
+pub mod constrain;
 pub mod pld;
 pub mod text;
 
@@ -37,6 +38,8 @@ pub struct SamplingParams {
     pub min_p: Option<f32>,
     pub repetition_penalty: Option<f32>,
     pub seed: Option<u64>,
+    /// `response_format: json_object`: the answer is a JSON object (candidates that would break the grammar are removed before every draw)
+    pub json_object: bool,
 }
 
 impl SamplingParams {
@@ -48,6 +51,7 @@ impl SamplingParams {
             min_p: self.min_p.or(base.min_p),
             repetition_penalty: self.repetition_penalty.or(base.repetition_penalty),
             seed: self.seed.or(base.seed),
+            json_object: self.json_object || base.json_object,
         }
     }
 }
@@ -889,7 +893,12 @@ fn next_token(
     sampler: &mut Sampler,
     history: &[u32],
     delta: &mut f32,
+    tok: &Tokenizer,
+    constraint: Option<&mut constrain::Constraint>,
 ) -> Result<u32> {
+    if let Some(c) = constraint {
+        return next_constrained(sess, src, sampler, history, tok, c);
+    }
     let pen = sampler.cfg.repetition_penalty;
     if sampler.is_greedy() && pen == 1.0 {
         return sess.argmax_of(src);
@@ -946,6 +955,55 @@ fn next_token(
     // the candidate list never fitted: use the full logits (they already carry the penalty)
     let logits = sess.logits_of(src)?;
     Ok(sampler.sample(&logits, &[]))
+}
+
+/// The next token of a constrained answer (`response_format: json_object`): the candidates the sampler would look at, minus those whose bytes break the grammar; when none of them fits, every token of
+/// the vocabulary is tried (the model wanted prose and the best token that continues the JSON is far down). The chosen token advances the constraint: whoever draws a token has chosen it for good
+/// (a draft that differs is dropped, the drawn token is the answer).
+fn next_constrained(
+    sess: &GpuSession,
+    src: LogitsSrc,
+    sampler: &mut Sampler,
+    history: &[u32],
+    tok: &Tokenizer,
+    c: &mut constrain::Constraint,
+) -> Result<u32> {
+    let pen = sampler.cfg.repetition_penalty;
+    let mut seen = history.to_vec();
+    seen.sort_unstable();
+    seen.dedup();
+    let penalty = if pen != 1.0 && !seen.is_empty() { Some((seen.as_slice(), pen)) } else { None };
+    sess.prepare_candidates(src, penalty)?;
+    let cand = sess.collect_candidates(src, sampler.cutoff())?;
+    let mut valid: Vec<(f32, u32)> = if cand.overflow {
+        Vec::new()
+    } else {
+        cand.items.into_iter().filter(|&(_, t)| c.accepts(tok.token_bytes(t))).collect()
+    };
+    if valid.is_empty() {
+        let logits = sess.logits_of(src)?;
+        // which first bytes the state allows: most tokens fall out here without a copy of the automaton
+        let first: Vec<bool> = (0..=255u8).map(|b| c.accepts(&[b])).collect();
+        valid = logits
+            .iter()
+            .enumerate()
+            .filter(|(i, l)| {
+                l.is_finite() && {
+                    let b = tok.token_bytes(*i as u32);
+                    !b.is_empty() && first[b[0] as usize] && c.accepts(b)
+                }
+            })
+            .map(|(i, &l)| (l, i as u32))
+            .collect();
+        valid.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal).then(a.1.cmp(&b.1)));
+        valid.truncate(256);
+    }
+    if valid.is_empty() {
+        return Err(Error::msg("no token of the vocabulary continues the JSON"));
+    }
+    let t = sampler.sample_candidates(valid);
+    c.advance(tok.token_bytes(t));
+    Ok(t)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1094,7 +1152,8 @@ fn run_job(
     };
     let t_decode = Instant::now();
     let mut spec = SpecStats::default();
-    let reason = generate(sess, slot, &mut sampler, &mut out, speculate, lookup, &mut spec)?;
+    let mut constraint = p.json_object.then(constrain::Constraint::json_object);
+    let reason = generate(sess, slot, &mut sampler, &mut out, speculate, lookup, &mut constraint, &mut spec)?;
     if std::env::var("FORGE_SPEC_STATS").is_ok() && spec.cycles > 0 {
         eprintln!(
             "[spec] {} cycles ({} by lookup, {} of their drafts right), {} drafts accepted ({:.2} per cycle), by position in the chain {:?}; ms per cycle: draft {:.1}, verify sweep {:.1}, sampling {:.1}, cache update {:.1}",
@@ -1255,6 +1314,7 @@ fn generate(
     out: &mut Output,
     speculate: bool,
     lookup: bool,
+    constraint: &mut Option<constrain::Constraint>,
     spec: &mut SpecStats,
 ) -> Result<FinishReason> {
     // a chain of drafts needs the multi-row verification: as many rows as the model's weights allow (4 with weights in host memory), one of them the pending token
@@ -1262,17 +1322,20 @@ fn generate(
     let mut pld = pld::Pld::from_env(speculate, sess.max_verify_rows());
     pld.on &= lookup;
     if (speculate && depth >= 2) || pld.on {
-        return generate_deep(sess, slot, sampler, out, depth, spec, speculate, pld);
+        return generate_deep(sess, slot, sampler, out, depth, spec, speculate, pld, constraint);
     }
     let job = out.job;
     let mut delta = 10.0f32;
-    let mut token = next_token(sess, LogitsSrc::Main, sampler, &out.history, &mut delta)?;
+    let mut token = next_token(sess, LogitsSrc::Main, sampler, &out.history, &mut delta, out.tok, constraint.as_mut())?;
     loop {
         if job.cancel.load(Ordering::SeqCst) {
             return Ok(FinishReason::Cancelled);
         }
         if let Some(r) = out.take(token) {
             return Ok(r);
+        }
+        if constraint.as_ref().is_some_and(|c| c.is_complete()) {
+            return Ok(FinishReason::Stop);
         }
         if sess.pos + 1 >= sess.max_ctx() {
             return Ok(FinishReason::Length);
@@ -1292,6 +1355,8 @@ fn generate(
                 sampler,
                 &out.history,
                 &mut delta,
+                out.tok,
+                constraint.as_mut(),
             )?;
             if z == d {
                 spec.accepted += 1;
@@ -1303,12 +1368,17 @@ fn generate(
                 if let Some(r) = out.take(z) {
                     return Ok(r);
                 }
+                if constraint.as_ref().is_some_and(|c| c.is_complete()) {
+                    return Ok(FinishReason::Stop);
+                }
                 token = next_token(
                     sess,
                     LogitsSrc::Verify(1),
                     sampler,
                     &out.history,
                     &mut delta,
+                    out.tok,
+                    constraint.as_mut(),
                 )?;
             } else {
                 sess.rollback_verify()?;
@@ -1317,7 +1387,7 @@ fn generate(
         } else {
             sess.advance(token)?;
             slot.push(token);
-            token = next_token(sess, LogitsSrc::Main, sampler, &out.history, &mut delta)?;
+            token = next_token(sess, LogitsSrc::Main, sampler, &out.history, &mut delta, out.tok, constraint.as_mut())?;
         }
     }
 }
@@ -1378,10 +1448,11 @@ fn generate_deep(
     spec: &mut SpecStats,
     speculate: bool,
     mut pld: pld::Pld,
+    constraint: &mut Option<constrain::Constraint>,
 ) -> Result<FinishReason> {
     let job = out.job;
     let mut delta = 10.0f32;
-    let mut token = next_token(sess, LogitsSrc::Main, sampler, &out.history, &mut delta)?;
+    let mut token = next_token(sess, LogitsSrc::Main, sampler, &out.history, &mut delta, out.tok, constraint.as_mut())?;
     if pld.on {
         // (after the first token: the free memory is what is left of the request's own buffers)
         reserve_lookup_rows(sess, &mut pld, if speculate { depth + 1 } else { 0 });
@@ -1392,6 +1463,9 @@ fn generate_deep(
         }
         if let Some(r) = out.take(token) {
             return Ok(r);
+        }
+        if constraint.as_ref().is_some_and(|c| c.is_complete()) {
+            return Ok(FinishReason::Stop);
         }
         if sess.pos + 1 >= sess.max_ctx() {
             return Ok(FinishReason::Length);
@@ -1414,7 +1488,7 @@ fn generate_deep(
         if !from_lookup && !(head_ok && room >= 1) {
             sess.advance(token)?;
             slot.push(token);
-            token = next_token(sess, LogitsSrc::Main, sampler, &out.history, &mut delta)?;
+            token = next_token(sess, LogitsSrc::Main, sampler, &out.history, &mut delta, out.tok, constraint.as_mut())?;
             continue;
         }
         let pos = sess.pos;
@@ -1446,19 +1520,19 @@ fn generate_deep(
         slot.push(token);
         spec.cycles += 1;
         let mut keep = 1usize;
-        let mut z = next_token(sess, LogitsSrc::Rows(0), sampler, &out.history, &mut delta)?;
+        let mut z = next_token(sess, LogitsSrc::Rows(0), sampler, &out.history, &mut delta, out.tok, constraint.as_mut())?;
         let mut fin = None;
         while keep < rows.len() && z == rows[keep] {
             spec.accepted += 1;
             spec.by_depth[(keep - 1).min(7)] += 1;
             slot.push(rows[keep]);
-            let hit = out.take(z);
+            let hit = out.take(z).or_else(|| constraint.as_ref().is_some_and(|c| c.is_complete()).then_some(FinishReason::Stop));
             keep += 1;
             if hit.is_some() {
                 fin = hit;
                 break;
             }
-            z = next_token(sess, LogitsSrc::Rows(keep - 1), sampler, &out.history, &mut delta)?;
+            z = next_token(sess, LogitsSrc::Rows(keep - 1), sampler, &out.history, &mut delta, out.tok, constraint.as_mut())?;
         }
         if from_lookup {
             spec.pld_cycles += 1;
