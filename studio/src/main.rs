@@ -2,7 +2,7 @@
 //!
 //! Options (all optional; they exist for testing and screenshots):
 //!   --screen NAME      open on a screen: chat, library, discover, server, hardware, logs, settings
-//!   --demo             start with a sample conversation
+//!   --demo             start with a sample conversation        --open-last  open the newest saved chat
 //!   --load PATH        load this GGUF file at start          --select NAME   load the library model whose name contains NAME
 //!   --send TEXT        send a message as soon as a model is ready
 //!   --search TEXT      run a Hugging Face search at start     --inspect PATH  open the inspector on a GGUF file
@@ -48,6 +48,7 @@ fn parse_args() -> Result<StartupOpts, String> {
                 o.screen = Some(Screen::from_name(&v).ok_or_else(|| format!("unknown screen {v:?}"))?);
             }
             "--demo" => o.demo = true,
+            "--open-last" => o.open_last = true,
             "--load" => o.load = Some(value("--load")?.into()),
             "--select" => o.select_model = Some(value("--select")?),
             "--send" => o.send = Some(value("--send")?),

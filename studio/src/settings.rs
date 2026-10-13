@@ -94,7 +94,27 @@ pub struct GenParams {
     /// 0 = no limit (the server's default).
     pub max_tokens: u32,
     /// Let thinking models (Qwen3, Qwen3.5) reason before they answer.
+    #[serde(deserialize_with = "de_thinking")]
     pub thinking: ThinkingMode,
+}
+
+/// Settings files of earlier versions stored a boolean here.
+fn de_thinking<'de, D: serde::Deserializer<'de>>(d: D) -> Result<ThinkingMode, D::Error> {
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum Raw {
+        Flag(bool),
+        Name(String),
+    }
+    Ok(match Raw::deserialize(d)? {
+        Raw::Flag(true) => ThinkingMode::On,
+        Raw::Flag(false) => ThinkingMode::Off,
+        Raw::Name(n) => match n.as_str() {
+            "on" => ThinkingMode::On,
+            "off" => ThinkingMode::Off,
+            _ => ThinkingMode::Default,
+        },
+    })
 }
 
 impl Default for GenParams {
@@ -147,7 +167,7 @@ impl Default for Settings {
         Settings {
             model_dirs: default_model_dirs(&data).iter().map(|p| p.display().to_string()).collect(),
             download_dir: data.join("models").display().to_string(),
-            engine: EngineKind::Forge,
+            engine: if cfg!(target_os = "macos") { EngineKind::LlamaCpp } else { EngineKind::Forge },
             forge_binary: String::new(),
             llama_server: String::new(),
             external_url: "http://127.0.0.1:11434".to_string(),
@@ -206,7 +226,14 @@ pub fn settings_path() -> PathBuf {
 impl Settings {
     pub fn load() -> Settings {
         match std::fs::read_to_string(settings_path()) {
-            Ok(text) => serde_json::from_str(&text).unwrap_or_default(),
+            Ok(text) => match serde_json::from_str(&text) {
+                Ok(settings) => settings,
+                Err(_) => {
+                    // keep what the user had: the next save would overwrite it
+                    let _ = std::fs::rename(settings_path(), settings_path().with_extension("json.broken"));
+                    Settings::default()
+                }
+            },
             Err(_) => Settings::default(),
         }
     }
@@ -294,6 +321,17 @@ mod tests {
         let partial: Settings = serde_json::from_str(r#"{"port": 4321}"#).unwrap();
         assert_eq!(partial.port, 4321);
         assert_eq!(partial.context_len, 8192);
+    }
+
+    #[test]
+    fn the_old_boolean_thinking_setting_still_loads() {
+        let on: Settings = serde_json::from_str(r#"{"gen": {"thinking": true}, "port": 4000}"#).unwrap();
+        assert_eq!(on.gen.thinking, ThinkingMode::On);
+        assert_eq!(on.port, 4000);
+        let off: Settings = serde_json::from_str(r#"{"gen": {"thinking": false}}"#).unwrap();
+        assert_eq!(off.gen.thinking, ThinkingMode::Off);
+        let named: Settings = serde_json::from_str(r#"{"gen": {"thinking": "default"}}"#).unwrap();
+        assert_eq!(named.gen.thinking, ThinkingMode::Default);
     }
 
     #[test]

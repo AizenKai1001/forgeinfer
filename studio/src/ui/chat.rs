@@ -200,6 +200,14 @@ fn empty_state(app: &mut StudioApp, ui: &mut Ui) {
         ui.label(RichText::new("Chat with a model that runs on this computer.").color(theme::MUTED));
         ui.add_space(18.0);
         let ready = app.active_endpoint().is_some();
+        if let (false, Some(problem)) = (ready, app.engine_program_problem()) {
+            ui.allocate_ui_with_layout(egui::vec2(560.0, 0.0), Layout::top_down(Align::Min), |ui| banner(ui, &problem, theme::WARN, theme::CARD));
+            ui.add_space(8.0);
+            if primary_button(ui, "Open Settings").clicked() {
+                app.screen = crate::app::Screen::Settings;
+            }
+            ui.add_space(10.0);
+        }
         if ready {
             ui.label(RichText::new("Ask anything below.").color(theme::TEXT));
         } else if app.settings.engine == EngineKind::External {

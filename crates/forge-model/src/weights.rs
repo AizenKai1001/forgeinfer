@@ -750,6 +750,36 @@ fn canon_of_gguf(name: &str) -> Option<String> {
     Some(format!("L{n}.{canon}"))
 }
 
+/// `forge gguf-zero BASE.gguf OUT.gguf NAME[,NAME..]`: a copy of BASE in which the tensors with these canonical names (`w_down`, `wo`, `w_out`, `w_gate` ...; every layer) are filled with zero bytes. All ggml formats
+/// dequantize an all-zero block to 0.0, so a recipe that takes a layer's tensor from this file removes that layer's contribution to the residual stream: the donor of the layer-ablation studies.
+pub fn zero_copy(base: &Path, out: &Path, names: &[String]) -> Result<(usize, u64)> {
+    use std::io::{Seek, SeekFrom, Write};
+    std::fs::copy(base, out).map_err(|e| Error::msg(format!("{}: {e}", out.display())))?;
+    let g = Gguf::open(base)?;
+    let mut f = std::fs::OpenOptions::new().write(true).open(out).map_err(|e| Error::msg(format!("{}: {e}", out.display())))?;
+    let zeros = vec![0u8; 1 << 20];
+    let (mut n, mut bytes) = (0usize, 0u64);
+    for t in &g.tensors {
+        let Some(canon) = canon_of_gguf(&t.name) else { continue };
+        let tn = canon.split_once('.').map(|(_, x)| x).unwrap_or(canon.as_str());
+        if !names.iter().any(|x| x == tn) {
+            continue;
+        }
+        let len = g.tensor_bytes(t).len();
+        f.seek(SeekFrom::Start((g.data_offset + t.offset as usize) as u64)).map_err(|e| Error::msg(e.to_string()))?;
+        let mut left = len;
+        while left > 0 {
+            let k = left.min(zeros.len());
+            f.write_all(&zeros[..k]).map_err(|e| Error::msg(e.to_string()))?;
+            left -= k;
+        }
+        n += 1;
+        bytes += len as u64;
+    }
+    f.flush().map_err(|e| Error::msg(e.to_string()))?;
+    Ok((n, bytes))
+}
+
 /// `forge gguf-stitch BASE.gguf RECIPE.json OUT.gguf`: writes a new GGUF whose tensors are those of BASE except where the recipe (FORGE_RECIPE format) takes a tensor from another file of the same
 /// model. The metadata section is carried over byte for byte; the result loads in llama.cpp, LM Studio and this engine. Returns (tensors taken from other files, bytes written).
 pub fn stitch(base: &Path, recipe: &Path, out: &Path) -> Result<(usize, u64)> {

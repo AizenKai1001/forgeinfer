@@ -9,6 +9,7 @@ Start here:
 | [ENGINE.md](ENGINE.md) | `forge serve`: flags, HTTP API, how the engine uses memory, recipes |
 | [MODELS.md](MODELS.md) | which models run, what was tested, what does not run |
 | [PERFORMANCE.md](PERFORMANCE.md) | measurements against llama.cpp, the 27B on an 8 GB card, what worked and what did not |
+| [LAYER_IMPORTANCE.md](LAYER_IMPORTANCE.md) | a measured study: what happens to Qwen3.5-9B when one layer part is removed |
 | [ROADMAP.md](ROADMAP.md) | what is missing |
 
 The research stack (tokenizer, trainer, cloud jobs):

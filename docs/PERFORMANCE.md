@@ -25,7 +25,15 @@ Same GGUF files (Q4_K_M from unsloth), idle GPU, llama.cpp build b11521, homelab
 - Where decode wins: the whole decode step is one CUDA graph of fused kernels that read the quantized blocks directly, with activations pre-quantized once per layer.
 - **Where it loses: prefill on short prompts.** Prefill is tensor-core GEMM; for the 4B and 9B the engine was 2 to 22 percent behind llama.cpp at 512 tokens. A later round of work brought the 4B and 9B to or above llama.cpp from 1,024 tokens on; between 256 and 512 tokens they were still 2 to 10 percent behind.
 
-On the PC (RTX 4060, 2026-10-13, thinking off, 200 generated tokens): Qwen3.5-0.8B 363 tok/s, 4B **80 tok/s**, 9B **45 tok/s**; time to first token on a short prompt 10 to 80 ms.
+On the PC (RTX 4060, 8 GB, Windows 11, 2026-10-13): llama.cpp b11517 CUDA build (`llama-bench -ngl 99 -p 512 -n 128`) against `forge serve` (the server's own timings for a 554-token prompt and 128 generated tokens, median of four runs, Q4_K_M files):
+
+| model | decode forge | decode llama.cpp | ratio | prefill forge | prefill llama.cpp | ratio |
+|---|---|---|---|---|---|---|
+| Qwen3.5-0.8B | 332.5 | 265.3 | **1.25x** | 13,770 | 12,273 | 1.12x |
+| Qwen3.5-4B | 79.6 | 73.4 | 1.08x | 2,246 | 3,473 | **0.65x** |
+| Qwen3.5-9B | 45.2 | 43.7 | 1.03x | 1,271 | 2,112 | **0.60x** |
+
+Reading it: on the 4B and 9B, decode is memory-bound (272 GB/s) and both engines sit near the roofline, so the gain is a few percent; the engine's edge is largest on small models where launch overhead matters (the whole decode step is one CUDA graph). **Prefill on the 4B and 9B is where the engine loses on this card**: llama.cpp reads the quantized blocks with int8 tensor cores, while the engine dequantizes into fp16 tiles and uses the fp16 tensor cores; an int8 path is the first item of the prefill work in the [roadmap](ROADMAP.md).
 
 ## A 27B model on an 8 GB card
 
@@ -56,7 +64,7 @@ Worked:
 - **Instruction-level work**: hardware counters (`perf stat` uop and port counters) showed the first CPU kernels were front-end bound (3.2 of 4 uops per cycle); a software f16 to f32 conversion and scalar scale unpacking were 40 percent of the instructions.
 - **Sleeping instead of spinning**: the CPU threads waiting for the GPU used to burn cores; blocking synchronization (`CU_CTX_SCHED_BLOCKING_SYNC`) gives them back to the memory-bound workers.
 
-Did not work (kept off, documented in `docs/KERNEL_TUNING.md` and the commit messages): pipelined prefill GEMM (slower), per-256 activation scales (slower, quality-neutral), Q8_0 with F16C (conversion per 32 values costs more than it saves), DMA staging of prefill weights (the dequantizer already reads PCIe at line rate), Q3_K for feed-forward weights (saves RAM, hardly any time: its kernel runs below the DRAM peak).
+Did not work (kept off, documented in `docs/KERNEL_TUNING.md` and the commit messages; skipping layers is measured in [LAYER_IMPORTANCE.md](LAYER_IMPORTANCE.md): six middle feed-forwards buy 10 percent speed for a KL of 0.24): pipelined prefill GEMM (slower), per-256 activation scales (slower, quality-neutral), Q8_0 with F16C (conversion per 32 values costs more than it saves), DMA staging of prefill weights (the dequantizer already reads PCIe at line rate), Q3_K for feed-forward weights (saves RAM, hardly any time: its kernel runs below the DRAM peak).
 
 Method notes that saved time: compare *mean and median* over 48 or more runs (12 runs have +-20 percent noise); compute-only and DRAM-sized variants of a kernel benchmark separate "the kernel is slow" from "the memory is slow"; always check the binary's timestamp after a build (a stale binary once produced a whole phantom "no improvement" series).
 

@@ -102,10 +102,10 @@ forge-studio --screen library|chat|discover|server|hardware|logs|settings
 | `chats.rs`, `settings.rs` | files on disk |
 | `ui/` | one file per screen |
 
-Tests: `cd studio && cargo test --lib` (31 tests, including a synthetic GGUF file for the scanner and inspector). `cargo test --lib live_ -- --ignored` runs a network test that searches, lists, downloads and resumes a 1.2 MB model from Hugging Face.
+Tests: `cd studio && cargo test --lib` (31 unit tests, including a synthetic GGUF file for the scanner and inspector). `cargo test --lib live_ -- --ignored` runs a network test that searches, lists, downloads and resumes a 1.2 MB model from Hugging Face.
 
 ## Platform notes
 
 - **Windows**: tested on Windows 11. Release builds have no console window.
-- **Linux**: compiles with the stock toolchain (X11 and Wayland through `winit`, OpenGL through `glutin`); needs a working OpenGL driver at run time.
-- **macOS**: built by the CI workflow, not yet run by the author. Use the llama.cpp or external engine.
+- **Linux**: built and unit-tested by CI and compile-checked on Ubuntu 24.04 (X11 and Wayland through `winit`, OpenGL through `glutin`, no system libraries needed to build); needs a working OpenGL driver at run time. The window has not been run on a Linux desktop by the author.
+- **macOS**: built and unit-tested by the CI workflow (Apple silicon), the window itself has not been run by the author. The default engine there is llama.cpp's `llama-server` (the ForgeInfer engine needs CUDA); or connect to a running server.

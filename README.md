@@ -61,11 +61,11 @@ forge tokenize model.gguf "any text"             # token ids from the file's own
 ```
 
 - **Models**: `llama`, `qwen3` and `qwen35` (Qwen3.5: hybrid Gated DeltaNet and attention, 0.8B to 27B) architectures with byte-level BPE tokenizers: Qwen3, Qwen3.5, SmolLM2, Llama 3 family. Quantizations F32, F16, BF16, Q4_0, Q4_1, Q5_0, Q5_1, Q8_0, Q2_K to Q6_K. See [docs/MODELS.md](docs/MODELS.md) for what was tested and what is not supported.
-- **Speed**: decode 1.2 to 1.7 times llama.cpp on the same files on an RTX 2060 SUPER (one measurement series, details and the prefill caveat in [docs/PERFORMANCE.md](docs/PERFORMANCE.md)); a 4-bit Qwen3.5-27B runs at about 9.7 tokens per second on that 8 GB card by keeping two thirds of the feed-forward layers in system memory and multiplying them with AVX2 kernels inside the CUDA graph.
+- **Speed**: decode 1.2 to 1.7 times llama.cpp on the same files on an RTX 2060 SUPER and 1.0 to 1.25 times on an RTX 4060 (measurement series and the prefill caveat in [docs/PERFORMANCE.md](docs/PERFORMANCE.md)); a 4-bit Qwen3.5-27B runs at about 9.7 tokens per second on that 8 GB card by keeping two thirds of the feed-forward layers in system memory and multiplying them with AVX2 kernels inside the CUDA graph.
 - **Memory**: KV-cache compression (`--kv int8|int4`), quantized weights read as they are (no conversion to fp16), a CPU/GPU split planner for models bigger than video memory.
 - **Speculative decoding** with the model's own multi-token-prediction head (Qwen3.5) and prefix reuse across chat turns, including state snapshots for the recurrent layers.
 
-On a desktop RTX 4060 (8 GB, Windows, `forge.exe` built from this repository, thinking off, short generations, 4-bit files): Qwen3.5-0.8B 363 tokens/s, 4B 80 tokens/s, 9B 45 tokens/s.
+On a desktop RTX 4060 (8 GB, Windows, 4-bit files) decode is 333, 80 and 45 tokens/s for Qwen3.5 0.8B, 4B and 9B against llama.cpp's 265, 73 and 44; prefill is 1.12x, 0.65x and 0.60x of llama.cpp's (see [PERFORMANCE.md](docs/PERFORMANCE.md)).
 
 ## Also in this repository
 
@@ -87,8 +87,8 @@ The engine grew out of a from-scratch research stack: the same repository contai
 - The engine needs an NVIDIA GPU. A CPU backend (for macOS and for computers without a GPU) and more architectures (Qwen2, Gemma, Mistral, mixture-of-experts) are on the [roadmap](docs/ROADMAP.md); until then Studio uses llama.cpp or an external server for those.
 - SentencePiece tokenizers (Llama 2, Mistral 7B v0.1, Gemma) and IQ-quantizations are not supported by the engine.
 - The Llama 3 chat format and tokenizer are implemented and unit-tested but have not been checked against real Llama 3 weights yet.
-- Prefill (reading a long prompt) is slower than llama.cpp for short prompts on the Qwen3.5 models at the time of the measurement; decode is faster.
-- Forge Studio is new. It was tested on Windows 11 with an RTX 4060 and compiles on Linux; macOS is built by CI but has not been run by the author.
+- Prefill (reading a prompt) is slower than llama.cpp on the 4B and 9B models (0.6 to 0.85 times at 512 tokens on the measured cards); decode is as fast or faster.
+- Forge Studio is new. The author ran it on Windows 11 with an RTX 4060; CI builds and unit-tests it on Windows, Linux and macOS, but nobody has run the window on a Mac or a Linux desktop yet: reports are welcome.
 
 ## License
 

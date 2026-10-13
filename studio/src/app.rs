@@ -133,6 +133,8 @@ pub struct StartupOpts {
     pub inspect: Option<PathBuf>,
     /// Press Stop this many seconds after a generation starts (for tests).
     pub stop_after: Option<f32>,
+    /// Open the newest saved chat instead of an empty one.
+    pub open_last: bool,
 }
 
 pub struct ShotState {
@@ -195,6 +197,7 @@ pub struct StudioApp {
     live_busy: bool,
     last_activity: Instant,
     seen_log: usize,
+    fps: Option<(Instant, u32)>,
 }
 
 impl StudioApp {
@@ -206,7 +209,7 @@ impl StudioApp {
         let (tx, rx) = channel();
         let store = Store::new(chats::chats_dir(&data_dir()));
         let chat_list = store.list();
-        let chat = Chat::new();
+        let chat = if opts.open_last { chat_list.first().and_then(|m| store.load(&m.id)).unwrap_or_default() } else { Chat::new() };
         let mut app = StudioApp {
             saved: settings.clone(),
             settings,
@@ -254,6 +257,7 @@ impl StudioApp {
             live_busy: false,
             last_activity: Instant::now(),
             seen_log: 0,
+            fps: std::env::var_os("FORGE_STUDIO_FPS").map(|_| (Instant::now(), 0)),
             opts: opts.clone(),
         };
         if opts.demo {
@@ -373,6 +377,15 @@ impl StudioApp {
             let _ = tx.send(Msg::DownloadDone { id, result: r });
             wake();
         });
+    }
+
+    /// Whether the chosen engine can be started at all: the program must exist (a running server needs nothing).
+    pub fn engine_program_problem(&self) -> Option<String> {
+        match self.settings.engine {
+            EngineKind::Forge if settings::find_forge(&self.settings).is_none() => Some("The ForgeInfer engine program (forge) was not found. Build it (docs/GETTING_STARTED.md) and put it next to this app, or set its path in Settings.".to_string()),
+            EngineKind::LlamaCpp if settings::find_llama_server(&self.settings).is_none() => Some("llama.cpp's llama-server was not found. Install it (github.com/ggml-org/llama.cpp/releases) and set its path in Settings, or connect to a running server.".to_string()),
+            _ => None,
+        }
     }
 
     /// The server the chat talks to and the model name to send, when there is one.
@@ -863,6 +876,16 @@ pub fn new_chat_id() -> String {
 
 impl eframe::App for StudioApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        // FORGE_STUDIO_FPS=1: repaint continuously and print the frame rate (a performance probe for long chats)
+        if let Some((t, n)) = self.fps.as_mut() {
+            *n += 1;
+            if t.elapsed().as_secs_f32() >= 2.0 {
+                eprintln!("fps {:.1}", *n as f32 / t.elapsed().as_secs_f32());
+                *t = Instant::now();
+                *n = 0;
+            }
+            ui.ctx().request_repaint();
+        }
         self.pump();
         crate::ui::draw(self, ui);
         self.apply_actions();

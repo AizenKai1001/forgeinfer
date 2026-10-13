@@ -340,6 +340,22 @@ fn main() {
             let ids = tok.encode(args.get(2).unwrap_or_else(|| usage()));
             println!("{ids:?}");
         }
+        Some("gguf-zero") => {
+            // forge gguf-zero BASE.gguf OUT.gguf NAME[,NAME..]: a copy of BASE with these tensors (canonical names: w_down wo w_out ...) zeroed in every layer: the donor of layer-ablation recipes
+            let (base, out, names) = (
+                args.get(1).unwrap_or_else(|| usage()),
+                args.get(2).unwrap_or_else(|| usage()),
+                args.get(3).unwrap_or_else(|| usage()),
+            );
+            let names: Vec<String> = names.split(',').map(|s| s.trim().to_string()).collect();
+            match forge_model::weights::zero_copy(Path::new(base), Path::new(out), &names) {
+                Ok((n, bytes)) => println!("{out}: {n} tensors zeroed ({:.2} GB)", bytes as f64 / 1e9),
+                Err(e) => {
+                    eprintln!("gguf-zero: {e}");
+                    std::process::exit(1)
+                }
+            }
+        }
         Some("gguf-stitch") => {
             // forge gguf-stitch BASE.gguf RECIPE.json OUT.gguf: a GGUF made of the tensors of BASE, except those the recipe takes from other files of the same model (no re-quantization)
             let (base, recipe, out) = (
