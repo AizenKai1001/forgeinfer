@@ -131,6 +131,8 @@ pub struct StartupOpts {
     pub select_model: Option<String>,
     pub hf_query: Option<String>,
     pub inspect: Option<PathBuf>,
+    /// Press Stop this many seconds after a generation starts (for tests).
+    pub stop_after: Option<f32>,
 }
 
 pub struct ShotState {
@@ -191,6 +193,8 @@ pub struct StudioApp {
     pending_load: Option<PathBuf>,
     live_at: Instant,
     live_busy: bool,
+    last_activity: Instant,
+    seen_log: usize,
 }
 
 impl StudioApp {
@@ -248,6 +252,8 @@ impl StudioApp {
             pending_load: opts.load.clone(),
             live_at: Instant::now(),
             live_busy: false,
+            last_activity: Instant::now(),
+            seen_log: 0,
             opts: opts.clone(),
         };
         if opts.demo {
@@ -420,6 +426,7 @@ impl StudioApp {
         };
         match self.engine.start(launch, self.wake()) {
             Ok(()) => {
+                self.last_activity = Instant::now();
                 self.settings.last_model = path.display().to_string();
             }
             Err(e) => self.toast(e),
@@ -697,6 +704,23 @@ impl StudioApp {
                 wake();
             });
         }
+        // idle unload: any request the engine logs (from this window or from another program) counts as activity
+        let log_len = self.engine.log_len();
+        if log_len != self.seen_log {
+            if self.engine.log().iter().skip(self.seen_log.min(log_len)).any(|l| l.contains("POST /v1/") || l.contains("POST /completion")) {
+                self.last_activity = Instant::now();
+            }
+            self.seen_log = log_len;
+        }
+        if self.generation.is_some() {
+            self.last_activity = Instant::now();
+        }
+        let idle = Duration::from_secs(60 * self.settings.idle_eject_minutes as u64);
+        if self.settings.idle_eject_minutes > 0 && matches!(self.engine.state(), EngineState::Ready { .. }) && self.last_activity.elapsed() > idle {
+            let minutes = self.settings.idle_eject_minutes;
+            self.eject();
+            self.toast(format!("The model was unloaded after {minutes} idle minutes (Settings)."));
+        }
         // settings: save a moment after the last change
         if self.settings != self.saved {
             let since = *self.dirty_since.get_or_insert_with(Instant::now);
@@ -706,6 +730,11 @@ impl StudioApp {
                 self.dirty_since = None;
             }
             self.ctx.request_repaint_after(Duration::from_millis(300));
+        }
+        if let (Some(after), Some(g)) = (self.opts.stop_after, self.generation.as_ref()) {
+            if g.started.elapsed().as_secs_f32() >= after {
+                self.stop_generation();
+            }
         }
         // test hooks: send a message once the model is ready
         if self.pending_send.is_some() && self.active_endpoint().is_some() && self.generation.is_none() {

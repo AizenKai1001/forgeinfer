@@ -118,6 +118,16 @@ fn loading(app: &mut StudioApp, ui: &mut Ui) {
             ui.add(TextEdit::singleline(&mut app.settings.extra_args).desired_width(420.0).hint_text("for example: --threads 6 --chunk 512"));
         });
         ui.checkbox(&mut app.settings.auto_load_last, "Load the last model again when the app starts");
+        ui.horizontal(|ui| {
+            ui.label("Unload after");
+            ui.add(egui::DragValue::new(&mut app.settings.idle_eject_minutes).range(0..=1440).suffix(" min"));
+            for (label, n) in [("never", 0), ("10", 10), ("30", 30), ("60", 60)] {
+                if ui.small_button(label).clicked() {
+                    app.settings.idle_eject_minutes = n;
+                }
+            }
+            muted(ui, "idle: frees video memory for games and other programs; load again from the model bar");
+        });
     });
 }
 

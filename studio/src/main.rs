@@ -7,6 +7,7 @@
 //!   --send TEXT        send a message as soon as a model is ready
 //!   --search TEXT      run a Hugging Face search at start     --inspect PATH  open the inspector on a GGUF file
 //!   --shot PATH        save a screenshot as PNG and quit       --shot-delay S  wait S seconds first       --shot-after-reply
+//!   --stop-after S     press Stop S seconds after a reply starts (tests)
 //!   --size WxH         window size in points
 
 #![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
@@ -52,6 +53,7 @@ fn parse_args() -> Result<StartupOpts, String> {
             "--send" => o.send = Some(value("--send")?),
             "--search" => o.hf_query = Some(value("--search")?),
             "--inspect" => o.inspect = Some(value("--inspect")?.into()),
+            "--stop-after" => o.stop_after = Some(value("--stop-after")?.parse().map_err(|_| "--stop-after needs a number".to_string())?),
             "--shot" => o.shot = Some(value("--shot")?.into()),
             "--shot-delay" => o.shot_delay = value("--shot-delay")?.parse().map_err(|_| "--shot-delay needs a number".to_string())?,
             "--shot-after-reply" => o.shot_after_reply = true,

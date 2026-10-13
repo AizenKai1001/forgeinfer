@@ -10,7 +10,7 @@ use std::time::{Duration, Instant};
 use serde_json::{json, Value};
 
 use crate::chats::{Role, Stats};
-use crate::settings::GenParams;
+use crate::settings::{GenParams, ThinkingMode};
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Endpoint {
@@ -105,7 +105,11 @@ pub fn chat_body(p: &ChatParams, extended: bool) -> Value {
         }
         body["repetition_penalty"] = json!(p.gen.repeat_penalty);
         body["repeat_penalty"] = json!(p.gen.repeat_penalty);
-        body["chat_template_kwargs"] = json!({"enable_thinking": p.gen.thinking});
+        match p.gen.thinking {
+            ThinkingMode::Default => {}
+            ThinkingMode::On => body["chat_template_kwargs"] = json!({"enable_thinking": true}),
+            ThinkingMode::Off => body["chat_template_kwargs"] = json!({"enable_thinking": false}),
+        }
     }
     body
 }
@@ -293,7 +297,10 @@ mod tests {
         assert_eq!(b["stream"], true);
         assert_eq!(b["max_tokens"], 100);
         assert_eq!(b["top_k"], 40);
-        assert_eq!(b["chat_template_kwargs"]["enable_thinking"], true);
+        assert!(b.get("chat_template_kwargs").is_none(), "the model's own default is left alone");
+        let mut q = p.clone();
+        q.gen.thinking = ThinkingMode::Off;
+        assert_eq!(chat_body(&q, true)["chat_template_kwargs"]["enable_thinking"], false);
         let plain = chat_body(&p, false);
         assert!(plain.get("top_k").is_none());
         assert!(plain.get("chat_template_kwargs").is_none());

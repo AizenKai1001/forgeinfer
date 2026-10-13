@@ -60,6 +60,29 @@ impl KvMode {
     }
 }
 
+/// Whether thinking models reason before they answer.
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum ThinkingMode {
+    /// Leave it to the model's own chat template (Qwen3.5 small models answer directly, bigger ones think).
+    #[default]
+    Default,
+    On,
+    Off,
+}
+
+impl ThinkingMode {
+    pub const ALL: [ThinkingMode; 3] = [ThinkingMode::Default, ThinkingMode::On, ThinkingMode::Off];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            ThinkingMode::Default => "Model default",
+            ThinkingMode::On => "Always think first",
+            ThinkingMode::Off => "Answer directly",
+        }
+    }
+}
+
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 #[serde(default)]
 pub struct GenParams {
@@ -71,12 +94,12 @@ pub struct GenParams {
     /// 0 = no limit (the server's default).
     pub max_tokens: u32,
     /// Let thinking models (Qwen3, Qwen3.5) reason before they answer.
-    pub thinking: bool,
+    pub thinking: ThinkingMode,
 }
 
 impl Default for GenParams {
     fn default() -> Self {
-        GenParams { temperature: 0.7, top_p: 0.9, top_k: 40, min_p: 0.0, repeat_penalty: 1.05, max_tokens: 0, thinking: true }
+        GenParams { temperature: 0.7, top_p: 0.9, top_k: 40, min_p: 0.0, repeat_penalty: 1.05, max_tokens: 0, thinking: ThinkingMode::Default }
     }
 }
 
@@ -110,6 +133,8 @@ pub struct Settings {
     pub system_prompt: String,
     pub last_model: String,
     pub auto_load_last: bool,
+    /// Unload the model after this many idle minutes (0 = never): frees the GPU for games and other programs.
+    pub idle_eject_minutes: u32,
     /// Extra command line arguments for the engine, one string, split on spaces.
     pub extra_args: String,
     /// Interface zoom (1.0 = normal).
@@ -137,6 +162,7 @@ impl Default for Settings {
             system_prompt: String::new(),
             last_model: String::new(),
             auto_load_last: false,
+            idle_eject_minutes: 0,
             extra_args: String::new(),
             zoom: 1.0,
         }

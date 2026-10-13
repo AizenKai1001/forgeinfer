@@ -385,7 +385,15 @@ fn params(app: &mut StudioApp, ui: &mut Ui) {
             ui.add(egui::DragValue::new(&mut g.max_tokens).range(0..=200_000).speed(16.0));
             muted(ui, "0 = no limit");
         });
-        ui.checkbox(&mut g.thinking, "Let thinking models reason first");
+        ui.horizontal(|ui| {
+            ui.label("Thinking");
+            egui::ComboBox::from_id_salt("thinking_mode").selected_text(g.thinking.label()).show_ui(ui, |ui| {
+                for m in crate::settings::ThinkingMode::ALL {
+                    ui.selectable_value(&mut g.thinking, m, m.label());
+                }
+            });
+        });
+        muted(ui, "For Qwen3 and Qwen3.5. The small Qwen3.5 models answer directly unless told to think.");
         section(ui, "System prompt");
         ui.add(TextEdit::multiline(&mut app.settings.system_prompt).desired_rows(5).desired_width(f32::INFINITY).hint_text("You are a helpful assistant."));
         muted(ui, "Sent first in every conversation.");
