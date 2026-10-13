@@ -40,6 +40,8 @@ pub struct SamplingParams {
     pub seed: Option<u64>,
     /// `response_format: json_object`: the answer is a JSON object (candidates that would break the grammar are removed before every draw)
     pub json_object: bool,
+    /// `response_format: json_schema`: the answer follows this schema (compiled by `constrain::SchemaDoc::from_json`)
+    pub json_schema: Option<std::sync::Arc<constrain::SchemaDoc>>,
 }
 
 impl SamplingParams {
@@ -52,6 +54,7 @@ impl SamplingParams {
             repetition_penalty: self.repetition_penalty.or(base.repetition_penalty),
             seed: self.seed.or(base.seed),
             json_object: self.json_object || base.json_object,
+            json_schema: self.json_schema.clone().or_else(|| base.json_schema.clone()),
         }
     }
 }
@@ -1152,7 +1155,11 @@ fn run_job(
     };
     let t_decode = Instant::now();
     let mut spec = SpecStats::default();
-    let mut constraint = p.json_object.then(constrain::Constraint::json_object);
+    let mut constraint = match (&p.json_schema, p.json_object) {
+        (Some(doc), _) => Some(constrain::Constraint::from_schema(doc.clone())),
+        (None, true) => Some(constrain::Constraint::json_object()),
+        (None, false) => None,
+    };
     let reason = generate(sess, slot, &mut sampler, &mut out, speculate, lookup, &mut constraint, &mut spec)?;
     if std::env::var("FORGE_SPEC_STATS").is_ok() && spec.cycles > 0 {
         eprintln!(

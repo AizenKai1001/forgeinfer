@@ -108,6 +108,7 @@ pub fn serve(args: &[String]) -> i32 {
             repetition_penalty: num("--repeat-penalty").map(|v| v as f32),
             seed: None,
             json_object: false,
+            json_schema: None,
         },
     };
     // switches the runtime reads from the environment, as flags: an app or a script should not have to know the variable names

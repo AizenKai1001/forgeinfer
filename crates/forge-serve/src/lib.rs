@@ -322,19 +322,35 @@ fn sampling_from(j: &Json) -> SamplingParams {
             .map(|v| v as f32),
         seed: j.get("seed").and_then(|v| v.as_u64()),
         json_object: false,
+        json_schema: None,
     }
 }
 
-/// `response_format`: `{"type": "json_object"}` constrains the answer to a JSON object. `text` (or nothing) is the default; `json_schema` is not supported yet and is refused instead of being
-/// answered with unchecked JSON.
-fn json_mode(body: &Json) -> Result<bool, String> {
-    match body.get("response_format") {
-        None => Ok(false),
-        Some(rf) => match rf.get("type").and_then(|t| t.as_str()) {
-            None | Some("text") => Ok(false),
-            Some("json_object") => Ok(true),
-            Some(other) => Err(format!("response_format type {other:?} is not supported: use \"json_object\" or \"text\"")),
-        },
+/// What `response_format` asks for.
+enum Format {
+    Text,
+    /// `{"type": "json_object"}`: any JSON object
+    Object,
+    /// `{"type": "json_schema", "json_schema": {"name": ..., "schema": {...}}}`: a document that follows the schema
+    Schema(std::sync::Arc<forge_engine::constrain::SchemaDoc>),
+}
+
+/// `response_format`: `text` (or nothing) is the default; `json_object` and `json_schema` constrain the answer (the schema is compiled here, so that an unsupported one is a 400 and not a
+/// failure in the middle of a generation).
+fn response_format(body: &Json) -> Result<Format, String> {
+    let Some(rf) = body.get("response_format") else { return Ok(Format::Text) };
+    match rf.get("type").and_then(|t| t.as_str()) {
+        None | Some("text") => Ok(Format::Text),
+        Some("json_object") => Ok(Format::Object),
+        Some("json_schema") => {
+            let schema = rf
+                .get("json_schema")
+                .and_then(|j| j.get("schema"))
+                .ok_or("response_format json_schema needs json_schema.schema")?;
+            let doc = forge_engine::constrain::SchemaDoc::from_json(schema).map_err(|e| format!("response_format json_schema.schema: {e}"))?;
+            Ok(Format::Schema(std::sync::Arc::new(doc)))
+        }
+        Some(other) => Err(format!("response_format type {other:?} is not supported: use \"json_schema\", \"json_object\" or \"text\"")),
     }
 }
 
@@ -379,7 +395,8 @@ fn chat_request(body: &Json) -> Result<Request, String> {
     if tools.len() > 64 {
         return Err("at most 64 tools".into());
     }
-    let json = json_mode(body)?;
+    let format = response_format(body)?;
+    let json = !matches!(format, Format::Text);
     let mut enable_thinking = body
         .get("chat_template_kwargs")
         .and_then(|k| k.get("enable_thinking"))
@@ -409,7 +426,11 @@ fn chat_request(body: &Json) -> Result<Request, String> {
             enable_thinking,
         },
         sampling: SamplingParams {
-            json_object: json,
+            json_object: matches!(format, Format::Object),
+            json_schema: match &format {
+                Format::Schema(d) => Some(d.clone()),
+                _ => None,
+            },
             ..sampling_from(body)
         },
         max_tokens,
@@ -1096,8 +1117,16 @@ mod tests {
             Prompt::Chat { enable_thinking, .. } => assert_eq!(enable_thinking, Some(false), "a reasoning block cannot come before a constrained answer"),
             Prompt::Raw(_) => panic!("a chat request"),
         }
-        let err = request(r#"{"messages": [{"role": "user", "content": "hi"}], "response_format": {"type": "json_schema", "json_schema": {"name": "x", "schema": {}}}}"#).err().unwrap();
-        assert!(err.contains("json_schema") && err.contains("not supported"), "{err}");
+        let schema = request(r#"{"messages": [{"role": "user", "content": "hi"}], "response_format": {"type": "json_schema", "json_schema": {"name": "x", "strict": true, "schema": {"type": "object", "properties": {"a": {"type": "integer"}}, "required": ["a"]}}}}"#).unwrap();
+        assert!(!schema.sampling.json_object && schema.sampling.json_schema.is_some());
+        match schema.prompt {
+            Prompt::Chat { enable_thinking, .. } => assert_eq!(enable_thinking, Some(false)),
+            Prompt::Raw(_) => panic!("a chat request"),
+        }
+        let err = |rf: &str| request(&format!(r#"{{"messages": [{{"role": "user", "content": "hi"}}], "response_format": {rf}}}"#)).err().unwrap();
+        assert!(err(r#"{"type": "json_schema"}"#).contains("json_schema.schema"));
+        assert!(err(r#"{"type": "json_schema", "json_schema": {"schema": {"type": "foo"}}}"#).contains("unknown type"));
+        assert!(err(r#"{"type": "xml"}"#).contains("not supported"));
     }
 }
 
