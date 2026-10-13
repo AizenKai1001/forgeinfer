@@ -29,7 +29,7 @@
   "system_prompt": "",
   "presets": [],
   "preset": "",
-  "last_model": "<dev>\\llama.cpp\\models\\Qwen3.5-0.8B-Q4_K_M.gguf",
+  "last_model": "<repo>\\studio\\retry_test\\Qwen3.5-0.8B-Q4_K_M.gguf",
   "auto_load_last": false,
   "idle_eject_minutes": 0,
   "extra_args": "",

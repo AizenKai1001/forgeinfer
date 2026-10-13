@@ -385,7 +385,7 @@ fn empty_state(app: &mut StudioApp, ui: &mut Ui) {
             }
             ui.add_space(10.0);
         }
-        if let EngineState::Failed { model, message } = app.engine.state() {
+        if let EngineState::Failed { model, message, .. } = app.engine.state() {
             let m = message.to_lowercase();
             let no_gpu = m.contains("no_device") || m.contains("cuinit") || m.contains("nvcuda") || m.contains("no cuda");
             ui.allocate_ui_with_layout(egui::vec2(560.0, 0.0), Layout::top_down(Align::Min), |ui| {

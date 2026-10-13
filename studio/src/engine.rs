@@ -25,6 +25,8 @@ pub enum EngineState {
     Failed {
         model: String,
         message: String,
+        /// the process ended before the model was ready (an engine that dies while it answers is not a loading problem)
+        during_load: bool,
     },
 }
 
@@ -331,7 +333,11 @@ impl EngineManager {
             if status.success() && !was_loading {
                 self.set_state(EngineState::Idle);
             } else {
-                self.set_state(EngineState::Failed { model, message });
+                self.set_state(EngineState::Failed {
+                    model,
+                    message,
+                    during_load: was_loading,
+                });
             }
             if let Ok(mut s) = self.shared.lock() {
                 s.generation += 1;
