@@ -1713,7 +1713,8 @@ pub struct GpuSession<'m> {
     /// the int8 activation buffers could not be allocated (a model that fills the card): the integer GEMMs stay off for the rest of the session
     mmq_no_mem: std::cell::Cell<bool>,
     /// the prompt attention runs on the Ampere kernels of flash_a80.cu (from compute capability 8; FORGE_FLASH_A80=0 keeps the sm_75 kernels of flash.cu / flash256.cu); `flash_hacc`: the scores S = Q K^T
-    /// accumulate in fp16 inside the tensor core (flushed into fp32 after every k16 step), default as `f16acc` (FORGE_FLASH_HACC=1 / 0 forces it)
+    /// accumulate in fp16 inside the tensor core (flushed into fp32 after every k16 step). Off by default: it buys only 3 to 4 percent of a long prompt (the kernel 1.15 to 1.25x) for a KL of 4e-4 (Qwen3.5, 8 attention
+    /// layers) to 1.2e-3 (a dense 28-layer model), while the fp32 form is bit-identical to the old kernels at head width 128 (FORGE_FLASH_HACC=1 turns it on)
     flash_a80: bool,
     flash_hacc: bool,
     /// the Gated DeltaNet prompt scan on blocks of 128 threads with several state columns per thread (prefill_h.cu `gdn_scan_nc_*`, bit-identical results; FORGE_SCAN_NC=0 keeps one column per thread)
@@ -1928,11 +1929,7 @@ impl<'m> GpuSession<'m> {
         let plain_s80 = m.dev.info.cc_major >= 8 && std::env::var("FORGE_PLAIN_S80").map(|v| v != "0").unwrap_or(true);
         let mmq_on = m.k.mmq_ok && std::env::var("FORGE_MMQ").map(|v| v != "0").unwrap_or(true);
         let flash_a80 = m.dev.info.cc_major >= 8 && std::env::var("FORGE_FLASH_A80").map(|v| v != "0").unwrap_or(true);
-        let flash_hacc = match std::env::var("FORGE_FLASH_HACC").ok().as_deref() {
-            Some("1") => m.dev.info.cc_major >= 8,
-            Some(_) => false,
-            None => f16acc,
-        };
+        let flash_hacc = std::env::var("FORGE_FLASH_HACC").map(|v| v == "1").unwrap_or(false) && m.dev.info.cc_major >= 8;
         let mut s = GpuSession {
             m,
             max_ctx,
