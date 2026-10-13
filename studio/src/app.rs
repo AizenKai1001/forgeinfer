@@ -706,6 +706,20 @@ impl StudioApp {
                 }
             }
         }
+        // a .gguf file or a folder dropped on the window: its folder joins the model folders
+        let dropped: Vec<PathBuf> = self.ctx.input(|i| i.raw.dropped_files.iter().map(|f| f.path().to_path_buf()).collect());
+        for p in dropped {
+            let dir = if p.is_dir() { p.clone() } else { p.parent().map(|d| d.to_path_buf()).unwrap_or_else(|| p.clone()) };
+            let shown = dir.display().to_string();
+            if self.settings.model_dirs.contains(&shown) {
+                self.toast("That folder is already in My models.");
+            } else {
+                self.settings.model_dirs.push(shown.clone());
+                self.rescan();
+                self.toast(format!("Added {shown} to My models."));
+            }
+            self.screen = Screen::Library;
+        }
         // GPU memory in use and free RAM change while models load: look again every few seconds
         let every = if self.screen == Screen::Hardware || self.engine.state().is_busy() { Duration::from_secs(3) } else { Duration::from_secs(12) };
         if !self.live_busy && self.live_at.elapsed() > every && self.hw.threads > 0 {

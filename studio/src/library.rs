@@ -261,7 +261,8 @@ pub fn scan(dirs: &[PathBuf], with_ollama: bool) -> Vec<ModelEntry> {
             }
         }
     });
-    entries.sort_by(|a, b| b.modified.cmp(&a.modified).then_with(|| a.name.cmp(&b.name)));
+    // vision projectors go last: they are not models to chat with
+    entries.sort_by(|a, b| a.projector.cmp(&b.projector).then_with(|| b.modified.cmp(&a.modified)).then_with(|| a.name.cmp(&b.name)));
     entries
 }
 

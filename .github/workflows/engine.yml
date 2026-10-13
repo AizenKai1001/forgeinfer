@@ -1,0 +1,45 @@
+name: engine
+
+# Builds the ForgeInfer engine (`forge`) with CUDA for Windows and Linux. No GPU is needed to compile: nvcc turns the kernels into cubins (sm_75, sm_80, sm_86, sm_89) and PTX,
+# and the program loads the CUDA driver at run time. Start it by hand from the Actions tab, or call it from the release workflow.
+on:
+  workflow_dispatch:
+  workflow_call:
+
+jobs:
+  windows:
+    name: forge.exe (Windows, CUDA 12.9)
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Jimver/cuda-toolkit@v0.2.36
+        with:
+          cuda: "12.9.1"
+          method: "network"
+      - name: build
+        shell: pwsh
+        run: powershell -ExecutionPolicy Bypass -File tools/build_windows.ps1 -CudaArchs 89 -Jobs 4
+      - uses: actions/upload-artifact@v4
+        with:
+          name: forge-windows-x86_64
+          path: target/release/forge.exe
+
+  linux:
+    name: forge (Linux, CUDA 12.9)
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Jimver/cuda-toolkit@v0.2.36
+        with:
+          cuda: "12.9.1"
+          method: "network"
+      - name: build
+        env:
+          FORGE_CUDA_ARCHS: "86,89"
+        run: cargo build --release -p forge-cli
+      - uses: actions/upload-artifact@v4
+        with:
+          name: forge-linux-x86_64
+          path: target/release/forge

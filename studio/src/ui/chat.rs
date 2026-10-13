@@ -329,6 +329,16 @@ fn message_view(app: &mut StudioApp, ui: &mut Ui, i: usize, last: bool) {
     }
 }
 
+/// "Context: 1,234 of 8,192 tokens": what the last answer's prompt and reply took of the loaded context (local engines only).
+fn context_meter(app: &StudioApp) -> Option<String> {
+    if app.settings.engine == EngineKind::External {
+        return None;
+    }
+    let used = app.chat.messages.iter().rev().find_map(|m| m.stats.as_ref()).map(|s| s.prompt_tokens + s.completion_tokens)?;
+    let total = app.engine.current().map(|l| l.ctx)?;
+    Some(format!("Context: {used} of {total} tokens ({:.0} %)", 100.0 * used as f64 / total.max(1) as f64))
+}
+
 fn input_box(app: &mut StudioApp, ui: &mut Ui) {
     centered(ui, COLUMN, |ui| {
         Frame::new().fill(theme::CARD).corner_radius(CornerRadius::same(14)).stroke(Stroke::new(1.0, theme::BORDER)).inner_margin(Margin::symmetric(12, 8)).show(ui, |ui| {
@@ -374,6 +384,12 @@ fn input_box(app: &mut StudioApp, ui: &mut Ui) {
                 });
             });
         });
+        if let Some(text) = context_meter(app) {
+            ui.add_space(2.0);
+            ui.with_layout(Layout::right_to_left(Align::Min), |ui| {
+                ui.label(RichText::new(text).small().color(theme::MUTED));
+            });
+        }
     });
 }
 

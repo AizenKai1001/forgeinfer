@@ -17,13 +17,13 @@ Release binaries for Windows, Linux and macOS are attached to the GitHub release
 - Answers stream in. Markdown is rendered: headings, bold and italic, inline code, fenced code blocks (with a Copy button), lists (nested), tables, quotes, links (click to open). A reply that is still streaming is rendered as it grows; an unclosed code fence is a code block up to the end.
 - Thinking models (Qwen3, Qwen3.5) show a folded **Thought for N s** block above the answer; it is open while the model is still thinking. The switch is in **Parameters**.
 - Under each answer: tokens, tokens per second (the server's own figure when it reports one), time to first token; **Copy**, **Regenerate**, **Delete**.
-- **Parameters** (the button at the top right): temperature, top P, top K, min P, repeat penalty, max tokens, the system prompt (global, and one for this chat only).
+- **Parameters** (the button at the top right): temperature, top P, top K, min P, repeat penalty, max tokens, thinking (*model default*, always, or answer directly: the small Qwen3.5 models answer directly by default, the bigger ones think), the system prompt (global, and one for this chat only).
 - Chats are saved after every answer, one JSON file each in the data folder; the list on the left opens, deletes and starts chats. **Copy chat** puts the conversation on the clipboard as Markdown.
-- Enter sends, Shift+Enter adds a line, **Stop** cancels (the engine stops generating as soon as the connection closes).
+- Enter sends, Shift+Enter adds a line, **Stop** cancels (the engine stops generating as soon as the connection closes). Under the input box: how much of the loaded context the conversation uses.
 
 ### My models
 
-Lists every `.gguf` file under the folders in **Model folders** (the app's own `models` folder, LM Studio's folder if it exists) and every model in Ollama's store (`~/.ollama/models`, read through its manifests). Nothing is copied or moved. Each card shows the architecture, parameter count, quantization, file size, trained context, where it came from, and a badge: *fits in video memory*, *runs split between GPU and CPU*, or *too large*. A model the ForgeInfer engine cannot run says why (architecture or tokenizer) when you hover the disabled **Load** button. **Inspect** opens the inspector.
+Lists every `.gguf` file under the folders in **Model folders** (the app's own `models` folder, LM Studio's folder if it exists) and every model in Ollama's store (`~/.ollama/models`, read through its manifests). Nothing is copied or moved. Each card shows the architecture, parameter count, quantization, file size, trained context, where it came from, and a badge: *fits in video memory*, *runs split between GPU and CPU*, or *too large*. A model the ForgeInfer engine cannot run says why (architecture or tokenizer) when you hover the disabled **Load** button. Drop a `.gguf` file or a folder on the window to add its folder. **Inspect** opens the inspector.
 
 ### The inspector
 
@@ -62,13 +62,14 @@ Settings → Engine picks what runs the models:
 | **llama.cpp server** | any GGUF llama.cpp supports, on any GPU or the CPU; works on macOS | `llama-server` from a [llama.cpp release](https://github.com/ggml-org/llama.cpp/releases) in the `PATH` or in Settings |
 | **Connect to a running server** | nothing is started: Studio talks to the address you enter | an OpenAI-compatible server (Ollama on `:11434`, LM Studio on `:1234`, vLLM, the engine on another computer) |
 
-Settings → When a model loads: context length, KV-cache mode (16-bit, 8-bit, 4-bit), speculative depth (Qwen3.5 models draft tokens with their own prediction head; 2 to 3 is fastest), extra engine arguments, and "load the last model when the app starts".
+Settings → When a model loads: context length, KV-cache mode (16-bit, 8-bit, 4-bit), speculative depth (Qwen3.5 models draft tokens with their own prediction head; 2 to 3 is fastest), extra engine arguments, "load the last model when the app starts", and **Unload after N idle minutes** (frees the video memory for games; any request to the local server counts as activity).
 
 ## Where things are
 
 | what | where |
 |---|---|
 | settings, chats | Windows `%APPDATA%\ForgeStudio`, macOS `~/Library/Application Support/ForgeStudio`, Linux `~/.config/forge-studio` (override: `FORGE_STUDIO_HOME`) |
+| portable mode | create a folder named `data` next to the program and everything (settings, chats, downloads) is kept there instead |
 | downloads | `<data folder>/models` unless you change it in Settings |
 
 ## Command line

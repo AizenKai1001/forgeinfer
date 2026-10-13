@@ -189,10 +189,17 @@ impl Default for Settings {
     }
 }
 
-/// The app's own folder: settings, chats, downloaded models. `FORGE_STUDIO_HOME` overrides it.
+/// The app's own folder: settings, chats, downloaded models. `FORGE_STUDIO_HOME` overrides it; a folder named `data` next to the program
+/// makes the app portable (everything stays beside the program).
 pub fn data_dir() -> PathBuf {
     if let Some(p) = std::env::var_os("FORGE_STUDIO_HOME") {
         return PathBuf::from(p);
+    }
+    if let Some(dir) = std::env::current_exe().ok().and_then(|e| e.parent().map(Path::to_path_buf)) {
+        let portable = dir.join("data");
+        if portable.is_dir() {
+            return portable;
+        }
     }
     if cfg!(windows) {
         if let Some(p) = std::env::var_os("APPDATA") {
