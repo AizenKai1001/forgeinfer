@@ -57,13 +57,13 @@ Two practical points:
 
 ## Prompt lookup: speculation for every model, up to 2x on edits
 
-The prediction head helps only Qwen3.5. **Prompt lookup** needs no head and no second model: when the last few tokens of the text (3 to 6 of them) also occur earlier, in the prompt or in the answer so far, the tokens that followed them there are proposed as drafts, and the main model verifies the whole run in one pass over the weights, exactly as it verifies the head's drafts. Code edits, quoted passages, corrections of a pasted text, lists and JSON repeat themselves, and then 4 to 8 tokens are confirmed per pass instead of 1. It is on by default (`--no-lookup` or `FORGE_PLD=0` switch it off, `--lookup-draft N` sets the longest run, default 7; `--no-speculate` turns off every kind of speculation).
+The prediction head helps only Qwen3.5. **Prompt lookup** needs no head and no second model: when the last few tokens of the text (3 to 6 of them) also occur earlier, in the prompt or in the answer so far, the tokens that followed them there are proposed as drafts, and the main model verifies the whole run in one pass over the weights, exactly as it verifies the head's drafts. Code edits, quoted passages, corrections of a pasted text, lists and JSON repeat themselves, and then 4 to 8 tokens are confirmed per pass instead of 1. It is on by default (`--no-lookup` or `FORGE_PLD=0` switch it off, `--lookup-draft N` sets the longest run, default 11 (a run starts at 7 and doubles after a cycle whose drafts were all right); `--no-speculate` turns off every kind of speculation).
 
 Measured with `tools/pld_bench.py` (a 45-line Python file to type-annotate, a JSON array to generate, a five-bullet summary with quotes, a grammar fix, and a free-prose explanation; 260 to 700 tokens each; the server's own timings), tokens per second without and with the lookup:
 
 | model, GPU | code edit | JSON | quotes | grammar fix | prose |
 |---|---|---|---|---|---|
-| Qwen3.5-4B, no head, RTX 4060 (greedy) | 79.5 to **156.7** (1.97x) | 80.3 to **128.0** (1.59x) | 80.2 to 86.7 (1.08x) | 81.0 to **170.3** (2.10x) | 81.0 to 80.3 |
+| Qwen3.5-4B, no head, RTX 4060 (greedy) | 79.7 to **159.2** (2.00x) | 80.6 to **128.5** (1.59x) | 80.4 to 86.7 (1.08x) | 81.1 to **182.7** (2.25x) | 81.3 to 80.5 |
 | Qwen3.5-4B, no head, RTX 4060 (T 0.7) | 78.9 to **155.5** (1.97x) | 79.8 to **122.8** (1.54x) | 79.7 to 89.7 (1.13x) | 80.4 to **167.8** (2.09x) | 80.2 to 80.3 |
 | Qwen3-4B (dense), no head, RTX 2060 SUPER (greedy) | 112.1 to **194.3** (1.73x) | 123.8 to 135.4 (1.09x) | 116.4 to **170.7** (1.47x) | 122.2 to **258.9** (2.12x) | 125.2 to 127.4 |
 | Qwen3.5-9B + head, RTX 4060 (greedy, 12 rows) | 106.5 to **144.5** (1.36x) | 108.3 to 108.5 | 93.9 to 114.3 (1.22x) | 116.4 to **162.4** (1.40x) | 76.1 to 75.9 |

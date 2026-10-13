@@ -6,7 +6,7 @@
 //! (a longer match is a better predictor), and a lookup is used only when its average beats the break-even point against the head's own chain (about `0.85 (1 + a) - 1` accepted drafts, with `a` the
 //! head's average: its cycle costs 6 ms of drafting more) or, without a head, against one plain step (0.3 drafts).
 //!
-//! On by default (`--no-lookup`, `FORGE_PLD=0` or `--no-speculate` turn it off); `FORGE_PLD_DRAFT` (most drafted tokens, default 7), `FORGE_PLD_MIN` / `FORGE_PLD_MAX` (shortest and longest matched n-gram, default 3 and 6) tune it.
+//! On by default (`--no-lookup`, `FORGE_PLD=0` or `--no-speculate` turn it off); `FORGE_PLD_DRAFT` (most drafted tokens, default 11; a run starts at 7 and doubles after a cycle whose drafts were all right), `FORGE_PLD_MIN` / `FORGE_PLD_MAX` (shortest and longest matched n-gram, default 3 and 6) tune it.
 
 /// The tokens after the most recent earlier occurrence of the last `n` tokens of `hist` (n from `max_n` down to `min_n`: the longest match wins), at most `k` of them, with the n that matched;
 /// None when nothing matches.
@@ -53,6 +53,8 @@ pub struct Pld {
     max_n: usize,
     pub max_draft: usize,
     min_draft: usize,
+    /// the run proposed now: it doubles after a cycle whose drafts were all right (a long copy); shrinking it after a miss measured worse (extra rows are cheap)
+    cur: usize,
     has_head: bool,
     /// drafts accepted per lookup cycle, averaged for each matched length
     by_len: [f32; BUCKETS],
@@ -72,8 +74,9 @@ impl Pld {
             on,
             min_n,
             max_n: env_usize("FORGE_PLD_MAX", 6).clamp(min_n, BUCKETS - 1),
-            max_draft: env_usize("FORGE_PLD_DRAFT", 7).clamp(1, max_rows.saturating_sub(1).max(1)),
+            max_draft: env_usize("FORGE_PLD_DRAFT", 11).clamp(1, max_rows.saturating_sub(1).max(1)),
             min_draft: 2,
+            cur: 7,
             has_head,
             by_len: [PRIOR; BUCKETS],
             head_avg: 1.5,
@@ -101,14 +104,17 @@ impl Pld {
         if !self.on {
             return None;
         }
-        let (n, d) = find(hist, self.min_n, self.max_n, self.max_draft.min(room))?;
+        let (n, d) = find(hist, self.min_n, self.max_n, self.cur.min(self.max_draft).min(room))?;
         (d.len() >= self.min_draft && self.by_len[n] >= self.break_even()).then_some((n, d))
     }
 
-    /// The outcome of a lookup cycle that matched `n` tokens: `accepted` of its drafts were right.
-    pub fn record(&mut self, n: usize, accepted: usize) {
+    /// The outcome of a lookup cycle that matched `n` tokens: `accepted` of its `proposed` drafts were right.
+    pub fn record(&mut self, n: usize, accepted: usize, proposed: usize) {
         let v = &mut self.by_len[n];
         *v = 0.7 * *v + 0.3 * accepted as f32;
+        if accepted >= proposed {
+            self.cur = (self.cur * 2).min(self.max_draft.max(1));
+        }
     }
 
     /// The outcome of a cycle of the head's chain: `accepted` of its drafts were right.
@@ -128,6 +134,7 @@ mod tests {
             max_n: 4,
             max_draft: 7,
             min_draft: 2,
+            cur: 7,
             has_head,
             by_len: [PRIOR; BUCKETS],
             head_avg: 1.5,
@@ -170,14 +177,14 @@ mod tests {
         let hist = [5, 1, 2, 9, 3, 1, 2];
         assert!(p.propose(&hist, 10).is_some());
         for _ in 0..8 {
-            p.record(2, 0);
+            p.record(2, 0, 4);
         }
         assert!(p.propose(&hist, 10).is_none(), "eight misses in a row put the 2-gram below the break-even point");
         for _ in 0..200 {
             p.tick();
         }
         assert!(p.propose(&hist, 10).is_some(), "and it is tried again after a while");
-        p.record(2, 6);
+        p.record(2, 6, 6);
         assert!(p.propose(&hist, 10).is_some());
     }
 
@@ -193,10 +200,26 @@ mod tests {
         }
         assert!(p.propose(&hist, 10).is_none());
         // a lookup that has proven itself (5 accepted) beats it
-        p.record(2, 7);
-        p.record(2, 7);
-        p.record(2, 7);
+        p.record(2, 7, 7);
+        p.record(2, 7, 7);
+        p.record(2, 7, 7);
         assert!(p.propose(&hist, 10).is_some());
+    }
+
+    #[test]
+    fn the_run_doubles_after_a_full_hit_and_stays_after_a_miss() {
+        let mut p = pld(false);
+        p.max_draft = 15;
+        p.cur = 7;
+        let hist: Vec<u32> = (0..60).chain(0..20).collect(); // an earlier run of 40+ tokens follows the matched n-gram
+        assert_eq!(p.propose(&hist, 100).unwrap().1.len(), 7);
+        p.record(4, 7, 7);
+        assert_eq!(p.propose(&hist, 100).unwrap().1.len(), 14);
+        p.record(4, 14, 14);
+        assert_eq!(p.propose(&hist, 100).unwrap().1.len(), 15, "capped by max_draft");
+        p.record(4, 5, 15);
+        assert_eq!(p.propose(&hist, 100).unwrap().1.len(), 15, "a miss does not shorten it");
+        assert_eq!(p.propose(&hist, 6).unwrap().1.len(), 6, "the room caps it");
     }
 
     #[test]

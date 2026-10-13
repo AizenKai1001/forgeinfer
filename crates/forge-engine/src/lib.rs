@@ -1321,7 +1321,13 @@ fn reserve_lookup_rows(sess: &mut GpuSession, pld: &mut pld::Pld, head_rows: usi
                 if std::env::var("FORGE_SPEC_STATS").is_ok() {
                     eprintln!("[pld] {rows} rows: {e}");
                 }
-                rows /= 2;
+                // (the multi-row kernels come in tiles of 4, 8, 12 and 16 rows: fewer rows than the tile below cost the same as the whole tile)
+                rows = match rows {
+                    r if r > 12 => 12,
+                    r if r > 8 => 8,
+                    r if r > 4 => 4,
+                    _ => 0,
+                };
             }
         }
     }
@@ -1443,7 +1449,7 @@ fn generate_deep(
         if from_lookup {
             spec.pld_cycles += 1;
             spec.pld_accepted += keep - 1;
-            pld.record(lookup_n, keep - 1);
+            pld.record(lookup_n, keep - 1, rows.len() - 1);
         } else if pld.on && head_ok {
             pld.record_head(keep - 1);
         }

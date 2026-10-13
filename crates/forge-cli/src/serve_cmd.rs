@@ -6,7 +6,7 @@
 //!                       [--mtp DIR|FILE] [--no-speculate] [--no-lookup] [--lookup-draft N]
 //!                       [--kv fp16|int8|int4|k8v4] [--depth N] [--chunk N] [--threads N] [--host-ffn LAYERS|all] [--vram-reserve MIB]
 //!   --kv           quantized KV cache (int8 halves its memory with a negligible loss); --depth: drafted tokens per step of the MTP head (2 or 3 is best); --chunk: prompt tokens per prefill pass;
-//!   --no-lookup    no prompt-lookup drafting (on by default, any model: tokens that repeat earlier text are drafted from the text itself and verified in one sweep; --lookup-draft: at most N of them, default 7);
+//!   --no-lookup    no prompt-lookup drafting (on by default, any model: tokens that repeat earlier text are drafted from the text itself and verified in one sweep; --lookup-draft: at most N of them, default 11; a run starts at 7 and doubles after a cycle whose drafts were all right);
 //!   --no-speculate no speculative decoding at all (neither the MTP head nor the lookup);
 //!   --threads      CPU threads for the feed-forward layers kept in host memory; --host-ffn: force those layers (default: chosen automatically when the model does not fit the GPU);
 //!   --vram-reserve MiB of GPU memory left free for other programs.
