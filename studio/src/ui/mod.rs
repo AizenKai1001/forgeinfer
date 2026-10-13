@@ -246,11 +246,16 @@ fn right_to_left(ui: &mut Ui, app: &StudioApp) {
             } else {
                 format!("  {}", human_gib(g.vram_total))
             };
-            ui.label(
+            // under about 700 MiB free the Windows driver starts to page video memory and every GPU program slows down (a 2.4 times slower engine at 160 MiB free was measured)
+            let tight = g.vram_used > 0 && g.vram_total.saturating_sub(g.vram_used) < (700u64 << 20);
+            let r = ui.label(
                 RichText::new(format!("{}{}", g.name, used))
                     .small()
-                    .color(theme::MUTED),
+                    .color(if tight { theme::WARN } else { theme::MUTED }),
             );
+            if tight {
+                r.on_hover_text("Little video memory is left. The driver may start to page and everything on the GPU slows down. Close other programs, lower the context length or turn on the 8-bit KV cache in Settings.");
+            }
         }
     });
 }
