@@ -104,6 +104,6 @@ jobs:
           body: |
             Forge Studio ${{ github.ref_name }} (pre-release): the desktop app for Windows, Linux and macOS, and the ForgeInfer engine (CUDA) for Windows and Linux, built by GitHub Actions from the tagged source.
 
-            Unsigned binaries. The window has been run on Windows 11 with an RTX 4060; Linux and macOS builds are compiled and unit-tested by CI but nobody has run the window there yet: bug reports are welcome. Documentation: docs/GETTING_STARTED.md.
+            Unsigned binaries. The window has been run on Windows 11 with an RTX 4060 and on Ubuntu 24.04 (X11) with an RTX 2060 SUPER; the macOS build is compiled and unit-tested by CI but nobody has run its window yet: bug reports are welcome. Documentation: docs/GETTING_STARTED.md; measured speeds against LM Studio's engine, llama.cpp and Ollama: docs/PERFORMANCE.md.
 
             Developed with Claude Code (Anthropic).
