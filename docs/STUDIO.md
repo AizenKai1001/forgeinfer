@@ -7,7 +7,7 @@ cd studio
 cargo run --release
 ```
 
-Release binaries for Windows, Linux and macOS are attached to the GitHub releases (built by `.github/workflows/release.yml`).
+Tagged versions get release archives for Windows (Studio and the CUDA engine), Linux (both) and macOS (Studio) from `.github/workflows/release.yml`; the workflow has been run successfully on a dry-run branch, the first tag has not been made yet. Until then, build from source or take the artifacts of a CI run.
 
 ## The screens
 

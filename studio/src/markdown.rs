@@ -1038,4 +1038,43 @@ mod tests {
         assert!(matches!(b[0], Block::Paragraph(_)));
         assert!(matches!(b[1], Block::List { .. }));
     }
+
+    /// Whatever a model writes must not panic the parser (slicing inside a multi-byte character) or make it loop.
+    #[test]
+    fn random_text_never_panics_or_hangs() {
+        let atoms: Vec<&str> = vec![
+            "*", "**", "***", "_", "__", "`", "``", "```", "~~~", "~~", "\n", "\n\n", "\r\n", "- ", "* ", "+ ", "1. ", "12) ", "> ", "# ", "###### ", "####### ", "|", "|---|", "---", "***", "___",
+            "[", "]", "(", ")", "[a](b)", "[a](", "](x)", "![i](u)", "http://x.y/z", "https://a", " ", "  ", "\t", "\\", "<", ">", "&", "\u{e9}", "\u{1F600}", "\u{4e2d}\u{6587}", "\u{301}", "\u{200d}", "a", "Z", "9", ".", ",",
+            "    ", "x*y*z", "snake_case_word", "2 * 3 * 4", "**bold", "bold**", "*it", "it*", "`code", "code`",
+        ];
+        let mut seed = 0x1234_5678_9abc_def0u64;
+        let mut next = move || {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            seed
+        };
+        let started = std::time::Instant::now();
+        for _ in 0..30000 {
+            let n = (next() % 40) as usize;
+            let mut text = String::new();
+            for _ in 0..n {
+                text.push_str(atoms[(next() % atoms.len() as u64) as usize]);
+            }
+            let blocks = parse(&text);
+            // the plain text of every paragraph is reachable (the renderer walks the same tree)
+            fn walk(blocks: &[Block], depth: usize) {
+                assert!(depth < 64, "nesting too deep");
+                for b in blocks {
+                    match b {
+                        Block::Quote(inner) => walk(inner, depth + 1),
+                        Block::List { items, .. } => items.iter().for_each(|i| walk(i, depth + 1)),
+                        _ => {}
+                    }
+                }
+            }
+            walk(&blocks, 0);
+        }
+        assert!(started.elapsed().as_secs() < 60, "the parser is too slow on random text");
+    }
 }
