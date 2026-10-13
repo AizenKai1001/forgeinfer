@@ -5,6 +5,8 @@ name: engine
 on:
   workflow_dispatch:
   workflow_call:
+  push:
+    paths: [".github/workflows/engine.yml", "tools/build_windows.ps1"]
 
 jobs:
   windows:
