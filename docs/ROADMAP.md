@@ -12,6 +12,7 @@ What is missing, roughly in the order that would help the most people. Nothing h
 6. **Serving several clients at once**: today requests are queued; continuous batching would let a few chats share one pass over the weights.
 7. **Vulkan or Metal** back ends. A long shot; the CPU backend comes first.
 8. **Structured output and API parity**: grammar (GBNF) input, `pattern` / length / range checks in the schema automaton, tool-call arguments constrained by the tool's own schema, `logprobs`, `/v1/embeddings`, `n > 1`.
+9. **Longer contexts in the same memory.** The fp16 scratch layer that the prompt attention reads (4 KB per position for the hybrids: a quarter of the 4-bit cache at 230,000 positions) could go if the flash kernels dequantized the cache in their tile loads. 4-bit keys cost a dense Qwen3-4B 3 to 6 percent of its top-1 choices ([PERFORMANCE.md](PERFORMANCE.md#long-contexts)); a rotation of queries and keys before the quantization (keys without outlier channels, as in the published KV-rotation methods) is the untried fix, and 8-bit keys with 4-bit values (`k8v4`) is what the engine offers meanwhile. The decode attention shares its loads between the query heads of a key-value head now; running it on the tensor cores (four query heads against tiles of keys) would close the rest of the gap to the memory bandwidth.
 
 ## Forge Studio
 

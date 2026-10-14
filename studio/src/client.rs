@@ -40,6 +40,36 @@ fn agent() -> ureq::Agent {
     ureq::Agent::new_with_config(config)
 }
 
+/// The context length in the model list of a ForgeInfer server (`meta.n_ctx` of the first model).
+pub fn context_from_models(v: &Value) -> Option<u32> {
+    v["data"][0]["meta"]["n_ctx"].as_u64().filter(|n| *n > 0).map(|n| n as u32)
+}
+
+/// The context length in the properties of a server (`/props`: ForgeInfer has `n_ctx`, llama.cpp `default_generation_settings.n_ctx`).
+pub fn context_from_props(v: &Value) -> Option<u32> {
+    v["n_ctx"]
+        .as_u64()
+        .or_else(|| v["default_generation_settings"]["n_ctx"].as_u64())
+        .filter(|n| *n > 0)
+        .map(|n| n as u32)
+}
+
+/// The context length the server says it was started with: the model list of a ForgeInfer server has it, else `/props`.
+pub fn loaded_context(ep: &Endpoint) -> Option<u32> {
+    let get = |url: String| -> Option<Value> {
+        let mut req = agent().get(url).config().timeout_global(Some(Duration::from_secs(8))).build();
+        if !ep.key.is_empty() {
+            req = req.header("Authorization", format!("Bearer {}", ep.key));
+        }
+        let mut resp = req.call().ok()?;
+        if !(200..300).contains(&resp.status().as_u16()) {
+            return None;
+        }
+        serde_json::from_str(&resp.body_mut().read_to_string().ok()?).ok()
+    };
+    get(ep.url("models")).and_then(|v| context_from_models(&v)).or_else(|| get(format!("{}/props", ep.base.trim_end_matches('/'))).and_then(|v| context_from_props(&v)))
+}
+
 /// The ids the server offers (`GET /v1/models`).
 pub fn list_models(ep: &Endpoint) -> Result<Vec<String>, String> {
     let mut req = agent()
@@ -435,6 +465,19 @@ mod tests {
         let l = parse_chunk(r#"{"choices":[{"delta":{},"finish_reason":"stop"}],"timings":{"cache_n":120,"prompt_n":30,"predicted_per_second":50.0}}"#).unwrap();
         assert_eq!((l.prompt_tokens, l.cached_tokens), (Some(30), Some(120)));
         assert!(parse_chunk("not json").is_none());
+    }
+
+    #[test]
+    fn the_context_a_server_started_with() {
+        let models: Value = serde_json::from_str(r#"{"object":"list","data":[{"id":"m","meta":{"n_ctx":262144,"n_vocab":248320}}]}"#).unwrap();
+        assert_eq!(context_from_models(&models), Some(262144));
+        let none: Value = serde_json::from_str(r#"{"data":[{"id":"m"}]}"#).unwrap();
+        assert_eq!(context_from_models(&none), None);
+        let props: Value = serde_json::from_str(r#"{"model":"m","n_ctx":16384}"#).unwrap();
+        assert_eq!(context_from_props(&props), Some(16384));
+        let llama: Value = serde_json::from_str(r#"{"default_generation_settings":{"n_ctx":8192},"total_slots":1}"#).unwrap();
+        assert_eq!(context_from_props(&llama), Some(8192));
+        assert_eq!(context_from_props(&serde_json::from_str::<Value>(r#"{"n_ctx":0}"#).unwrap()), None);
     }
 
     #[test]

@@ -5,7 +5,8 @@
 //!                       [--temp T] [--top-k K] [--top-p P] [--min-p P] [--repeat-penalty R] [--device D]
 //!                       [--mtp DIR|FILE] [--no-speculate] [--no-lookup] [--lookup-draft N]
 //!                       [--kv fp16|int8|int4|k8v4] [--depth N] [--chunk N] [--threads N] [--host-ffn LAYERS|all] [--vram-reserve MIB] [--prompt-cache-mb MB]
-//!   --kv           quantized KV cache (int8 halves its memory with a negligible loss); --depth: drafted tokens per step of the MTP head (2 or 3 is best); --chunk: prompt tokens per prefill pass;
+//!   --ctx          context length in tokens (default 4096), or `auto`: the longest that fits the memory next to the weights, at most what the model was trained for (with `--kv int4` on an 8 GB card a 4B Qwen3.5 reaches 262,144);
+//!   --kv           quantized KV cache: int8 (a little over half the memory, no measurable loss), k8v4 (8-bit keys, 4-bit values: 40 percent, a small loss), int4 (28 percent, a visible loss on some models); --depth: drafted tokens per step of the MTP head (2 or 3 is best); --chunk: prompt tokens per prefill pass;
 //!   --prompt-cache-mb  host memory for the conversations the GPU has been used away from (default 2048, 0 = off): going back to a long document in an earlier chat copies its KV entries back instead of reading it again;
 //!   --no-lookup    no prompt-lookup drafting (on by default, any model: tokens that repeat earlier text are drafted from the text itself and verified in one sweep; --lookup-draft: at most N of them, default 11; a run starts at 7 and doubles after a cycle whose drafts were all right);
 //!   --no-speculate no speculative decoding at all (neither the MTP head nor the lookup);
@@ -91,9 +92,12 @@ pub fn serve(args: &[String]) -> i32 {
         speculate: !args.iter().any(|a| a == "--no-speculate"),
         tokenizer: flag(args, "--tokenizer").map(PathBuf::from),
         weights,
-        n_ctx: flag(args, "--ctx")
-            .and_then(|v| v.parse().ok())
-            .unwrap_or(4096),
+        // `--ctx auto` (or 0): the longest context that fits the card (`--kv int8` / `int4` makes it longer); the planner counts the weights for an 8,192-position session unless FORGE_CTX_HINT says otherwise
+        n_ctx: match flag(args, "--ctx") {
+            Some("auto") | Some("max") => 0,
+            Some(v) => v.parse().unwrap_or(4096),
+            None => 4096,
+        },
         device: flag(args, "--device")
             .and_then(|v| v.parse().ok())
             .unwrap_or(0),
@@ -130,6 +134,9 @@ pub fn serve(args: &[String]) -> i32 {
     }
     if args.iter().any(|a| a == "--no-lookup") {
         std::env::set_var("FORGE_PLD", "0");
+    }
+    if cfg.n_ctx == 0 && std::env::var_os("FORGE_CTX_HINT").is_none() {
+        std::env::set_var("FORGE_CTX_HINT", "8192");
     }
     let t0 = std::time::Instant::now();
     let engine = match Engine::load(cfg) {

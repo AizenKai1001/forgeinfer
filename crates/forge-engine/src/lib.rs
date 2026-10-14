@@ -336,7 +336,6 @@ impl Engine {
             // the window of a training checkpoint's forward pass is a multiple of 64 positions and at most 2048
             cfg.n_ctx = (cfg.n_ctx.min(2048) / 64 * 64).max(64);
         }
-        let n_ctx = cfg.n_ctx;
         std::thread::Builder::new()
             .name("forge-engine".into())
             .spawn(move || {
@@ -351,6 +350,8 @@ impl Engine {
             .recv()
             .map_err(|_| Error::msg("the engine thread died while loading"))?
             .map_err(Error::msg)?;
+        // (the context the engine really opened: with `--ctx auto` it is not the number that was asked for)
+        let n_ctx = info.n_ctx;
         Ok(Engine {
             tx,
             info,
@@ -530,22 +531,16 @@ fn engine_main(
     drop(model);
     step("weights on the GPU", t_up);
     let t_sess = Instant::now();
-    let mut sess = match GpuSession::new(&gpu, cfg.n_ctx) {
+    // The working memory of the first request is taken now: the batched prefill's buffers and, for a hybrid model, the state snapshots (50 MB each on the 9B) are made on first use, and on a nearly full
+    // GPU (the 9B on an 8 GB card next to another process) the first answer failed in the middle. Now the engine does not start at all and says why. With n_ctx 0 the context is the longest that fits.
+    let mut sess = match open_session(&gpu, cfg.n_ctx) {
         Ok(s) => s,
         Err(e) => {
-            let _ = ready.send(Err(format!("GPU session: {e}")));
+            let _ = ready.send(Err(e));
             return;
         }
     };
-    // The working memory of the first request is taken now: the batched prefill's buffers and, for a hybrid model, the state snapshots (50 MB each on the 9B) are made on first use, and on a nearly full
-    // GPU (the 9B on an 8 GB card next to another process) the first answer failed in the middle. Now the engine does not start at all and says why.
-    step("session", t_sess);
-    let t_warm = Instant::now();
-    if let Err(e) = warm_up(&mut sess) {
-        let _ = ready.send(Err(format!("GPU warm-up: {e}")));
-        return;
-    }
-    step("warm-up", t_warm);
+    step("session and warm-up", t_sess);
     let n_ctx = sess.max_ctx();
     let info = ModelInfo {
         alias: cfg.alias.clone(),
@@ -609,6 +604,57 @@ fn engine_main(
 }
 
 /// One prompt of a full prefill chunk through the batched path and, for a hybrid model, as many state snapshots as a conversation keeps; afterwards the session is as new.
+/// A session of `n_ctx` positions, warmed up. With `n_ctx == 0` ("auto"): the longest context that fits the memory that is left next to the weights, and at most the context the model was trained for. The planner's own
+/// numbers (`GpuModel::session_bytes`: the KV cache or its compressed store, the fp16 scratch of one layer, the prefill buffers, the recurrent states) give the first guess; if the card refuses it anyway (another
+/// program's memory, the CUDA graphs) the next try is an eighth shorter. FORGE_KV (`--kv int8|int4`) compresses the cache and gives a longer context; FORGE_CTX_MAX caps the search.
+fn open_session(gpu: &GpuModel, n_ctx: usize) -> std::result::Result<GpuSession<'_>, String> {
+    fn open_one(gpu: &GpuModel, n: usize) -> Result<GpuSession<'_>> {
+        let mut s = GpuSession::new(gpu, n)?;
+        warm_up(&mut s)?;
+        Ok(s)
+    }
+    let open = |n: usize| open_one(gpu, n);
+    if n_ctx > 0 {
+        return open(n_ctx).map_err(|e| format!("GPU session: {e}"));
+    }
+    const FLOOR: usize = 2048;
+    let cap = std::env::var("FORGE_CTX_MAX").ok().and_then(|v| v.parse::<usize>().ok()).unwrap_or(usize::MAX).min(gpu.max_positions()).max(FLOOR);
+    let free = gpu.free_device_bytes().map_err(|e| format!("GPU: {e}"))?;
+    // what the card keeps free after the session: the driver's own needs and a little room for the host's other programs
+    let margin = 256usize << 20;
+    let fits = |n: usize| gpu.session_bytes(n) + margin <= free;
+    let mut n = if fits(cap) {
+        cap
+    } else {
+        let (mut lo, mut hi) = (FLOOR, cap);
+        while hi - lo > 256 {
+            let mid = (lo + hi) / 2;
+            if fits(mid) {
+                lo = mid;
+            } else {
+                hi = mid;
+            }
+        }
+        lo
+    };
+    n = if n >= 8192 { n / 1024 * 1024 } else { n / 256 * 256 }.max(FLOOR);
+    loop {
+        match open(n) {
+            Ok(s) => {
+                eprintln!("[engine] context {n} (the longest that fits: {:.2} GiB free next to the weights, at most {} positions)", free as f64 / (1u64 << 30) as f64, cap);
+                return Ok(s);
+            }
+            Err(e) if n > FLOOR && format!("{e}").contains("OUT_OF_MEMORY") => {
+                let next = (n - n / 8).max(FLOOR);
+                let next = if next >= 8192 { next / 1024 * 1024 } else { next / 256 * 256 }.max(FLOOR);
+                eprintln!("[engine] a context of {n} positions does not fit ({e}); trying {next}");
+                n = next;
+            }
+            Err(e) => return Err(format!("GPU session for {n} positions: {e}")),
+        }
+    }
+}
+
 fn warm_up(sess: &mut GpuSession) -> Result<()> {
     let n = forge_gpu::prefill_chunk_len().min(sess.max_ctx());
     if n >= 16 {

@@ -5,7 +5,7 @@ decode attention at that depth) and prints the server's own timings.
     python tools/needle_check.py MODEL.gguf [paragraphs] [port]
 
 paragraphs: about 64 tokens each (120 -> 7,600 tokens, 250 -> 16,000, 500 -> 32,000, 1000 -> 64,000, 2000 -> 129,000). Environment: FORGE_BIN (the engine program, default target/release/forge),
-FORGE_ARGS (extra arguments for `forge serve`, for example "--kv int8" for 100,000 tokens and more on an 8 GB card), FORGE_TIMEOUT (seconds to wait for the answer, default 240).
+FORGE_ARGS (extra arguments for `forge serve`, for example "--kv int8" for 100,000 tokens and more on an 8 GB card, "--kv int4" for 200,000 and more), FORGE_CTX (the --ctx of the server: a number or `auto`; default the size of the prompt), FORGE_TIMEOUT (seconds to wait for the answer, default 240).
 Exit code 1 when the planted fact is not in the answer."""
 import json
 import os
@@ -28,7 +28,7 @@ parts.insert(len(parts) // 2, fact + " ")
 text = "".join(parts)
 msg = [{"role": "user", "content": text + "\n\nQuestion: what is the lighthouse keeper's cat called, and what does she eat? Answer in one sentence."}]
 
-cmd = [forge, "serve", model, "--port", str(port), "--ctx", str(paras * 66 + 1024), "--no-speculate"] + os.environ.get("FORGE_ARGS", "").split()
+cmd = [forge, "serve", model, "--port", str(port), "--ctx", os.environ.get("FORGE_CTX", str(paras * 66 + 1024)), "--no-speculate"] + os.environ.get("FORGE_ARGS", "").split()
 p = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 try:
     for _ in range(240):

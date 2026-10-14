@@ -67,6 +67,71 @@ __device__ __forceinline__ void unpack8(const uint4& v, float* f) {
     }
 }
 
+// Compressed KV cache (kvq.cu: int8 or two nibbles per byte, one fp16 scale per `group` values of a (position, head) row), read by the attention kernels without a dequantization pass. A lane owns eight
+// consecutive dimensions (sub * 8 .. sub * 8 + 7), which lie in one scale group, so the scale comes out of the sum: sum_d q_d * (v_d * s) = s * sum_d q_d * v_d with the integers v_d. That costs two instructions
+// per value (convert, multiply-add) where decoding every value to fp16 first costs five, and the fp16 rounding of the dequantized values (a relative 5e-4 per value, far below the quantization step) is gone.
+// Positions t >= pos are the rows of the step itself: fp16, written into the scratch by the QKV kernels, not yet in the store.
+__device__ __forceinline__ float kv_int(const uint2 raw, int e) {      // int8 e of eight
+    const unsigned w = e < 4 ? raw.x : raw.y;
+    return (float)(int8_t)((w >> (8 * (e & 3))) & 0xFF);
+}
+
+// sum over the lane's eight dimensions of q[d] * (key value of position t)
+__device__ __forceinline__ float kv_dot8(const float* __restrict__ qv, const uint8_t* __restrict__ store, const half* __restrict__ sc, const half* __restrict__ scratch, long t, long pos, int kvh, int n_kv, int hd,
+                                         int sub, int group, int bits) {
+    float acc = 0.f;
+    if (t >= pos) {
+        float f[8];
+        unpack8(__ldg(reinterpret_cast<const uint4*>(scratch + (size_t)t * ((size_t)n_kv * hd) + (size_t)kvh * hd) + sub), f);
+#pragma unroll
+        for (int j = 0; j < 8; j++) acc += qv[j] * f[j];
+        return acc;
+    }
+    const long r = t * n_kv + kvh;
+    const float s = __half2float(sc[r * (hd / group) + (sub * 8) / group]);
+    if (bits == 8) {
+        const uint2 raw = __ldg(reinterpret_cast<const uint2*>(store + r * hd) + sub);
+#pragma unroll
+        for (int e = 0; e < 8; ++e) acc += qv[e] * kv_int(raw, e);
+    } else {
+        const unsigned raw = __ldg(reinterpret_cast<const unsigned*>(store + r * (hd / 2)) + sub);
+#pragma unroll
+        for (int j = 0; j < 4; ++j) {
+            const int b = (int)((raw >> (8 * j)) & 0xFF);
+            acc += qv[2 * j] * (float)((b & 15) - 8);
+            acc += qv[2 * j + 1] * (float)((b >> 4) - 8);
+        }
+    }
+    return acc * s;
+}
+
+// o[j] += p * (value j of position t) for the lane's eight dimensions
+__device__ __forceinline__ void kv_axpy8(float p, float* __restrict__ o, const uint8_t* __restrict__ store, const half* __restrict__ sc, const half* __restrict__ scratch, long t, long pos, int kvh, int n_kv,
+                                         int hd, int sub, int group, int bits) {
+    if (t >= pos) {
+        float f[8];
+        unpack8(__ldg(reinterpret_cast<const uint4*>(scratch + (size_t)t * ((size_t)n_kv * hd) + (size_t)kvh * hd) + sub), f);
+#pragma unroll
+        for (int j = 0; j < 8; j++) o[j] += p * f[j];
+        return;
+    }
+    const long r = t * n_kv + kvh;
+    const float ps = p * __half2float(sc[r * (hd / group) + (sub * 8) / group]);
+    if (bits == 8) {
+        const uint2 raw = __ldg(reinterpret_cast<const uint2*>(store + r * hd) + sub);
+#pragma unroll
+        for (int e = 0; e < 8; ++e) o[e] += ps * kv_int(raw, e);
+    } else {
+        const unsigned raw = __ldg(reinterpret_cast<const unsigned*>(store + r * (hd / 2)) + sub);
+#pragma unroll
+        for (int j = 0; j < 4; ++j) {
+            const int b = (int)((raw >> (8 * j)) & 0xFF);
+            o[2 * j] += ps * (float)((b & 15) - 8);
+            o[2 * j + 1] += ps * (float)((b >> 4) - 8);
+        }
+    }
+}
+
 // dot product of one fp16 weight row (K halves, 16-byte aligned) with an fp32 vector in shared memory; the whole warp takes part, every lane returns the full sum
 __device__ __forceinline__ float row_dot(const half* __restrict__ w, const float* __restrict__ x, int K, int lane) {
     const uint4* w4 = reinterpret_cast<const uint4*>(w);
@@ -469,6 +534,304 @@ extern "C" __global__ void __launch_bounds__(128) attn_split_kernel(const float*
         pl[pidx] = sum;
     }
 }
+
+// attn_split_kernel for a compressed KV cache (kvq.cu) without the dequantization pass: the keys and values of the positions before the step are read from the store (kv_dot8, kv_axpy8: the scale outside the sum),
+// the rows of the step itself from the fp16 scratch where the QKV kernels wrote them. The dequantization pass wrote and read the whole context as fp16 for every layer of every token (about five times the bytes of
+// the store); this reads the store once. Same grid, same partial results (pm, pl, po) to within the fp16 rounding of the dequantized values, same merge kernels. hd 64 or 128.
+extern "C" __global__ void __launch_bounds__(128) attn_split_q_kernel(const float* __restrict__ q, const uint8_t* __restrict__ kst, const half* __restrict__ ksc, const uint8_t* __restrict__ vst,
+                                                                     const half* __restrict__ vsc, const half* __restrict__ k_cache, const half* __restrict__ v_cache, float* __restrict__ pm,
+                                                                     float* __restrict__ pl, float* __restrict__ po, const StepState* __restrict__ st, int n_head, int n_kv, int hd, int ns_max,
+                                                                     int group, int bits_k, int bits_v) {
+    __shared__ float scores[AS_CH];
+    __shared__ float qs[256];
+    __shared__ float part[1024];               // NGRP * hd = (128 / (hd / 8)) * hd = 1024
+    __shared__ float red[32];
+    const int hh = blockIdx.x, split = blockIdx.y, tt = blockIdx.z, tid = threadIdx.x;
+    const long pos = st->pos;
+    const int T = (int)pos + 1 + tt;           // keys visible to the query of token tt of a multi-token step
+    const int t0 = split * AS_CH;
+    const size_t pidx = ((size_t)tt * n_head + hh) * ns_max + split;
+    if (t0 >= T) {
+        if (tid == 0) {
+            pm[pidx] = -INFINITY;
+            pl[pidx] = 0.f;
+        }
+        return;
+    }
+    const int tn = min(AS_CH, T - t0);
+    const int LPP = hd / 8, NGRP = 128 / LPP;
+    const int kvh = hh / (n_head / n_kv);
+    const int sub = tid % LPP, grp = tid / LPP;
+    for (int d = tid; d < hd; d += 128) qs[d] = q[(size_t)tt * n_head * hd + hh * hd + d];
+    __syncthreads();
+    const float scale = rsqrtf((float)hd);
+    float qv[8];
+#pragma unroll
+    for (int j = 0; j < 8; j++) qv[j] = qs[sub * 8 + j];
+    const int tn_up = (tn + NGRP - 1) / NGRP * NGRP;      // every thread runs the same number of rounds: the shuffles involve whole warps
+#pragma unroll 4
+    for (int i0 = 0; i0 < tn_up; i0 += NGRP) {
+        const int i = i0 + grp;
+        const bool valid = i < tn;
+        float acc = 0.f;
+        if (valid) acc = kv_dot8(qv, kst, ksc, k_cache, t0 + i, pos, kvh, n_kv, hd, sub, group, bits_k);
+        for (int o = LPP >> 1; o > 0; o >>= 1) acc += __shfl_xor_sync(0xffffffffu, acc, o);
+        if (valid && sub == 0) scores[i] = acc * scale;
+    }
+    __syncthreads();
+    float mx = -INFINITY;
+    for (int i = tid; i < tn; i += 128) mx = fmaxf(mx, scores[i]);
+    mx = block_max(mx, red);
+    float sum = 0.f;
+    for (int i = tid; i < tn; i += 128) {
+        const float e = __expf(scores[i] - mx);
+        scores[i] = e;
+        sum += e;
+    }
+    sum = block_sum(sum, red);
+    float o[8];
+#pragma unroll
+    for (int j = 0; j < 8; j++) o[j] = 0.f;
+#pragma unroll 4
+    for (int i = grp; i < tn; i += NGRP) {
+        kv_axpy8(scores[i], o, vst, vsc, v_cache, t0 + i, pos, kvh, n_kv, hd, sub, group, bits_v);
+    }
+#pragma unroll
+    for (int j = 0; j < 8; j++) part[grp * hd + sub * 8 + j] = o[j];
+    __syncthreads();
+    if (tid < hd) {
+        float s = 0.f;
+        for (int g = 0; g < NGRP; g++) s += part[g * hd + tid];
+        po[pidx * 256 + tid] = s;
+    }
+    if (tid == 0) {
+        pm[pidx] = mx;
+        pl[pidx] = sum;
+    }
+}
+
+// ---- GQA-shared split-KV decode attention ---------------------------------------------------------------------------------------------------------------------------------------------------------------
+// attn_split_kernel and attn_split_g_kernel give every query head its own block, so the GP heads that share a key-value head (4 in Qwen3 and Qwen3.5) all load the same keys and values (and, with a compressed cache,
+// all decode them) and each pays its own 5-step shuffle reduction per position. At a long context those instructions, not the memory, set the speed. Here a block takes a (key-value head, split, token) and all the
+// query heads of the key-value head: a key or value row is loaded and decoded once for them, and the cross-lane sums of the heads of a position are made together: the first steps of the butterfly exchange halves of
+// the GP partial sums (GP = 4: 2 + 1 shuffles in place of 2 x 4), the remaining steps run on the one sum a lane keeps (3 more; 6 shuffles in place of 20).
+// The arithmetic of every head is exactly that of the one-head kernels: the same lane-to-position assignment, the same order of the products inside a lane, the xor distances LPP/2 ... 1 for the cross-lane sums (an
+// exchange of halves adds the same two partial sums the butterfly adds), the same order of the position loops and of the block-wide maximum and sum. The partial results (pm, pl, po) are bit-identical to the
+// one-head kernels', so the merge kernels and everything built on them (the multi-row kernel, the verification of drafted tokens) follow unchanged (test attn_gqa).
+// HD head width, NT threads (like the kernels they mirror: 128 for HD 64 and 128, 256 for HD 256), GP query heads per block (a power of two, at least n_head / n_kv; padding heads read zeros and store nothing).
+// QUANT: the keys and values of the positions before the step are read from the compressed store (attn_split_q_kernel), the rows of the step from the fp16 scratch.
+template <int GP, int LPP>
+__device__ __forceinline__ float gqa_scatter(float (&a)[GP], const int sub) {
+    float v[GP];
+#pragma unroll
+    for (int g = 0; g < GP; ++g) v[g] = a[g];
+    if constexpr (GP == 8) {
+        const int d = LPP >> 1;
+        const bool up = (sub & d) != 0;
+#pragma unroll
+        for (int i = 0; i < 4; ++i) {
+            const float send = up ? v[i] : v[i + 4];
+            const float keep = up ? v[i + 4] : v[i];
+            v[i] = keep + __shfl_xor_sync(0xffffffffu, send, d);
+        }
+    }
+    if constexpr (GP >= 4) {
+        const int d = LPP >> (GP == 8 ? 2 : 1);
+        const bool up = (sub & d) != 0;
+#pragma unroll
+        for (int i = 0; i < 2; ++i) {
+            const float send = up ? v[i] : v[i + 2];
+            const float keep = up ? v[i + 2] : v[i];
+            v[i] = keep + __shfl_xor_sync(0xffffffffu, send, d);
+        }
+    }
+    {
+        const int d = LPP >> (GP == 8 ? 3 : GP == 4 ? 2 : 1);
+        const bool up = (sub & d) != 0;
+        const float send = up ? v[0] : v[1];
+        const float keep = up ? v[1] : v[0];
+        v[0] = keep + __shfl_xor_sync(0xffffffffu, send, d);
+    }
+    for (int d = LPP / (2 * GP); d > 0; d >>= 1) v[0] += __shfl_xor_sync(0xffffffffu, v[0], d);
+    return v[0];
+}
+
+// the lane's eight dimensions of the key of position t against the GP queries: acc[g] = sum_j qv[g][j] * k[j] (compressed: times the scale of the group, as kv_dot8 does)
+template <int GP, bool QUANT>
+__device__ __forceinline__ void gqa_key_dots(float (&acc)[GP], const float (&qv)[GP][8], const uint8_t* __restrict__ store, const half* __restrict__ sc, const half* __restrict__ scratch, long t, long pos, int kvh,
+                                             int n_kv, int hd, int sub, int group, int bits) {
+    float f[8];
+    float s = 1.f;                       // x * 1.0f is exactly x: the rows of the step (fp16 scratch) are not scaled
+    if (!QUANT || t >= pos) {
+        unpack8(__ldg(reinterpret_cast<const uint4*>(scratch + (size_t)t * ((size_t)n_kv * hd) + (size_t)kvh * hd) + sub), f);
+    } else {
+        const long r = t * n_kv + kvh;
+        s = __half2float(sc[r * (hd / group) + (sub * 8) / group]);
+        if (bits == 8) {
+            const uint2 raw = __ldg(reinterpret_cast<const uint2*>(store + r * hd) + sub);
+#pragma unroll
+            for (int e = 0; e < 8; ++e) f[e] = kv_int(raw, e);
+        } else {
+            const unsigned raw = __ldg(reinterpret_cast<const unsigned*>(store + r * (hd / 2)) + sub);
+#pragma unroll
+            for (int j = 0; j < 4; ++j) {
+                const int b = (int)((raw >> (8 * j)) & 0xFF);
+                f[2 * j] = (float)((b & 15) - 8);
+                f[2 * j + 1] = (float)((b >> 4) - 8);
+            }
+        }
+    }
+#pragma unroll
+    for (int g = 0; g < GP; ++g) {
+        float a = 0.f;
+#pragma unroll
+        for (int j = 0; j < 8; ++j) a += qv[g][j] * f[j];
+        acc[g] = a * s;
+    }
+}
+
+// o[g][j] += p[g] * (value j of position t) for the lane's eight dimensions (compressed: p scaled by the group's scale first, as kv_axpy8 does)
+template <int GP, bool QUANT>
+__device__ __forceinline__ void gqa_axpy(const float (&p)[GP], float (&o)[GP][8], const uint8_t* __restrict__ store, const half* __restrict__ sc, const half* __restrict__ scratch, long t, long pos, int kvh, int n_kv,
+                                         int hd, int sub, int group, int bits) {
+    float f[8];
+    float s = 1.f;
+    if (!QUANT || t >= pos) {
+        unpack8(__ldg(reinterpret_cast<const uint4*>(scratch + (size_t)t * ((size_t)n_kv * hd) + (size_t)kvh * hd) + sub), f);
+    } else {
+        const long r = t * n_kv + kvh;
+        s = __half2float(sc[r * (hd / group) + (sub * 8) / group]);
+        if (bits == 8) {
+            const uint2 raw = __ldg(reinterpret_cast<const uint2*>(store + r * hd) + sub);
+#pragma unroll
+            for (int e = 0; e < 8; ++e) f[e] = kv_int(raw, e);
+        } else {
+            const unsigned raw = __ldg(reinterpret_cast<const unsigned*>(store + r * (hd / 2)) + sub);
+#pragma unroll
+            for (int j = 0; j < 4; ++j) {
+                const int b = (int)((raw >> (8 * j)) & 0xFF);
+                f[2 * j] = (float)((b & 15) - 8);
+                f[2 * j + 1] = (float)((b >> 4) - 8);
+            }
+        }
+    }
+#pragma unroll
+    for (int g = 0; g < GP; ++g) {
+        const float ps = QUANT ? p[g] * s : p[g];
+#pragma unroll
+        for (int j = 0; j < 8; ++j) o[g][j] += ps * f[j];
+    }
+}
+
+template <int HD, int NT, int GP, bool QUANT>
+__device__ __forceinline__ void attn_gqa_impl(const float* __restrict__ q, const uint8_t* __restrict__ kst, const half* __restrict__ ksc, const uint8_t* __restrict__ vst, const half* __restrict__ vsc,
+                                              const half* __restrict__ k_cache, const half* __restrict__ v_cache, float* __restrict__ pm, float* __restrict__ pl, float* __restrict__ po,
+                                              const StepState* __restrict__ st, int n_head, int n_kv, int hd_arg, int ns_max, int group, int bits_k, int bits_v) {
+    constexpr int LPP = HD / 8, NGRP = NT / LPP;
+    __shared__ float scores[AS_CH * GP];       // [position][head]
+    __shared__ float qs[GP * HD];
+    __shared__ float part[NGRP * HD];
+    __shared__ float red[32];
+    const int kvh = blockIdx.x, split = blockIdx.y, tt = blockIdx.z, tid = threadIdx.x;
+    const int G = n_head / n_kv;               // query heads of this key-value head (<= GP)
+    const long pos = st->pos;
+    const int T = (int)pos + 1 + tt;           // keys visible to the query of token tt of a multi-token step
+    const int t0 = split * AS_CH;
+    if (t0 >= T) {
+        if (tid < G) {
+            const size_t pidx = ((size_t)tt * n_head + kvh * G + tid) * ns_max + split;
+            pm[pidx] = -INFINITY;
+            pl[pidx] = 0.f;
+        }
+        return;
+    }
+    const int tn = min(AS_CH, T - t0);
+    const int sub = tid % LPP, grp = tid / LPP;
+    const size_t kv_dim = (size_t)n_kv * HD;
+    for (int idx = tid; idx < GP * HD; idx += NT) {
+        const int g = idx / HD;
+        qs[idx] = g < G ? q[((size_t)tt * n_head + kvh * G + g) * HD + (idx % HD)] : 0.f;
+    }
+    __syncthreads();
+    const float scale = rsqrtf((float)hd_arg);   // (the head width as a run-time value, as in the one-head kernels: rsqrtf of a compile-time constant is folded to the exactly rounded value, the instruction is 1 ulp away)
+    float qv[GP][8];
+#pragma unroll
+    for (int g = 0; g < GP; ++g)
+#pragma unroll
+        for (int j = 0; j < 8; ++j) qv[g][j] = qs[g * HD + sub * 8 + j];
+    const int tn_up = (tn + NGRP - 1) / NGRP * NGRP;      // every thread runs the same number of rounds: the shuffles involve whole warps
+#pragma unroll 2
+    for (int i0 = 0; i0 < tn_up; i0 += NGRP) {
+        const int i = i0 + grp;
+        const bool valid = i < tn;
+        float acc[GP];
+#pragma unroll
+        for (int g = 0; g < GP; ++g) acc[g] = 0.f;
+        if (valid) gqa_key_dots<GP, QUANT>(acc, qv, kst, ksc, k_cache, t0 + i, pos, kvh, n_kv, HD, sub, group, bits_k);
+        const float r = gqa_scatter<GP, LPP>(acc, sub);
+        if (valid && (sub & (LPP / GP - 1)) == 0) scores[i * GP + sub / (LPP / GP)] = r * scale;
+    }
+    __syncthreads();
+    float mxs[GP], sums[GP];
+#pragma unroll
+    for (int g = 0; g < GP; ++g) {
+        mxs[g] = 0.f;
+        sums[g] = 0.f;
+        if (g < G) {
+            float mx = -INFINITY;
+            for (int i = tid; i < tn; i += NT) mx = fmaxf(mx, scores[i * GP + g]);
+            mx = block_max(mx, red);
+            float sum = 0.f;
+            for (int i = tid; i < tn; i += NT) {
+                const float e = __expf(scores[i * GP + g] - mx);
+                scores[i * GP + g] = e;
+                sum += e;
+            }
+            sum = block_sum(sum, red);
+            mxs[g] = mx;
+            sums[g] = sum;
+        }
+    }
+    float o[GP][8];
+#pragma unroll
+    for (int g = 0; g < GP; ++g)
+#pragma unroll
+        for (int j = 0; j < 8; ++j) o[g][j] = 0.f;
+#pragma unroll 2
+    for (int i = grp; i < tn; i += NGRP) {
+        float p[GP];
+#pragma unroll
+        for (int g = 0; g < GP; ++g) p[g] = scores[i * GP + g];
+        gqa_axpy<GP, QUANT>(p, o, vst, vsc, v_cache, t0 + i, pos, kvh, n_kv, HD, sub, group, bits_v);
+    }
+#pragma unroll
+    for (int g = 0; g < GP; ++g) {
+        if (g < G) {
+            __syncthreads();                   // (the previous head's sums have been read)
+#pragma unroll
+            for (int j = 0; j < 8; ++j) part[grp * HD + sub * 8 + j] = o[g][j];
+            __syncthreads();
+            const size_t pidx = ((size_t)tt * n_head + kvh * G + g) * ns_max + split;
+            if (tid < HD) {
+                float s = 0.f;
+                for (int gg = 0; gg < NGRP; gg++) s += part[gg * HD + tid];
+                po[pidx * 256 + tid] = s;
+            }
+            if (tid == 0) {
+                pm[pidx] = mxs[g];
+                pl[pidx] = sums[g];
+            }
+        }
+    }
+}
+
+#define ATTN_GQA_KERNELS(HD, NT, GP)                                                                                                                                                                      extern "C" __global__ void __launch_bounds__(NT) attn_gqa_f16_##HD##_##GP##_kernel(const float* __restrict__ q, const half* __restrict__ k_cache, const half* __restrict__ v_cache,                                                                                                    float* __restrict__ pm, float* __restrict__ pl, float* __restrict__ po, const StepState* __restrict__ st,                                                                                        int n_head, int n_kv, int hd, int ns_max) {                                                                           attn_gqa_impl<HD, NT, GP, false>(q, nullptr, nullptr, nullptr, nullptr, k_cache, v_cache, pm, pl, po, st, n_head, n_kv, hd, ns_max, 32, 8, 8);                                                      }                                                                                                                                                                                                     extern "C" __global__ void __launch_bounds__(NT) attn_gqa_q_##HD##_##GP##_kernel(const float* __restrict__ q, const uint8_t* __restrict__ kst, const half* __restrict__ ksc,                                                                                                         const uint8_t* __restrict__ vst, const half* __restrict__ vsc, const half* __restrict__ k_cache,                                                                                              const half* __restrict__ v_cache, float* __restrict__ pm, float* __restrict__ pl, float* __restrict__ po,                                                                                    const StepState* __restrict__ st, int n_head, int n_kv, int hd, int ns_max, int group, int bits_k,                                                                                            int bits_v) {                                                                                                        attn_gqa_impl<HD, NT, GP, true>(q, kst, ksc, vst, vsc, k_cache, v_cache, pm, pl, po, st, n_head, n_kv, hd, ns_max, group, bits_k, bits_v);                                                          }
+ATTN_GQA_KERNELS(64, 128, 4)
+ATTN_GQA_KERNELS(64, 128, 8)
+ATTN_GQA_KERNELS(128, 128, 2)
+ATTN_GQA_KERNELS(128, 128, 4)
+ATTN_GQA_KERNELS(128, 128, 8)
+ATTN_GQA_KERNELS(256, 256, 4)
 
 // Several query rows per block, for the multi-row steps (a few tokens of a prompt, the verification of drafted tokens): attn_split_kernel gives every row its own pass over the keys and values, so the cache is
 // read once per row, and at a long context that is what a chunk of tokens costs (5 ms per row after 6,400 positions of a 4B model on a 2060 SUPER). Here a block takes RB consecutive rows (blockIdx.z = group

@@ -6,7 +6,7 @@ use std::process::{Child, Stdio};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use crate::client::{list_models, Endpoint};
+use crate::client::{list_models, loaded_context, Endpoint};
 use crate::settings::{EngineKind, KvMode, DEFAULT_PROMPT_CACHE_MB};
 use crate::util::quiet_command;
 
@@ -76,7 +76,8 @@ pub fn command_args(l: &Launch) -> Vec<String> {
                 s("--port"),
                 l.port.to_string(),
                 s("-c"),
-                l.ctx.to_string(),
+                // (llama.cpp has no automatic context: its own default of 8,192)
+                if l.ctx == 0 { "8192".to_string() } else { l.ctx.to_string() },
                 s("--alias"),
                 l.name.clone(),
                 s("-ngl"),
@@ -98,7 +99,7 @@ pub fn command_args(l: &Launch) -> Vec<String> {
                 s("--port"),
                 l.port.to_string(),
                 s("--ctx"),
-                l.ctx.to_string(),
+                if l.ctx == 0 { s("auto") } else { l.ctx.to_string() },
                 s("--alias"),
                 l.name.clone(),
             ]);
@@ -134,6 +135,8 @@ struct Shared {
     log: Vec<String>,
     /// Bumped on every start and stop: a watcher of an older process must not touch the state.
     generation: u64,
+    /// The context length the running server says it opened (the automatic setting is only known then).
+    loaded_ctx: Option<u32>,
 }
 
 pub struct EngineManager {
@@ -212,6 +215,11 @@ impl EngineManager {
         self.launch.as_ref()
     }
 
+    /// The context length the engine opened, once it is ready and has said so.
+    pub fn loaded_ctx(&self) -> Option<u32> {
+        self.shared.lock().ok().and_then(|s| s.loaded_ctx)
+    }
+
     pub fn app_log(&self, line: impl Into<String>) {
         push_log(&self.shared, line.into());
     }
@@ -230,6 +238,7 @@ impl EngineManager {
                 .map_err(|_| "engine state is poisoned".to_string())?;
             s.generation += 1;
             s.log.clear();
+            s.loaded_ctx = None;
             s.generation
         };
         let args = command_args(&launch);
@@ -278,8 +287,10 @@ impl EngineManager {
                 _ => return,
             }
             if list_models(&ep).is_ok() {
+                let ctx = loaded_context(&ep);
                 if let Ok(mut s) = shared.lock() {
                     if s.generation == generation {
+                        s.loaded_ctx = ctx;
                         s.state = Some(EngineState::Ready {
                             model: name.clone(),
                             port,
@@ -418,6 +429,16 @@ mod tests {
         let mut other = launch(EngineKind::LlamaCpp);
         other.prompt_cache_mb = 0;
         assert!(!command_args(&other).join(" ").contains("prompt-cache"));
+    }
+
+    #[test]
+    fn an_automatic_context_is_auto_for_forge_and_the_default_for_llama_cpp() {
+        let mut l = launch(EngineKind::Forge);
+        l.ctx = 0;
+        assert!(command_args(&l).join(" ").contains("--ctx auto --alias m"));
+        let mut other = launch(EngineKind::LlamaCpp);
+        other.ctx = 0;
+        assert!(command_args(&other).join(" ").contains("-c 8192 --alias m"));
     }
 
     #[test]

@@ -14,7 +14,7 @@ use crate::engine::{EngineManager, EngineState, Launch};
 use crate::hardware::{self, HardwareInfo};
 use crate::hf::{self, Progress, Repo, RepoFile};
 use crate::library::{self, Inspect, ModelEntry};
-use crate::settings::{self, data_dir, EngineKind, Settings};
+use crate::settings::{self, data_dir, EngineKind, OverflowPolicy, Settings};
 use crate::util::{free_port, new_id};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -626,6 +626,11 @@ impl StudioApp {
         }
     }
 
+    /// The context length the loaded model has: what the engine says it opened (the automatic setting is only known then), else the setting.
+    pub fn effective_ctx(&self) -> u32 {
+        self.engine.loaded_ctx().unwrap_or(if self.settings.context_len == 0 { 8192 } else { self.settings.context_len })
+    }
+
     /// The prediction head to use for a model: speculative decoding is on, the engine is ForgeInfer, a head file is found, and it did not fail to load before.
     pub fn head_for(&self, model: &std::path::Path) -> Option<PathBuf> {
         if !self.settings.speculative
@@ -749,7 +754,7 @@ impl StudioApp {
             .map(|(_, t)| t.chars().count())
             .sum();
         let tokens = crate::chats::estimate_tokens(chars);
-        let ctx = self.settings.context_len as usize;
+        let ctx = self.effective_ctx() as usize;
         if !self.attachments.is_empty() && tokens + 300 > ctx {
             self.toast(format!("The conversation with the attached files is about {tokens} tokens and the context is {ctx}: raise the context length in Settings (it applies when a model loads) or attach less."));
             return;
@@ -781,6 +786,16 @@ impl StudioApp {
 
     fn begin_answer(&mut self, ep: Endpoint, model: String) {
         self.editing = None;
+        // the conversation has to fit into the context the model was loaded with: the oldest turns are left out when it does not (the chat keeps showing them)
+        let ctx = self.effective_ctx() as usize;
+        if self.settings.context_overflow == OverflowPolicy::Drop && ctx > 0 {
+            let reserve = if self.settings.gen.max_tokens > 0 { self.settings.gen.max_tokens as usize } else { 1024 }.min(ctx / 4);
+            let budget = (ctx * 95 / 100).saturating_sub(reserve);
+            let dropped = self.chat.fit(&self.settings.system_prompt, budget);
+            if dropped > 0 {
+                self.toast(format!("The conversation no longer fits the context ({ctx} tokens): the oldest {dropped} messages are left out of what the model reads (they stay on screen)."));
+            }
+        }
         let mut reply = Message::new(Role::Assistant, "");
         reply.streaming = true;
         let messages = self.chat.api_messages(&self.settings.system_prompt);

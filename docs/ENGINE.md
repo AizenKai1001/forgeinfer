@@ -15,8 +15,8 @@ forge serve <model.gguf> [--native | --q8 | --f16] [--tokenizer FILE] [--host H]
 |---|---|
 | (a `.gguf` model) | its **tokenizer and chat template are read from the file**; `--tokenizer` and `--chat` override them. The chat format is picked from the template text (Llama 3 headers, SmolLM2, ChatML, Qwen) |
 | `--native` / `--q8` / `--f16` | how weights live on the GPU. For a GGUF the default is `--native`: quantized blocks are read as they are, with no conversion (the smallest memory and the fastest decode). `--f16` dequantizes to half precision (4x the memory); `--q8` re-quantizes our own full-precision checkpoints |
-| `--ctx N` | context length to allocate (default 4096) |
-| `--kv` | KV-cache storage: `fp16` (default), `int8` (half the memory, negligible loss), `int4`, `k8v4` |
+| `--ctx N\|auto` | context length to allocate (default 4096). `auto`: the longest context that fits the memory left next to the weights, at most what the model was trained for (`FORGE_CTX_MAX` caps it). The engine prints what it opened (`[engine] context 234496 ...`) and the model list reports it (`meta.n_ctx`). With `--kv int4` the 4B Qwen3.5 opens 234,000 positions on an 8 GB card that another program already holds 0.9 GB of (its full 262,144 is within the planner's numbers when nothing else holds video memory); the 9B opens 60,000 |
+| `--kv` | KV-cache storage: `fp16` (default), `int8` (a little over half the memory, no measurable loss), `k8v4` (8-bit keys, 4-bit values: 40 percent of fp16, a small loss), `int4` (28 percent, a visible loss on some models, a dense Qwen3-4B among them), `k4v8`; the numbers are in [PERFORMANCE.md](PERFORMANCE.md#long-contexts) |
 | `--depth N` | speculative decoding with the model's own prediction head (Qwen3.5): tokens drafted per step, 2 or 3 is fastest |
 | `--chunk N` | prompt tokens per prefill pass (lower it to save memory) |
 | `--threads N` | CPU threads for the feed-forward layers kept in system memory (default: cores minus one) |

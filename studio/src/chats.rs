@@ -118,6 +118,10 @@ pub struct Chat {
     #[serde(default)]
     pub system: String,
     pub messages: Vec<Message>,
+    /// How many messages from the start of the conversation are left out of what the model reads because the context was full (whole turns, set by `fit`). It is kept from request to request, so that the
+    /// text the engine already holds stays the beginning of the next prompt until the window has to move again.
+    #[serde(default)]
+    pub skip: usize,
 }
 
 pub const NEW_TITLE: &str = "New chat";
@@ -139,6 +143,7 @@ impl Chat {
             model: String::new(),
             system: String::new(),
             messages: Vec::new(),
+            skip: 0,
         }
     }
 
@@ -176,6 +181,7 @@ impl Chat {
         }
         let attachments = std::mem::take(&mut self.messages[i].attachments);
         self.messages.truncate(i);
+        self.skip = self.skip.min(i);
         let mut msg = Message::new(Role::User, text);
         msg.attachments = attachments;
         self.messages.push(msg);
@@ -185,6 +191,11 @@ impl Chat {
 
     /// The conversation as the server wants it: the system prompt, then every finished message (an answer that is empty or failed is left out).
     pub fn api_messages(&self, default_system: &str) -> Vec<(Role, String)> {
+        self.api_messages_from(default_system, self.skip)
+    }
+
+    /// The same with the first `skip` messages left out.
+    fn api_messages_from(&self, default_system: &str, skip: usize) -> Vec<(Role, String)> {
         let mut out = Vec::new();
         let system = if self.system.trim().is_empty() {
             default_system
@@ -194,13 +205,40 @@ impl Chat {
         if !system.trim().is_empty() {
             out.push((Role::System, system.to_string()));
         }
-        for m in &self.messages {
+        for m in self.messages.iter().skip(skip) {
             if m.error.is_some() || (m.role == Role::Assistant && m.content.trim().is_empty()) {
                 continue;
             }
             out.push((m.role, m.prompt_text()));
         }
         out
+    }
+
+    /// Moves the start of what the model reads forward, by whole turns, when the conversation (system prompt included) is estimated at more than `budget_tokens`: to the first turn from which what is left is
+    /// at most 70 percent of the budget, so that the next requests fit without moving the window again (a moved window changes the beginning of the prompt, and the engine has to read it all anew); the last user
+    /// message, the one being answered, always stays. Returns the number of messages newly left out (0: nothing changed).
+    pub fn fit(&mut self, default_system: &str, budget_tokens: usize) -> usize {
+        let tokens = |chat: &Chat, skip: usize| -> usize {
+            estimate_tokens(chat.api_messages_from(default_system, skip).iter().map(|(_, t)| t.chars().count()).sum())
+        };
+        self.skip = self.skip.min(self.messages.len());
+        if tokens(self, self.skip) <= budget_tokens {
+            return 0;
+        }
+        let Some(last_user) = self.messages.iter().rposition(|m| m.role == Role::User) else {
+            return 0;
+        };
+        let starts: Vec<usize> = (self.skip + 1..=last_user).filter(|&i| self.messages[i].role == Role::User).collect();
+        let target = budget_tokens * 7 / 10;
+        let pick = starts.iter().copied().find(|&s| tokens(self, s) <= target).or_else(|| starts.last().copied());
+        match pick {
+            Some(s) => {
+                let dropped = s - self.skip;
+                self.skip = s;
+                dropped
+            }
+            None => 0,
+        }
     }
 
     pub fn to_markdown(&self) -> String {
@@ -403,6 +441,82 @@ mod tests {
         let old = r#"{"id":"x","title":"t","created":1,"updated":1,"messages":[{"id":"m","role":"user","content":"hi"}]}"#;
         let back: Chat = serde_json::from_str(old).unwrap();
         assert!(back.messages[0].attachments.is_empty());
+    }
+
+    /// A chat of `turns` user / assistant pairs, every message of `chars` characters.
+    fn long_chat(turns: usize, chars: usize) -> Chat {
+        let mut c = Chat::new();
+        for t in 0..turns {
+            c.messages.push(Message::new(Role::User, format!("{t:04}{}", "q".repeat(chars - 4))));
+            c.messages.push(Message::new(Role::Assistant, format!("{t:04}{}", "a".repeat(chars - 4))));
+        }
+        c.messages.push(Message::new(Role::User, "the last question"));
+        c
+    }
+
+    #[test]
+    fn a_conversation_that_fits_is_left_alone() {
+        let mut c = long_chat(3, 300);
+        assert_eq!(c.fit("", 10_000), 0);
+        assert_eq!(c.skip, 0);
+        assert_eq!(c.api_messages("").len(), c.messages.len());
+    }
+
+    #[test]
+    fn the_oldest_turns_are_left_out_by_whole_turns_down_to_seventy_percent_of_the_budget() {
+        // 20 turns of 2 x 300 characters (about 200 tokens a turn) and a question: about 4,000 tokens
+        let mut c = long_chat(20, 300);
+        let before = c.api_messages("").len();
+        let dropped = c.fit("", 3_000);
+        assert!(dropped > 0 && dropped % 2 == 0, "whole turns: {dropped}");
+        assert_eq!(c.skip, dropped);
+        assert_eq!(c.messages[c.skip].role, Role::User, "the window starts at a user message");
+        let kept = c.api_messages("");
+        assert_eq!(kept.len(), before - dropped);
+        let tokens = estimate_tokens(kept.iter().map(|(_, t)| t.chars().count()).sum());
+        assert!(tokens <= 3_000 * 7 / 10, "{tokens} tokens: down to 70 percent of the budget");
+        assert!(tokens > 3_000 * 7 / 10 - 400, "{tokens} tokens: not much more than needed was dropped");
+        // the question being answered is always kept
+        assert_eq!(kept.last().unwrap().1, "the last question");
+    }
+
+    #[test]
+    fn the_window_stays_where_it_is_until_the_conversation_outgrows_it_again() {
+        let mut c = long_chat(20, 300);
+        c.fit("", 3_000);
+        let skip = c.skip;
+        // a few more turns still fit in the 30 percent that were freed: the start does not move (the engine's cached prefix stays valid)
+        for t in 0..3 {
+            c.messages.push(Message::new(Role::Assistant, format!("{t}{}", "a".repeat(299))));
+            c.messages.push(Message::new(Role::User, format!("{t}{}", "q".repeat(299))));
+            assert_eq!(c.fit("", 3_000), 0);
+            assert_eq!(c.skip, skip);
+        }
+        // many more do not
+        for t in 0..20 {
+            c.messages.push(Message::new(Role::Assistant, format!("{t}{}", "a".repeat(299))));
+            c.messages.push(Message::new(Role::User, format!("{t}{}", "q".repeat(299))));
+        }
+        assert!(c.fit("", 3_000) > 0);
+        assert!(c.skip > skip);
+    }
+
+    #[test]
+    fn a_single_message_longer_than_the_budget_is_still_sent_and_an_edit_pulls_the_window_back() {
+        let mut c = Chat::new();
+        c.messages.push(Message::new(Role::User, "x".repeat(30_000)));
+        assert_eq!(c.fit("", 1_000), 0, "nothing to leave out: the server will say what it thinks");
+        assert_eq!(c.skip, 0);
+        let mut c = long_chat(20, 300);
+        c.fit("", 3_000);
+        assert!(c.skip > 0);
+        // editing a message before the window (or in it) cuts the conversation there: the window cannot start beyond the cut
+        assert!(c.replace_from(0, "a new start"));
+        assert_eq!(c.skip, 0);
+        assert_eq!(c.api_messages("").len(), 1);
+        // a chat file of an older version has no window
+        let old = r#"{"id":"x","title":"t","created":1,"updated":1,"messages":[]}"#;
+        assert_eq!(serde_json::from_str::<Chat>(old).unwrap().skip, 0);
     }
 
     #[test]

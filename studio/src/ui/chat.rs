@@ -446,6 +446,15 @@ fn id_hash(s: &str) -> u64 {
 fn message_view(app: &mut StudioApp, ui: &mut Ui, i: usize, last: bool) {
     let m = app.chat.messages[i].clone();
     let width = ui.available_width();
+    if i == app.chat.skip && app.chat.skip > 0 {
+        // the conversation outgrew the context: what is above this line is no longer read by the model
+        ui.add_space(4.0);
+        ui.vertical_centered(|ui| {
+            ui.label(RichText::new("the messages above are left out of what the model reads: the context is full").small().color(theme::MUTED))
+                .on_hover_text("The conversation no longer fits the context the model was loaded with. The oldest turns stay on screen but are not sent. Settings: A conversation longer than the context.");
+        });
+        ui.add_space(4.0);
+    }
     match m.role {
         Role::User | Role::System if matches!(&app.editing, Some((idx, _, _)) if *idx == i) => {
             let mut save = None;
@@ -698,7 +707,8 @@ fn context_meter(app: &StudioApp) -> Option<String> {
         .rev()
         .find_map(|m| m.stats.as_ref())
         .map(|s| s.prompt_tokens + s.completion_tokens)?;
-    let total = app.engine.current().map(|l| l.ctx)?;
+    app.engine.current()?;
+    let total = app.effective_ctx();
     Some(format!(
         "Context: {used} of {total} tokens ({:.0} %)",
         100.0 * used as f64 / total.max(1) as f64
@@ -729,7 +739,7 @@ fn input_box(app: &mut StudioApp, ui: &mut Ui) {
                         + app.attachments.iter().map(|a| a.text.chars().count() + 24).sum::<usize>()
                         + app.input.chars().count();
                     let tokens = crate::chats::estimate_tokens(chars);
-                    let ctx = app.settings.context_len as usize;
+                    let ctx = app.effective_ctx() as usize;
                     let over = tokens + 300 > ctx;
                     ui.label(RichText::new(format!("about {} of {} tokens{}", human_count(tokens as u64), human_count(ctx as u64), if over { ": too long, raise the context length in Settings or attach less" } else { "" })).small().color(if over { theme::BAD } else { theme::MUTED }));
                 });

@@ -4,7 +4,7 @@ use eframe::egui::{self, RichText, ScrollArea, TextEdit, Ui};
 
 use super::widgets::*;
 use crate::app::{Action, StudioApp};
-use crate::settings::{data_dir, find_forge, find_llama_server, EngineKind, KvMode};
+use crate::settings::{data_dir, find_forge, find_llama_server, EngineKind, KvMode, OverflowPolicy};
 use crate::theme;
 
 pub fn show(app: &mut StudioApp, ui: &mut Ui) {
@@ -129,12 +129,16 @@ fn loading(app: &mut StudioApp, ui: &mut Ui) {
     card(ui, |ui| {
         ui.horizontal(|ui| {
             ui.label("Context length");
-            ui.add(
-                egui::DragValue::new(&mut app.settings.context_len)
-                    .range(512..=1_048_576)
-                    .speed(64.0),
-            );
-            for (label, n) in [("4k", 4096), ("8k", 8192), ("16k", 16384), ("32k", 32768)] {
+            if app.settings.context_len == 0 {
+                ui.label(RichText::new("automatic").strong());
+            } else {
+                ui.add(
+                    egui::DragValue::new(&mut app.settings.context_len)
+                        .range(512..=4_194_304)
+                        .speed(64.0),
+                );
+            }
+            for (label, n) in [("auto", 0), ("4k", 4096), ("8k", 8192), ("16k", 16384), ("32k", 32768), ("64k", 65536), ("128k", 131072), ("256k", 262144)] {
                 if ui.small_button(label).clicked() {
                     app.settings.context_len = n;
                 }
@@ -142,8 +146,14 @@ fn loading(app: &mut StudioApp, ui: &mut Ui) {
         });
         muted(
             ui,
-            "Tokens of conversation the model can see. A longer context uses more memory.",
+            "Tokens of conversation the model can see. A longer context uses more memory. Automatic (ForgeInfer engine): the longest context that fits next to the model, up to what the model was trained for; Settings shows it in the log when the model is ready.",
         );
+        ui.horizontal(|ui| {
+            if ui.button("Longest possible").on_hover_text("Automatic context length and a compressed KV cache with 8-bit keys and 4-bit values: about 40 percent of the memory of the 16-bit cache for a small loss (the all-4-bit cache reaches further but costs some models, a dense Qwen3-4B among them, several percent of their top-1 agreement)").clicked() {
+                app.settings.context_len = 0;
+                app.settings.kv_cache = KvMode::K8V4;
+            }
+        });
         ui.add_space(4.0);
         ui.horizontal(|ui| {
             ui.label("KV cache");
@@ -155,7 +165,7 @@ fn loading(app: &mut StudioApp, ui: &mut Ui) {
                     }
                 });
         });
-        muted(ui, "The attention memory of a conversation. 8-bit halves it, which is what makes long contexts fit on a small GPU.");
+        muted(ui, "The attention memory of a conversation. 8-bit halves it, which is what makes long contexts fit on a small GPU; 8-bit keys with 4-bit values keep 40 percent; all 4-bit a quarter, with a visible loss on some models.");
         ui.add_space(4.0);
         ui.checkbox(
             &mut app.settings.speculative,
@@ -177,6 +187,17 @@ fn loading(app: &mut StudioApp, ui: &mut Ui) {
             }
         });
         muted(ui, "ForgeInfer keeps the chats it is not working on in this much computer memory (not video memory), so going back to a long chat or document copies it back in a fraction of a second instead of reading it again (a 6,000-token chat: about half a second instead of 3 to 5 s). Loads with the model.");
+        ui.horizontal(|ui| {
+            ui.label("A conversation longer than the context");
+            egui::ComboBox::from_id_salt("overflow_policy")
+                .selected_text(app.settings.context_overflow.label())
+                .show_ui(ui, |ui| {
+                    for p in OverflowPolicy::ALL {
+                        ui.selectable_value(&mut app.settings.context_overflow, p, p.label());
+                    }
+                });
+        });
+        muted(ui, "When a chat grows past the context the model was loaded with, the oldest turns are left out of what it reads (they stay on screen, a line marks the cut), by whole turns and down to 70 percent of the context, so that the engine's memory of the chat stays valid for the next messages. The system prompt and the message being answered are always kept.");
         ui.horizontal(|ui| {
             ui.label("Speculative depth");
             ui.add(egui::DragValue::new(&mut app.settings.spec_depth).range(0..=7));

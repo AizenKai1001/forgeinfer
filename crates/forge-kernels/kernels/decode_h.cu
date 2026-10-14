@@ -288,6 +288,76 @@ extern "C" __global__ void __launch_bounds__(256) attn_split_g_kernel(const floa
     }
 }
 
+// attn_split_g_kernel for a compressed KV cache (kvq.cu), without the dequantization pass: see attn_split_q_kernel (decode.cu). Head width 256.
+extern "C" __global__ void __launch_bounds__(256) attn_split_g_q_kernel(const float* __restrict__ q, const uint8_t* __restrict__ kst, const half* __restrict__ ksc, const uint8_t* __restrict__ vst,
+                                                                       const half* __restrict__ vsc, const half* __restrict__ k_cache, const half* __restrict__ v_cache, float* __restrict__ pm,
+                                                                       float* __restrict__ pl, float* __restrict__ po, const StepState* __restrict__ st, int n_head, int n_kv, int hd, int ns_max,
+                                                                       int group, int bits_k, int bits_v) {
+    __shared__ float scores[AS_CH];
+    __shared__ float qs[256];
+    __shared__ float part[8 * 256];
+    __shared__ float red[32];
+    const int hh = blockIdx.x, split = blockIdx.y, tid = threadIdx.x;
+    const int tt = blockIdx.z;                 // token of a multi-token step
+    const long pos = st->pos;
+    const int T = (int)pos + 1 + tt;
+    const int t0 = split * AS_CH;
+    const size_t pidx = ((size_t)tt * n_head + hh) * ns_max + split;
+    float* o_out = po + pidx * 256;
+    if (t0 >= T) {
+        if (tid == 0) {
+            pm[pidx] = -INFINITY;
+            pl[pidx] = 0.f;
+        }
+        return;
+    }
+    const int tn = min(AS_CH, T - t0);
+    const int kvh = hh / (n_head / n_kv);
+    const int sub = tid & 31, grp = tid >> 5;   // 32 lanes per key row, 8 rows per round
+    qs[tid] = q[(size_t)tt * n_head * hd + hh * hd + tid];
+    __syncthreads();
+    const float scale = rsqrtf((float)hd);
+    float qv[8];
+#pragma unroll
+    for (int j = 0; j < 8; j++) qv[j] = qs[sub * 8 + j];
+    for (int i0 = 0; i0 < tn; i0 += 8) {   // uniform trip count across the block: the shuffles below involve whole warps
+        const int i = i0 + grp;
+        const bool valid = i < tn;
+        float acc = 0.f;
+        if (valid) acc = kv_dot8(qv, kst, ksc, k_cache, t0 + i, pos, kvh, n_kv, hd, sub, group, bits_k);
+        acc = warp_sum(acc);
+        if (valid && sub == 0) scores[i] = acc * scale;
+    }
+    __syncthreads();
+    float mx = -INFINITY;
+    for (int i = tid; i < tn; i += 256) mx = fmaxf(mx, scores[i]);
+    mx = block_max(mx, red);
+    float sum = 0.f;
+    for (int i = tid; i < tn; i += 256) {
+        const float e = __expf(scores[i] - mx);
+        scores[i] = e;
+        sum += e;
+    }
+    sum = block_sum(sum, red);
+    float o[8];
+#pragma unroll
+    for (int j = 0; j < 8; j++) o[j] = 0.f;
+    for (int i = grp; i < tn; i += 8) {
+        kv_axpy8(scores[i], o, vst, vsc, v_cache, t0 + i, pos, kvh, n_kv, hd, sub, group, bits_v);
+    }
+#pragma unroll
+    for (int j = 0; j < 8; j++) part[grp * 256 + sub * 8 + j] = o[j];
+    __syncthreads();
+    float s = 0.f;
+#pragma unroll
+    for (int g = 0; g < 8; g++) s += part[g * 256 + tid];
+    o_out[tid] = s;
+    if (tid == 0) {
+        pm[pidx] = mx;
+        pl[pidx] = sum;
+    }
+}
+
 // grid n_head, block 256 (one thread per output dimension): exact combination of the splits, the sigmoid gate (gate + hh * gate_stride), int8 quantization per 32 dimensions
 extern "C" __global__ void __launch_bounds__(256) attn_merge_g_kernel(const float* __restrict__ pm, const float* __restrict__ pl, const float* __restrict__ po, const float* __restrict__ gate, int8_t* __restrict__ oq,
                                                                      float* __restrict__ od, int* __restrict__ os, const StepState* __restrict__ st, int ns_max, int gate_stride) {

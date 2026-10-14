@@ -747,7 +747,9 @@ impl<'m> GpuSession<'m> {
                         &mb.xs_e,
                         e,
                     )?;
-                    self.kv_pre(li, None, st_ptr)?;
+                    if !self.kv_fused() {
+                        self.kv_pre(li, None, st_ptr)?;
+                    }
                     k.qkv35_prep.launch(
                         ((nh + 2 * nkv) as u32, n as u32, 1),
                         (256, 1, 1),
@@ -774,24 +776,11 @@ impl<'m> GpuSession<'m> {
                     let gate = mb.qraw.ptr() + (hd * 4) as u64;
                     if self.attn_split {
                         let ns_max = (self.max_ctx + AS_CH - 1) / AS_CH;
-                        k.attn_split_g.launch(
-                            (nh as u32, ns_max as u32, n as u32),
-                            (256, 1, 1),
-                            0,
-                            st,
-                            &Args::new()
-                                .buf(&mb.qout)
-                                .ptr(kc)
-                                .ptr(vc)
-                                .buf(&mb.as_m)
-                                .buf(&mb.as_l)
-                                .buf(&mb.as_o)
-                                .ptr(st_ptr)
-                                .i32(nh as i32)
-                                .i32(nkv as i32)
-                                .i32(hd as i32)
-                                .i32(ns_max as i32),
-                        )?;
+                        if self.kv_fused() {
+                            self.launch_split_fused(true, li, n, mb.qout.ptr(), kc, vc, mb.as_m.ptr(), mb.as_l.ptr(), mb.as_o.ptr(), st_ptr, ns_max)?;
+                        } else {
+                            self.launch_split_plain(true, n, mb.qout.ptr(), kc, vc, mb.as_m.ptr(), mb.as_l.ptr(), mb.as_o.ptr(), st_ptr, ns_max)?;
+                        }
                         k.attn_merge_g.launch(
                             (nh as u32, n as u32, 1),
                             (256, 1, 1),

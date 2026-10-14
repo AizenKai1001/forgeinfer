@@ -41,17 +41,20 @@ pub enum KvMode {
     #[default]
     Fp16,
     Int8,
+    /// 8-bit keys, 4-bit values: the keys are the sensitive half (4-bit keys cost a dense Qwen3-4B 5 percent of its top-1 agreement with the 16-bit cache, 8-bit keys with 4-bit values 1 percent).
+    K8V4,
     Int4,
 }
 
 impl KvMode {
-    pub const ALL: [KvMode; 3] = [KvMode::Fp16, KvMode::Int8, KvMode::Int4];
+    pub const ALL: [KvMode; 4] = [KvMode::Fp16, KvMode::Int8, KvMode::K8V4, KvMode::Int4];
 
     pub fn label(self) -> &'static str {
         match self {
             KvMode::Fp16 => "16-bit (exact)",
             KvMode::Int8 => "8-bit (half the memory, negligible loss)",
-            KvMode::Int4 => "4-bit (a quarter of the memory)",
+            KvMode::K8V4 => "8-bit keys, 4-bit values (40 percent of the memory, small loss)",
+            KvMode::Int4 => "4-bit (28 percent of the memory, a visible loss on some models)",
         }
     }
 
@@ -59,7 +62,30 @@ impl KvMode {
         match self {
             KvMode::Fp16 => None,
             KvMode::Int8 => Some("int8"),
+            KvMode::K8V4 => Some("k8v4"),
             KvMode::Int4 => Some("int4"),
+        }
+    }
+}
+
+/// What happens when a conversation no longer fits into the context the model was loaded with.
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum OverflowPolicy {
+    /// The oldest turns are left out of what the model reads (the chat keeps them on screen).
+    #[default]
+    Drop,
+    /// Nothing is left out: the server's "context too long" error is shown.
+    Stop,
+}
+
+impl OverflowPolicy {
+    pub const ALL: [OverflowPolicy; 2] = [OverflowPolicy::Drop, OverflowPolicy::Stop];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            OverflowPolicy::Drop => "Leave the oldest messages out of what the model reads",
+            OverflowPolicy::Stop => "Stop with an error",
         }
     }
 }
@@ -179,7 +205,7 @@ pub struct Settings {
     /// Base URL of the server used when the engine is `External`, e.g. `http://192.168.1.x:8080`.
     pub external_url: String,
     pub external_key: String,
-    /// Context length the engine allocates when it loads a model.
+    /// Context length the engine allocates when it loads a model; 0 = automatic: the ForgeInfer engine opens the longest context that fits next to the model (llama.cpp gets 8,192).
     pub context_len: u32,
     pub kv_cache: KvMode,
     /// Tokens drafted per step by a model's own prediction head (0 = the engine's default).
@@ -190,6 +216,8 @@ pub struct Settings {
     pub lookup: bool,
     /// Megabytes of memory the ForgeInfer engine may use to keep the chats it is not working on (0 = off): going back to a long chat copies it back instead of reading it again.
     pub prompt_cache_mb: u32,
+    /// What to do when the conversation outgrows the context.
+    pub context_overflow: OverflowPolicy,
     /// Port of the local server (the default is the one LM Studio uses, so tools that know it just work).
     pub port: u16,
     /// Listen on every network interface instead of this computer only.
@@ -235,6 +263,7 @@ impl Default for Settings {
             speculative: true,
             lookup: true,
             prompt_cache_mb: DEFAULT_PROMPT_CACHE_MB,
+            context_overflow: OverflowPolicy::Drop,
             port: 1234,
             serve_on_lan: false,
             api_key: String::new(),
@@ -328,7 +357,9 @@ impl Settings {
 
     /// A file edited by hand may hold values that no engine can use: bring them into range.
     pub fn sanitize(&mut self) {
-        self.context_len = self.context_len.clamp(512, 4_194_304);
+        if self.context_len != 0 {
+            self.context_len = self.context_len.clamp(512, 4_194_304);
+        }
         if self.port < 1024 {
             self.port = 1234;
         }
@@ -499,6 +530,29 @@ mod tests {
     }
 
     #[test]
+    fn the_kv_modes_serialize_by_name_and_carry_the_engine_flag() {
+        for (m, name, flag) in [(KvMode::Fp16, "fp16", None), (KvMode::Int8, "int8", Some("int8")), (KvMode::K8V4, "k8v4", Some("k8v4")), (KvMode::Int4, "int4", Some("int4"))] {
+            assert_eq!(serde_json::to_string(&m).unwrap(), format!("\"{name}\""));
+            assert_eq!(serde_json::from_str::<KvMode>(&format!("\"{name}\"")).unwrap(), m);
+            assert_eq!(m.flag(), flag);
+            assert!(KvMode::ALL.contains(&m));
+        }
+        assert_eq!(KvMode::ALL.len(), 4);
+    }
+
+    #[test]
+    fn the_overflow_policy_defaults_to_dropping_the_oldest_turns_and_survives_a_round_trip() {
+        assert_eq!(Settings::default().context_overflow, OverflowPolicy::Drop);
+        let old: Settings = serde_json::from_str(r#"{"port": 4321}"#).unwrap();
+        assert_eq!(old.context_overflow, OverflowPolicy::Drop);
+        let mut s = Settings::default();
+        s.context_overflow = OverflowPolicy::Stop;
+        let text = serde_json::to_string(&s).unwrap();
+        assert!(text.contains("\"stop\""));
+        assert_eq!(serde_json::from_str::<Settings>(&text).unwrap().context_overflow, OverflowPolicy::Stop);
+    }
+
+    #[test]
     fn a_byte_order_mark_in_front_of_the_file_is_fine() {
         let s = Settings::parse("\u{feff}{\"port\": 4321}").unwrap();
         assert_eq!(s.port, 4321);
@@ -507,7 +561,7 @@ mod tests {
 
     #[test]
     fn values_that_no_engine_can_use_are_brought_into_range() {
-        let s = Settings::parse(r#"{"context_len": 0, "port": 80, "spec_depth": 99, "zoom": 50.0, "gen": {"temperature": 99.0, "top_p": -1.0, "repeat_penalty": 0.0, "top_k": 4000000000}}"#).unwrap();
+        let s = Settings::parse(r#"{"context_len": 3, "port": 80, "spec_depth": 99, "zoom": 50.0, "gen": {"temperature": 99.0, "top_p": -1.0, "repeat_penalty": 0.0, "top_k": 4000000000}}"#).unwrap();
         assert_eq!(s.context_len, 512);
         assert_eq!(s.port, 1234);
         assert_eq!(s.spec_depth, 7);

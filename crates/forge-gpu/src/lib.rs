@@ -201,8 +201,14 @@ struct Kernels {
     attn_split_g: Function,
     /// split-KV decode attention of dense models (decode.cu): partial softmax per block of AS_CH positions, exact merge to fp32 / to the quantized activation
     attn_split: Function,
+    /// the same straight from a compressed KV cache (no dequantization pass): dense models, hybrid models
+    attn_split_q: Function,
+    attn_split_g_q: Function,
     /// the same for the rows of a multi-row step, four rows per block (they share the loads of keys and values; bit-identical partial results)
     attn_split_rows: Function,
+    /// GQA-shared split attention (decode.cu `attn_gqa_impl`): one block per key-value head for the query heads that share it, bit-identical partial results. (head width, query heads per block padded to a power
+    /// of two, compressed cache, kernel) for every instantiation of ATTN_GQA_KERNELS
+    gqa: Vec<(usize, usize, bool, Function)>,
     attn_merge: Function,
     attn_merge_q: Function,
     attn_merge_g: Function,
@@ -777,6 +783,22 @@ fn q8_smem(k: usize) -> u32 {
 
 impl GpuModel {
     /// The MTP head is loaded and every matrix is quantized, so speculative decoding (draft step + two-token verification) is available.
+    /// The positions the model was trained for: the longest context a session should be opened with.
+    pub fn max_positions(&self) -> usize {
+        self.cfg.max_ctx
+    }
+
+    /// Bytes of device memory a session of `ctx` positions takes next to the weights (the KV cache or its compressed store and the fp16 scratch, the prefill buffers, the recurrent states, the CUDA graphs), as the
+    /// planner of `GpuModel::upload` counts them (FORGE_KV, FORGE_PREFILL_CHUNK and FORGE_SPEC_DEPTH change it).
+    pub fn session_bytes(&self, ctx: usize) -> usize {
+        session_reserve(&self.cfg, ctx, self.mtp.is_some())
+    }
+
+    /// Free device memory now.
+    pub fn free_device_bytes(&self) -> Result<usize> {
+        Ok(self.dev.mem_info()?.0)
+    }
+
     pub fn has_mtp(&self) -> bool {
         self.mtp.is_some() && self.quantized
     }
@@ -931,7 +953,22 @@ impl GpuModel {
             attention_g: module.function("attention_g_kernel")?,
             attn_split_g: module.function("attn_split_g_kernel")?,
             attn_split: module.function("attn_split_kernel")?,
+            attn_split_q: module.function("attn_split_q_kernel")?,
+            attn_split_g_q: module.function("attn_split_g_q_kernel")?,
             attn_split_rows: module.function("attn_split_rows4_kernel")?,
+            gqa: {
+                let mut v = Vec::new();
+                for hd in [64usize, 128, 256] {
+                    for gp in [2usize, 4, 8] {
+                        for (quant, tag) in [(false, "f16"), (true, "q")] {
+                            if let Ok(f) = module.function(&format!("attn_gqa_{tag}_{hd}_{gp}_kernel")) {
+                                v.push((hd, gp, quant, f));
+                            }
+                        }
+                    }
+                }
+                v
+            },
             attn_merge: module.function("attn_merge_kernel")?,
             attn_merge_q: module.function("attn_merge_q_kernel")?,
             attn_merge_g: module.function("attn_merge_g_kernel")?,
@@ -1586,7 +1623,7 @@ struct KvCfg {
 }
 
 impl KvCfg {
-    /// FORGE_KV = int8 | int4 | k8v8 | k8v4 | k4v8 | k4v4 (unset, fp16, off: the plain fp16 cache); FORGE_KV_GROUP = 32 | 64 | 128 | 256 (default 32). Quantized models (the hooks sit in the K-quant decode, prefill and multi-row paths).
+    /// FORGE_KV = int8 | int4 | k8v8 | k8v4 | k4v8 | k4v4 (unset, fp16, off: the plain fp16 cache); FORGE_KV_GROUP = 8 | 16 | 32 | 64 | 128 | 256 (default 32; at least 8 values per lane's share of a row, see kvq.cu). Quantized models (the hooks sit in the K-quant decode, prefill and multi-row paths).
     fn from_env(c: &Config) -> Option<KvCfg> {
         let v = std::env::var("FORGE_KV").ok()?;
         let (bits_k, bits_v) = match v.trim().to_ascii_lowercase().as_str() {
@@ -1607,7 +1644,7 @@ impl KvCfg {
         let group = std::env::var("FORGE_KV_GROUP")
             .ok()
             .and_then(|g| g.parse::<usize>().ok())
-            .filter(|g| g.is_power_of_two() && *g >= 32)
+            .filter(|g| g.is_power_of_two() && *g >= 8)
             .unwrap_or(32)
             .min(c.head_dim);
         Some(KvCfg { bits_k, bits_v, group })
@@ -1795,6 +1832,13 @@ pub struct GpuSession<'m> {
     /// Qwen3.5-4B, whose attention layers are a quarter of its layers: 12.7 ms against 8.8 ms per token at 6,400 positions, 10.2 against 8.5 at 2,900 and 9.3 against 8.4 at 1,700).
     /// FORGE_ATTN_SPLIT=1 / 0 forces it on / off (0 is ignored where the one-block kernel cannot launch)
     attn_split: bool,
+    /// the decode attention reads the compressed KV cache directly (`attn_split_q_kernel`, `attn_split_g_q_kernel`) instead of dequantizing the whole context into the scratch first
+    kv_fused: bool,
+    /// the split attention runs one block per key-value head for the query heads that share it (decode.cu `attn_gqa_impl`): a key or value row is loaded and decoded once for all of them, and the cross-lane sums of
+    /// the heads of a position are made together (6 shuffles for 20 with four heads). The partial results are bit-identical to the one-head kernels'. It needs fewer blocks (a quarter with four heads), so it is used
+    /// for sessions with at least FORGE_ATTN_GQA_FROM splits of AS_CH positions (default: 32 blocks' worth, 32 / key-value heads rounded up: 8 for 4 key-value heads, 4 for 8, 16 for 2: below about
+    /// 32 blocks the kernel loses, the Qwen3.5-0.8B with 2 key-value heads at 8,192 positions: -7 percent with 16 blocks, +1 to 2 percent at 16,384 with 34); FORGE_ATTN_GQA=0 turns it off. The value is the number of heads per block, the group size padded to a power of two (0: not used).
+    attn_gqa: usize,
     /// calibration passes that start or stop inside the network (`eval_chunk_resid`): the residual stream to start from / the one the pass ended with
     resid_in: Option<Vec<f32>>,
     resid_out: Option<Vec<f32>>,
@@ -2041,6 +2085,31 @@ impl<'m> GpuSession<'m> {
             }
         }
         let kvq_cfg = KvCfg::from_env(c).filter(|_| m.quantized && std::env::var("FORGE_OLD_Q8").is_err());
+        let attn_split = match std::env::var("FORGE_ATTN_SPLIT").ok().as_deref() {
+            Some("1") => true,
+            Some("0") => max_ctx > if m.cfg.delta.is_some() { HYBRID_ONE_BLOCK_MAX } else { DENSE_ONE_BLOCK_MAX },
+            _ => max_ctx > ATTN_SPLIT_FROM,
+        };
+        // the decode attention reads a compressed cache directly (no dequantization pass of the whole context per layer and token); FORGE_KV_FUSED=0 keeps the pass (for comparisons)
+        let kv_fused = kvq_cfg.is_some() && attn_split && std::env::var("FORGE_KV_FUSED").map(|v| v != "0").unwrap_or(true);
+        let attn_gqa = if attn_split
+            && std::env::var("FORGE_ATTN_GQA").map(|v| v != "0").unwrap_or(true)
+            && c.n_head_kv > 0
+            && c.n_head % c.n_head_kv == 0
+            && c.n_head / c.n_head_kv >= 2
+            && (max_ctx + AS_CH - 1) / AS_CH >= std::env::var("FORGE_ATTN_GQA_FROM").ok().and_then(|v| v.parse::<usize>().ok()).unwrap_or((32 + c.n_head_kv - 1) / c.n_head_kv)
+        {
+            let gp = (c.n_head / c.n_head_kv).next_power_of_two();
+            // the hybrid kernels are for head width 256, the dense ones for 64 and 128; an instantiation must exist for the plain and for the compressed cache
+            let have = |quant: bool| m.k.gqa.iter().any(|e| e.0 == c.head_dim && e.1 == gp && e.2 == quant);
+            if (c.delta.is_some() == (c.head_dim == 256)) && have(false) && have(true) {
+                gp
+            } else {
+                0
+            }
+        } else {
+            0
+        };
         let kv_bytes = if kvq_cfg.is_some() { 1 } else { n_attn.max(1) } * max_ctx * c.kv_dim() * 2;
         let (dn_s_bytes, dn_conv_bytes) = c
             .delta
@@ -2150,11 +2219,9 @@ impl<'m> GpuSession<'m> {
             swiglu_q: std::env::var("FORGE_SWIGLU_Q").map(|v| v != "0").unwrap_or(true),
             flash_a80,
             scan_nc: std::env::var("FORGE_SCAN_NC").map(|v| v != "0").unwrap_or(true),
-            attn_split: match std::env::var("FORGE_ATTN_SPLIT").ok().as_deref() {
-                Some("1") => true,
-                Some("0") => max_ctx > if m.cfg.delta.is_some() { HYBRID_ONE_BLOCK_MAX } else { DENSE_ONE_BLOCK_MAX },
-                _ => max_ctx > ATTN_SPLIT_FROM,
-            },
+            attn_split,
+            kv_fused,
+            attn_gqa,
             fused_max: if std::env::var("FORGE_NO_FUSED").is_ok() {
                 [0; 3]
             } else {
@@ -2259,6 +2326,98 @@ impl<'m> GpuSession<'m> {
             return 0;
         }
         (self.kv_slot[li] * self.max_ctx * self.m.cfg.kv_dim() * 2) as u64
+    }
+
+    /// Does the decode attention read the compressed KV cache directly (`attn_split_q_kernel`, `attn_split_g_q_kernel`) instead of dequantizing the whole context into the scratch first? It does when the cache is compressed
+    /// and the split attention kernels are in use; FORGE_KV_FUSED=0 keeps the dequantization pass (for comparisons). The dequantization wrote and read the whole context as fp16 for every layer of every token.
+    fn kv_fused(&self) -> bool {
+        self.kv_fused
+    }
+
+    /// The split attention launch of the fused kind: the arguments of `attn_split_kernel` / `attn_split_g_kernel` (`q`, the scratch rows of the step `kc` / `vc`, the partial results, the step state) and the compressed
+    /// store of attention layer `li`; `rows` tokens of the step (grid z).
+    #[allow(clippy::too_many_arguments)]
+    fn launch_split_fused(&self, hybrid: bool, li: usize, rows: usize, q: u64, kc: u64, vc: u64, pm: u64, pl: u64, po: u64, state: u64, ns_max: usize) -> Result<()> {
+        let kq = self.kvq.as_ref().expect("a compressed cache");
+        let c = &self.m.cfg;
+        let p = kq.ptrs(self.kv_slot[li], c, self.max_ctx);
+        let args = Args::new()
+            .ptr(q)
+            .ptr(p[0])
+            .ptr(p[1])
+            .ptr(p[2])
+            .ptr(p[3])
+            .ptr(kc)
+            .ptr(vc)
+            .ptr(pm)
+            .ptr(pl)
+            .ptr(po)
+            .ptr(state)
+            .i32(c.n_head as i32)
+            .i32(c.n_head_kv as i32)
+            .i32(c.head_dim as i32)
+            .i32(ns_max as i32)
+            .i32(kq.cfg.group as i32)
+            .i32(kq.cfg.bits_k as i32)
+            .i32(kq.cfg.bits_v as i32);
+        if let Some(f) = self.gqa_kernel(true) {
+            // one block per key-value head (the head width is an argument for the scale only, the kernel is built for it)
+            let gargs = Args::new()
+                .ptr(q)
+                .ptr(p[0])
+                .ptr(p[1])
+                .ptr(p[2])
+                .ptr(p[3])
+                .ptr(kc)
+                .ptr(vc)
+                .ptr(pm)
+                .ptr(pl)
+                .ptr(po)
+                .ptr(state)
+                .i32(c.n_head as i32)
+                .i32(c.n_head_kv as i32)
+                .i32(c.head_dim as i32)
+                .i32(ns_max as i32)
+                .i32(kq.cfg.group as i32)
+                .i32(kq.cfg.bits_k as i32)
+                .i32(kq.cfg.bits_v as i32);
+            let grid = (c.n_head_kv as u32, ns_max as u32, rows as u32);
+            return f.launch(grid, (if hybrid { 256 } else { 128 }, 1, 1), 0, &self.stream, &gargs);
+        }
+        if hybrid {
+            self.m.k.attn_split_g_q.launch((c.n_head as u32, ns_max as u32, rows as u32), (256, 1, 1), 0, &self.stream, &args)
+        } else {
+            self.m.k.attn_split_q.launch((c.n_head as u32, ns_max as u32, rows as u32), (128, 1, 1), 0, &self.stream, &args)
+        }
+    }
+
+    /// The GQA-shared split attention kernel of this session for the plain (`compressed` false) or the compressed cache, if the session uses one.
+    fn gqa_kernel(&self, compressed: bool) -> Option<&Function> {
+        if self.attn_gqa == 0 {
+            return None;
+        }
+        let hd = self.m.cfg.head_dim;
+        self.m.k.gqa.iter().find(|e| e.0 == hd && e.1 == self.attn_gqa && e.2 == compressed).map(|e| &e.3)
+    }
+
+    /// The split attention launch for the plain fp16 cache: `attn_split_kernel` / `attn_split_g_kernel` (one block per query head), or the GQA-shared kernel (one block per key-value head, the same partial
+    /// results bit for bit) in a long session. `rows` tokens of the step (grid z).
+    #[allow(clippy::too_many_arguments)]
+    fn launch_split_plain(&self, hybrid: bool, rows: usize, q: u64, kc: u64, vc: u64, pm: u64, pl: u64, po: u64, state: u64, ns_max: usize) -> Result<()> {
+        let c = &self.m.cfg;
+        let k = &self.m.k;
+        if let Some(f) = self.gqa_kernel(false) {
+            let gargs = Args::new().ptr(q).ptr(kc).ptr(vc).ptr(pm).ptr(pl).ptr(po).ptr(state).i32(c.n_head as i32).i32(c.n_head_kv as i32).i32(c.head_dim as i32).i32(ns_max as i32);
+            let grid = (c.n_head_kv as u32, ns_max as u32, rows as u32);
+            return f.launch(grid, (if hybrid { 256 } else { 128 }, 1, 1), 0, &self.stream, &gargs);
+        }
+        let args = Args::new().ptr(q).ptr(kc).ptr(vc).ptr(pm).ptr(pl).ptr(po).ptr(state).i32(c.n_head as i32).i32(c.n_head_kv as i32).i32(c.head_dim as i32).i32(ns_max as i32);
+        let grid = (c.n_head as u32, ns_max as u32, rows as u32);
+        if hybrid {
+            k.attn_split_g.launch(grid, (256, 1, 1), 0, &self.stream, &args)
+        } else {
+            k.attn_split.launch(grid, (128, 1, 1), 0, &self.stream, &args)
+        }
     }
 
     /// compressed KV cache: decompress the `t` positions before the current ones of attention layer `li` into the scratch (`None`: as many as the step state's position says, for the captured graphs)
@@ -2729,7 +2888,9 @@ impl<'m> GpuSession<'m> {
                     (fv, nq_u + nk_u, total_u),
                 ]
             };
-            self.kv_pre(li, None, self.state.ptr())?;
+            if !self.kv_fused() {
+                self.kv_pre(li, None, self.state.ptr())?;
+            }
             let (bq, bk, bv) = l.bias_ptrs();
             for (fmt_r, lo, hi) in ranges {
                 let qkv_fn = k.qkvq.uniform(fmt_r, c.n_embd)?;
@@ -2789,24 +2950,11 @@ impl<'m> GpuSession<'m> {
             }
             if self.attn_split {
                 let ns_max = (self.max_ctx + AS_CH - 1) / AS_CH;
-                k.attn_split.launch(
-                    (c.n_head as u32, ns_max as u32, 1),
-                    (128, 1, 1),
-                    0,
-                    st,
-                    &Args::new()
-                        .buf(&self.q)
-                        .ptr(kc)
-                        .ptr(vc)
-                        .buf(&self.as_m)
-                        .buf(&self.as_l)
-                        .buf(&self.as_o)
-                        .buf(&self.state)
-                        .i32(c.n_head as i32)
-                        .i32(c.n_head_kv as i32)
-                        .i32(hd)
-                        .i32(ns_max as i32),
-                )?;
+                if self.kv_fused() {
+                    self.launch_split_fused(false, li, 1, self.q.ptr(), kc, vc, self.as_m.ptr(), self.as_l.ptr(), self.as_o.ptr(), self.state.ptr(), ns_max)?;
+                } else {
+                    self.launch_split_plain(false, 1, self.q.ptr(), kc, vc, self.as_m.ptr(), self.as_l.ptr(), self.as_o.ptr(), self.state.ptr(), ns_max)?;
+                }
                 k.attn_merge_q.launch(
                     (c.n_head as u32, 1, 1),
                     (128, 1, 1),
@@ -3095,7 +3243,9 @@ impl<'m> GpuSession<'m> {
                     c.kv_dim(),
                     c.n_embd,
                 )?;
-                self.kv_pre(li, None, self.state.ptr())?;
+                if !self.kv_fused() {
+                    self.kv_pre(li, None, self.state.ptr())?;
+                }
                 k.qkv35_prep.launch(
                     ((c.n_head + 2 * c.n_head_kv) as u32, 1, 1),
                     (256, 1, 1),
@@ -3122,24 +3272,11 @@ impl<'m> GpuSession<'m> {
                 if self.attn_split {
                     // long contexts: split-KV attention (partial softmax per block of AS_CH positions), then an exact merge with the output gate and the quantization
                     let ns_max = (self.max_ctx + AS_CH - 1) / AS_CH;
-                    k.attn_split_g.launch(
-                        (c.n_head as u32, ns_max as u32, 1),
-                        (256, 1, 1),
-                        0,
-                        st,
-                        &Args::new()
-                            .buf(&self.q)
-                            .ptr(kc)
-                            .ptr(vc)
-                            .buf(&self.as_m)
-                            .buf(&self.as_l)
-                            .buf(&self.as_o)
-                            .buf(&self.state)
-                            .i32(c.n_head as i32)
-                            .i32(c.n_head_kv as i32)
-                            .i32(hd)
-                            .i32(ns_max as i32),
-                    )?;
+                    if self.kv_fused() {
+                        self.launch_split_fused(true, li, 1, self.q.ptr(), kc, vc, self.as_m.ptr(), self.as_l.ptr(), self.as_o.ptr(), self.state.ptr(), ns_max)?;
+                    } else {
+                        self.launch_split_plain(true, 1, self.q.ptr(), kc, vc, self.as_m.ptr(), self.as_l.ptr(), self.as_o.ptr(), self.state.ptr(), ns_max)?;
+                    }
                     k.attn_merge_g.launch(
                         (c.n_head as u32, 1, 1),
                         (256, 1, 1),
@@ -6063,7 +6200,9 @@ impl<'m> GpuSession<'m> {
                     kd,
                     c.n_embd,
                 )?;
-                self.kv_pre(li, None, self.state.ptr())?;
+                if !self.kv_fused() {
+                    self.kv_pre(li, None, self.state.ptr())?;
+                }
                 k.qkv35_prep.launch(
                     ((c.n_head + 2 * c.n_head_kv) as u32, 2, 1),
                     (256, 1, 1),
@@ -6089,24 +6228,11 @@ impl<'m> GpuSession<'m> {
                 )?;
                 let gate = vb.qg.ptr() + (c.head_dim * 4) as u64;
                 if self.attn_split {
-                    k.attn_split_g.launch(
-                        (c.n_head as u32, ns_max as u32, 2),
-                        (256, 1, 1),
-                        0,
-                        st,
-                        &Args::new()
-                            .buf(&vb.q)
-                            .ptr(kc)
-                            .ptr(vc)
-                            .buf(&vb.as_m)
-                            .buf(&vb.as_l)
-                            .buf(&vb.as_o)
-                            .buf(&self.state)
-                            .i32(c.n_head as i32)
-                            .i32(c.n_head_kv as i32)
-                            .i32(hd)
-                            .i32(ns_max as i32),
-                    )?;
+                    if self.kv_fused() {
+                        self.launch_split_fused(true, li, 2, vb.q.ptr(), kc, vc, vb.as_m.ptr(), vb.as_l.ptr(), vb.as_o.ptr(), self.state.ptr(), ns_max)?;
+                    } else {
+                        self.launch_split_plain(true, 2, vb.q.ptr(), kc, vc, vb.as_m.ptr(), vb.as_l.ptr(), vb.as_o.ptr(), self.state.ptr(), ns_max)?;
+                    }
                     k.attn_merge_g.launch(
                         (c.n_head as u32, 2, 1),
                         (256, 1, 1),
