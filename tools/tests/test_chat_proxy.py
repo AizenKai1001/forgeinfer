@@ -316,5 +316,13 @@ class PageBehaviourTest(unittest.TestCase):
         self.assertIn("Title", a["answer"])
         self.assertEqual(self.out["markdown"]["stat"].endswith("tok/s"), True)
 
+    def test_a_long_prompt_shows_how_far_the_engine_has_read_it_until_the_first_token(self):
+        o = self.out["progress"]
+        self.assertTrue(o["request"]["return_progress"])
+        self.assertEqual(o["progressTexts"], ["Reading the prompt: 1,024 of 3,000 tokens (34 percent)", "Reading the prompt: 2,048 of 3,000 tokens (68 percent)"])
+        a = o["messages"][1]
+        self.assertEqual(a["answer"], "Done.")  # the first token replaced the line
+        self.assertNotIn("Reading", a["answer"])
+
     def test_one_model_means_no_selector(self):
         self.assertFalse(self.out["single"]["selectVisible"])

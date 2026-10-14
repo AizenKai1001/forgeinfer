@@ -204,7 +204,23 @@ All four together on the 4B (`forge prefill-bench`, 16,000 tokens, one window): 
 
 The lead shrinks with the length because the attention takes a growing share, and llama.cpp's attention kernel accumulates the output in fp16 (about twice the tensor rate for P V, at some cost in accuracy); ForgeInfer's accumulates in fp32 everywhere and is bit-identical to its own earlier kernels.
 
+**One more, small:** the feed-forward layer's SwiGLU and the int8 quantization of the down projection's input run as one kernel (`swiglu_quant_rows_kernel`; `FORGE_SWIGLU_Q=0` keeps the two): the fp16 activations are never written or read back, the values are rounded through fp16 exactly as the separate kernel stores them, so the logits are bit-identical (tests on a hybrid and a dense model). The two kernels took 374 microseconds per layer for 1,024 tokens of the 4B, the fused one 231: 1.6 percent of a prompt pass (inside the noise of a whole-prompt benchmark, which moves by 5 percent with the card's clock).
+
 What did not help: an fp16-accumulate form of the scores S (flushed into fp32 after every k16 step: 3 to 4 percent more prompt speed for a KL of 4e-4 on the 4B and 1.2e-3 on the dense 28-layer Qwen3-1.7B against the old kernels, so it was removed); fusing the gate and up projections of the feed-forward layer with SwiGLU into one integer GEMM (bit-identical, but the pass got no faster: the integer GEMMs run compute-bound, so the saved 75 MB of elementwise traffic per layer hides behind the MMAs); a conditional rescale of the attention accumulators; a warp per token for the gated RMSNorm after the scan (as fast: it reads and writes what the bandwidth allows); spreading, staggering or trickling the cp.async issue of the integer GEMM, and 16 warps of 32 x 32 instead of 8 of 64 x 32 (all within noise of 25 TMAC/s: the kernel is latency-bound with two warps per scheduler).
+
+## What the integer GEMMs cost in quality at long context
+
+The integer prompt GEMMs quantize the activations to int8 (one scale per 32 values, as llama.cpp's mul_mat_q does). Against the plain fp16 path (`forge ppl --dump-ref` with `FORGE_MMQ=0 FORGE_F16ACC=0 FORGE_FLASH_A80=0 FORGE_SCAN_NC=0`) the Qwen3.5-4B on a 16,000-token text of English prose and tables shows a KL of 0.0152 (top-1 token equal at 98.05 percent, +0.0096 nats per token, perplexity 12.38 to 12.50); the same text in windows of 512 tokens shows 0.0010. With `FORGE_MMQ=0` and everything else at its default the KL is 0.00009, so the new attention, scan and fusion kernels add nothing. The error is not there from the start: the first 2,000 tokens are at 0.0008, then it sits on a plateau of 0.006 to 0.023 that moves with the text and does not keep growing (65,536 tokens: 0.0089 on average). The Gated DeltaNet layers keep a recurrent state that remembers its past, and the int8 noise of their projections builds up in it over the first thousand or two tokens. Keeping a matrix out of the integer path shows where it comes from (`FORGE_MMQ_SKIP=role,...` with the roles `dn_qkv dn_z dn_out attn_q attn_kv attn_o ffn_gate_up ffn_down`, groups `dn attn ffn all`; those matrices then take the fp16 GEMM):
+
+| skipped | KL | extra NLL | prompt speed (8,000 tokens) |
+|---|---|---|---|
+| nothing | 0.0152 | +0.0096 | 4,206 tokens/s |
+| `dn_out`, the DeltaNet output projection | 0.0113 | +0.0023 | 4,096 (-2.6 percent) |
+| `dn`, all three DeltaNet matrices | 0.0060 | +0.0029 | 3,766 (-10.1 percent) |
+| `attn` | 0.0143 | +0.0083 | |
+| `ffn` | 0.0133 | +0.0071 | |
+
+So the output projection of the DeltaNet layers alone carries three quarters of the perplexity loss, for 2.6 percent of the speed. Nothing is changed by default: the loss is 1 percent of perplexity at 16,000 tokens and a tenth of that below 2,000 tokens, measured on one model and one text. Measuring the 9B and the dense models, and deciding whether the DeltaNet output projection should leave the integer path beyond a position of about 2,000, is open.
 
 ## Loading a model
 

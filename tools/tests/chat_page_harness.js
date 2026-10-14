@@ -10,7 +10,7 @@ class El {
     this.parent = null; this.scrollTop = 0; this.scrollHeight = 0; this.disabled = false; this.placeholder = ""; this.title = ""; this.href = ""; this.listeners = {};
   }
   get textContent() { return this._text + this.children.map(c => c.textContent).join(""); }  // the text of the element, then its children
-  set textContent(v) { this.children = []; this._text = String(v); }
+  set textContent(v) { this.children = []; this._text = String(v); El.history.push(this._text); }
   appendChild(c) { c.parent = this; this.children.push(c); return c; }
   remove() { if (this.parent) this.parent.children = this.parent.children.filter(x => x !== this); this.parent = null; }
   get value() { return this._value; }
@@ -20,6 +20,8 @@ class El {
   focus() {}
   addEventListener(n, f) { this.listeners[n] = f; }
 }
+
+El.history = [];  // every text an element was given, in order (what the page showed on the way)
 
 function build() {
   const root = new El("body", "");
@@ -80,7 +82,9 @@ async function scenario(current, modelsList, sse, typed) {
   if (typed !== undefined) {
     if (typed.thinkChecked !== undefined) ids.think.checked = typed.thinkChecked;
     ids.inp.value = typed.text;
+    El.history = [];
     await vm.runInContext("__t.send()", ctx);
+    out.progressTexts = El.history.filter(x => x.startsWith("Reading the prompt"));
     const msgs = ids.log.children.filter(c => c.className.startsWith("msg"));
     out.messages = msgs.map(m => ({cls: m.className, label: m.children[0].textContent, think: m.children[1].children[1].textContent, thinkShown: m.children[1].style.display !== "none", thinkOpen: m.children[1].open,
                                    answer: m.children[2].textContent, tags: tagsOf(m.children[2]), strong: textsOf(m.children[2], "strong"), em: textsOf(m.children[2], "em"), code: textsOf(m.children[2], "code"), links: linksOf(m.children[2]), stats: m.children[3].textContent}));
@@ -113,6 +117,10 @@ async function scenario(current, modelsList, sse, typed) {
                   "A [link](https://example.com) and [bad](javascript:alert(1)) and <b>tag</b> and 2*3*4 and a * b.", "", "# Title", "", "> quote"].join(NLC);
   const md = [mdText.slice(0, 20), mdText.slice(20)];  // two stream chunks, the first one ends inside an emphasis
   result.markdown = await scenario("Qwen", both, {sse: [chunk({role: "assistant", content: ""})].concat(md.map(t => chunk({content: t}))).concat([chunk({}, {choices: [{index: 0, delta: {}, finish_reason: "stop"}]}), "data: [DONE]"])}, {text: "format please"});
+  // 7. a long prompt: the engine reports how far it has read it before the first token; the answer replaces the line
+  const prog = (processed, total) => chunk({}, {prompt_progress: {total: total, cache: 0, processed: processed, time_ms: processed}});
+  result.progress = await scenario("Forge-1 365M", both, {sse: [chunk({role: "assistant", content: ""}), prog(1024, 3000), prog(2048, 3000), chunk({content: "Done."}),
+    chunk({}, {choices: [{index: 0, delta: {}, finish_reason: "stop"}]}), "data: [DONE]"]}, {text: "summarize this long text"});
   // 6. a page whose list has one model only: no selector
   result.single = await scenario("Forge-1 365M", [forge], {sse: ["data: [DONE]"]});
   console.log(JSON.stringify(result));

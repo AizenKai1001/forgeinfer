@@ -549,3 +549,59 @@ extern "C" __global__ void __launch_bounds__(256) quant_rows_h_kernel(const half
         }
     }
 }
+
+// a = silu(g) * u (g, u: fp16 [M][K]) and its int8 form for the integer GEMMs (the arrays of quant_rows_h_kernel) in ONE pass: the fp16 `a` of swiglu_kernel is never written or read back; the values are rounded through
+// fp16 exactly as swiglu_kernel stores them, so the result is bit-identical to swiglu_kernel followed by quant_rows_h_kernel
+extern "C" __global__ void __launch_bounds__(256) swiglu_quant_rows_kernel(const half* __restrict__ gx, const half* __restrict__ ux, int8_t* __restrict__ xq, float* __restrict__ adT, __half* __restrict__ ashT, int M, int K) {
+    const int row = blockIdx.x;
+    if (row >= M) return;
+    const half* gr = gx + (size_t)row * K;
+    const half* ur = ux + (size_t)row * K;
+    int8_t* qr = xq + (size_t)row * K;
+    const int nb = K >> 8;
+    const size_t tile = (size_t)(row >> 7) * nb;
+    const int r = row & 127, pos = mmq::tok_pos(r);
+    const int lane = threadIdx.x & 31, warp = threadIdx.x >> 5;
+    for (int base = warp * 256; base < K; base += 8 * 256) {
+        const uint4 rawg = *reinterpret_cast<const uint4*>(gr + base + lane * 8), rawu = *reinterpret_cast<const uint4*>(ur + base + lane * 8);
+        float v[8];
+        float amax = 0.f;
+        {
+            const __half2* g2 = reinterpret_cast<const __half2*>(&rawg);
+            const __half2* u2 = reinterpret_cast<const __half2*>(&rawu);
+#pragma unroll
+            for (int i = 0; i < 4; i++) {
+                const float2 gf = __half22float2(g2[i]), uf = __half22float2(u2[i]);
+                // the fp16 values swiglu_kernel would store (the quantizer then reads them back)
+                const float a0 = __half2float(__float2half((gf.x / (1.f + __expf(-gf.x))) * uf.x));
+                const float a1 = __half2float(__float2half((gf.y / (1.f + __expf(-gf.y))) * uf.y));
+                v[2 * i] = a0;
+                v[2 * i + 1] = a1;
+                amax = fmaxf(amax, fmaxf(fabsf(a0), fabsf(a1)));
+            }
+        }
+        amax = fmaxf(amax, __shfl_xor_sync(0xffffffffu, amax, 1));
+        amax = fmaxf(amax, __shfl_xor_sync(0xffffffffu, amax, 2));
+        const float d = amax * (1.f / 127.f);
+        const float id = d != 0.f ? 1.f / d : 0.f;
+        int q[8], sum = 0;
+#pragma unroll
+        for (int i = 0; i < 8; i++) {
+            q[i] = (int)roundf(v[i] * id);
+            sum += q[i];
+        }
+        sum += __shfl_xor_sync(0xffffffffu, sum, 1);
+        sum += __shfl_xor_sync(0xffffffffu, sum, 2);
+        uint2 pk;
+        pk.x = (uint32_t)(q[0] & 0xFF) | ((uint32_t)(q[1] & 0xFF) << 8) | ((uint32_t)(q[2] & 0xFF) << 16) | ((uint32_t)(q[3] & 0xFF) << 24);
+        pk.y = (uint32_t)(q[4] & 0xFF) | ((uint32_t)(q[5] & 0xFF) << 8) | ((uint32_t)(q[6] & 0xFF) << 16) | ((uint32_t)(q[7] & 0xFF) << 24);
+        *reinterpret_cast<uint2*>(qr + base + lane * 8) = pk;
+        if ((lane & 3) == 0) {
+            const int gi = (base >> 5) + (lane >> 2);        // the 32-value group of the row
+            const int sb = gi >> 3, j = gi & 7;
+            const float dr = round_half(d);
+            adT[((tile + sb) * 8 + j) * 128 + pos] = dr;
+            ashT[((tile + sb) * 128 + r) * 8 + j] = mmq::to_half_sat(dr * (float)sum);
+        }
+    }
+}

@@ -9,7 +9,7 @@ use std::hash::{Hash, Hasher};
 use super::widgets::*;
 use crate::app::{Action, StudioApp};
 use crate::chats::Role;
-use crate::client::split_think;
+use crate::client::{split_think, PromptProgress};
 use crate::engine::EngineState;
 use crate::markdown::{self, MdStyle};
 use crate::settings::EngineKind;
@@ -609,14 +609,16 @@ fn message_view(app: &mut StudioApp, ui: &mut Ui, i: usize, last: bool) {
                     });
             }
             if m.streaming && answer.is_empty() && think.is_empty() {
+                // a server that reports how far it has read the prompt (a long document takes seconds): a bar and what is left
+                let progress = if last { app.generation.as_ref().and_then(|g| g.progress) } else { None };
                 ui.horizontal(|ui| {
                     ui.spinner();
-                    ui.label(
-                        RichText::new("waiting for the first token ...")
-                            .small()
-                            .color(theme::MUTED),
-                    );
+                    let text = progress.map(|p| reading_text(&p)).unwrap_or_else(|| "waiting for the first token ...".to_string());
+                    ui.label(RichText::new(text).small().color(theme::MUTED));
                 });
+                if let Some(p) = progress {
+                    ui.add(egui::ProgressBar::new(p.fraction()).desired_width(280.0).desired_height(6.0).fill(theme::ACCENT));
+                }
             }
             if !answer.is_empty() {
                 let blocks = markdown::parse(&answer);
@@ -654,6 +656,30 @@ fn message_view(app: &mut StudioApp, ui: &mut Ui, i: usize, last: bool) {
             }
         }
     }
+}
+
+/// 12288 -> "12,288"
+fn grouped(n: u32) -> String {
+    let digits = n.to_string();
+    let mut out = String::new();
+    for (i, c) in digits.chars().enumerate() {
+        if i > 0 && (digits.len() - i) % 3 == 0 {
+            out.push(',');
+        }
+        out.push(c);
+    }
+    out
+}
+
+/// "Reading the prompt: 12,288 of 27,000 tokens (45 %), about 4 s left": what the server reported while it works through a long prompt.
+fn reading_text(p: &PromptProgress) -> String {
+    let mut t = format!("Reading the prompt: {} of {} tokens ({:.0} %)", grouped(p.processed), grouped(p.total), 100.0 * p.fraction());
+    if let Some(left) = p.seconds_left() {
+        if left >= 1.0 {
+            t.push_str(&format!(", about {} left", human_secs(left as f64)));
+        }
+    }
+    t
 }
 
 /// "Context: 1,234 of 8,192 tokens": what the last answer's prompt and reply took of the loaded context (local engines only).
@@ -843,4 +869,21 @@ fn params(app: &mut StudioApp, ui: &mut Ui) {
         ui.add_space(10.0);
         muted(ui, "Context length and the KV cache are set when a model loads (Settings).");
     });
+}
+
+#[cfg(test)]
+mod progress_tests {
+    use super::*;
+
+    #[test]
+    fn the_reading_line_names_the_tokens_and_the_time_left() {
+        assert_eq!(grouped(0), "0");
+        assert_eq!(grouped(999), "999");
+        assert_eq!(grouped(12288), "12,288");
+        assert_eq!(grouped(1234567), "1,234,567");
+        let p = PromptProgress { processed: 13288, total: 27000, cached: 1000, time_ms: 3000.0 };
+        assert_eq!(reading_text(&p), "Reading the prompt: 13,288 of 27,000 tokens (49 %), about 3.3 s left");
+        let start = PromptProgress { processed: 1024, total: 27000, cached: 0, time_ms: 10.0 };
+        assert_eq!(reading_text(&start), "Reading the prompt: 1,024 of 27,000 tokens (4 %)");
+    }
 }

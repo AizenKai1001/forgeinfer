@@ -9,7 +9,7 @@ use std::time::{Duration, Instant};
 use eframe::egui;
 
 use crate::chats::{self, Chat, ChatMeta, Message, Role, Store};
-use crate::client::{self, ChatEvent, ChatParams, Endpoint};
+use crate::client::{self, ChatEvent, ChatParams, Endpoint, PromptProgress};
 use crate::engine::{EngineManager, EngineState, Launch};
 use crate::hardware::{self, HardwareInfo};
 use crate::hf::{self, Progress, Repo, RepoFile};
@@ -128,6 +128,8 @@ pub struct Generation {
     pub cancel: Arc<AtomicBool>,
     pub started: Instant,
     pub reasoning_started: Option<Instant>,
+    /// How far the server has read the prompt (the last report; the bar shows it until the first token).
+    pub progress: Option<PromptProgress>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -791,6 +793,7 @@ impl StudioApp {
             cancel: cancel.clone(),
             started: Instant::now(),
             reasoning_started: None,
+            progress: None,
         });
         self.scroll_to_bottom = true;
         let params = ChatParams {
@@ -1017,6 +1020,7 @@ impl StudioApp {
                 m.reasoning.push_str(&s);
                 self.scroll_to_bottom = true;
             }
+            ChatEvent::Progress(p) => g.progress = Some(p),
             ChatEvent::Content(s) => {
                 if let Some(t) = g.reasoning_started {
                     if m.thought_secs == 0.0 {

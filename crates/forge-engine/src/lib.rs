@@ -159,6 +159,14 @@ pub enum Event {
         prompt_tokens: usize,
         cached_tokens: usize,
     },
+    /// The prompt is being processed: `processed` of its `total` tokens are in the cache (the first `cached` of them were there from an earlier request), `elapsed_ms` after the processing began.
+    /// Sent when the processing of a prompt of more than one piece begins (nothing new in the cache yet) and after every piece but the last one (the first token follows that one): a short prompt sends none.
+    Progress {
+        processed: usize,
+        total: usize,
+        cached: usize,
+        elapsed_ms: f64,
+    },
     Reasoning(String),
     Content(String),
     ToolCallStart {
@@ -634,7 +642,7 @@ fn engine_main_trainer(
         let mut dec = if std::env::var("FORGE_NO_KV").is_ok() {
             None
         } else {
-            match Decoder::new(&tr, PREFILL_PIECE.min(512)) {
+            match Decoder::new(&tr, prefill_piece().min(512)) {
                 Ok(d) => Some(d),
                 Err(e) => {
                     // a structure option the decoder does not reproduce: the no-cache forward still serves the model
@@ -808,7 +816,16 @@ fn run_job_trainer(
     let mut logits = match dec.as_deref_mut() {
         Some(d) => {
             let mut last = None;
-            for piece in ids[lcp..].chunks(PREFILL_PIECE) {
+            let mut done = lcp;
+            if ids.len() - lcp > prefill_piece() {
+                let _ = job.tx.send(Event::Progress {
+                    processed: lcp,
+                    total: ids.len(),
+                    cached: lcp,
+                    elapsed_ms: 0.0,
+                });
+            }
+            for piece in ids[lcp..].chunks(prefill_piece()) {
                 if job.cancel.load(Ordering::SeqCst) {
                     let _ = job.tx.send(Event::Finished {
                         reason: FinishReason::Cancelled,
@@ -827,6 +844,15 @@ fn run_job_trainer(
                     return Ok(());
                 }
                 last = Some(d.feed(tr, piece)?);
+                done += piece.len();
+                if done < ids.len() {
+                    let _ = job.tx.send(Event::Progress {
+                        processed: done,
+                        total: ids.len(),
+                        cached: lcp,
+                        elapsed_ms: t_prefill.elapsed().as_secs_f64() * 1e3,
+                    });
+                }
             }
             last.expect("at least one prompt token is evaluated")
         }
@@ -886,7 +912,18 @@ fn run_job_trainer(
     Ok(())
 }
 
-const PREFILL_PIECE: usize = 1024;
+/// Tokens of a prompt the engine hands to the model at a time: between two pieces a cancellation is noticed and a progress event is sent. 1,024, the chunk of the GPU prompt path (smaller pieces
+/// cost speed there); FORGE_PREFILL_PIECE=N sets another size (the tests use a few tokens).
+fn prefill_piece() -> usize {
+    static PIECE: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+    *PIECE.get_or_init(|| {
+        std::env::var("FORGE_PREFILL_PIECE")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .filter(|&n| n > 0)
+            .unwrap_or(1024)
+    })
+}
 /// state snapshots kept for hybrid models
 const MAX_SNAPS: usize = 3;
 
@@ -1094,8 +1131,16 @@ fn run_job(
         Some(b) if b < ids.len() => segments.extend([(lcp, b), (b, ids.len())]),
         _ => segments.push((lcp, ids.len())),
     }
+    if ids.len() - lcp > prefill_piece() {
+        let _ = job.tx.send(Event::Progress {
+            processed: lcp,
+            total: ids.len(),
+            cached: lcp,
+            elapsed_ms: 0.0,
+        });
+    }
     for (seg_start, seg_end) in segments {
-        for piece in ids[seg_start..seg_end].chunks(PREFILL_PIECE) {
+        for piece in ids[seg_start..seg_end].chunks(prefill_piece()) {
             if job.cancel.load(Ordering::SeqCst) {
                 let _ = job.tx.send(Event::Finished {
                     reason: FinishReason::Cancelled,
@@ -1123,6 +1168,14 @@ fn run_job(
                 eprintln!("[prefill] {} tokens in {:.0} ms ({})", piece.len(), t_piece.elapsed().as_secs_f64() * 1e3, if piece.len() >= sess.prefill_batched_min() { "batched" } else { "token by token" });
             }
             slot.extend_from_slice(piece);
+            if slot.len() < ids.len() {
+                let _ = job.tx.send(Event::Progress {
+                    processed: slot.len(),
+                    total: ids.len(),
+                    cached: lcp,
+                    elapsed_ms: t_prefill.elapsed().as_secs_f64() * 1e3,
+                });
+            }
         }
         if Some(seg_end) == snap_at {
             snaps.push(Snap {

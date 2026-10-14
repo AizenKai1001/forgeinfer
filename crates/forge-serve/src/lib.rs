@@ -9,7 +9,8 @@
 //!
 //! The wire shapes follow what Ember and the OpenAI SDKs read (research note "ForgeInfer Research - Ember Integration and Serving Spec"): first chunk with the assistant role, `reasoning_content` for
 //! thinking text, tool calls as one chunk with id / name and empty arguments followed by argument fragments, a final chunk with the finish reason, optional usage, `[DONE]`; errors as JSON with the
-//! HTTP status chosen so that Ember's text-based mapping works; an SSE comment every 15 s while a request waits; closing the socket cancels the generation.
+//! HTTP status chosen so that Ember's text-based mapping works; an SSE comment every 15 s while a request waits; closing the socket cancels the generation. A streamed request with
+//! `return_progress: true` (llama.cpp's field) also gets a chunk with `prompt_progress` {total, cache, processed, time_ms} after every 1,024 tokens of a long prompt, before the first token.
 
 use forge_core::Json;
 use forge_engine::{Engine, EngineError, Event, FinishReason, Prompt, Request, SamplingParams};
@@ -534,6 +535,32 @@ fn watch_disconnect(stream: &TcpStream, cancel: Arc<std::sync::atomic::AtomicBoo
     }
 }
 
+/// One server-sent chunk that reports the prompt's progress (llama.cpp's `return_progress`): an empty delta and `prompt_progress` {total, cache, processed, time_ms}, where processed / total is the share of the
+/// prompt in the cache and (processed - cache) / (total - cache) the share of the work this request has to do.
+fn progress_chunk(id: &str, created: i64, model: &str, chat: bool, processed: usize, total: usize, cached: usize, elapsed_ms: f64) -> String {
+    let p = obj(vec![
+        ("total", Json::Int(total as i64)),
+        ("cache", Json::Int(cached as i64)),
+        ("processed", Json::Int(processed as i64)),
+        ("time_ms", Json::Float(elapsed_ms)),
+    ]);
+    let choice = if chat {
+        obj(vec![("index", Json::Int(0)), ("delta", obj(vec![])), ("finish_reason", Json::Null)])
+    } else {
+        obj(vec![("index", Json::Int(0)), ("text", s("")), ("finish_reason", Json::Null)])
+    };
+    let c = obj(vec![
+        ("id", s(id)),
+        ("object", s(if chat { "chat.completion.chunk" } else { "text_completion" })),
+        ("created", Json::Int(created)),
+        ("model", s(model)),
+        ("choices", Json::Arr(vec![choice])),
+        ("prompt_progress", p),
+    ]);
+    format!("data: {}\n\n", to_text(&c))
+}
+
+#[allow(clippy::too_many_arguments)]
 fn handle_generation(
     stream: &mut TcpStream,
     engine: &Engine,
@@ -541,6 +568,7 @@ fn handle_generation(
     chat: bool,
     stream_mode: bool,
     include_usage: bool,
+    return_progress: bool,
 ) {
     let model = engine.info.alias.clone();
     let generation = match engine.start(req) {
@@ -592,6 +620,17 @@ fn handle_generation(
             };
             let data = match ev {
                 Event::Started { .. } => continue,
+                Event::Progress {
+                    processed,
+                    total,
+                    cached,
+                    elapsed_ms,
+                } => {
+                    if !return_progress {
+                        continue;
+                    }
+                    progress_chunk(&id, created, &model, chat, processed, total, cached, elapsed_ms)
+                }
                 Event::Reasoning(t) => chunk(
                     &id,
                     created,
@@ -743,7 +782,7 @@ fn handle_generation(
                         c.2.push_str(&fragment);
                     }
                 }
-                Ok(Event::ToolCallEnd { .. }) | Ok(Event::Started { .. }) => {}
+                Ok(Event::ToolCallEnd { .. }) | Ok(Event::Started { .. }) | Ok(Event::Progress { .. }) => {}
                 Ok(Event::Finished {
                     reason,
                     usage,
@@ -940,7 +979,11 @@ fn handle(mut stream: TcpStream, engine: Arc<Engine>, cfg: Arc<ServerConfig>) {
                 .and_then(|o| o.get("include_usage"))
                 .and_then(|v| v.as_bool())
                 .unwrap_or(false);
-            handle_generation(&mut stream, &engine, request, true, streaming, usage);
+            let progress = body
+                .get("return_progress")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
+            handle_generation(&mut stream, &engine, request, true, streaming, usage, progress);
             eprintln!(
                 "[serve] POST {path} stream={streaming} {:.0} ms",
                 t0.elapsed().as_secs_f64() * 1e3
@@ -973,7 +1016,11 @@ fn handle(mut stream: TcpStream, engine: Arc<Engine>, cfg: Arc<ServerConfig>) {
                 .get("stream")
                 .and_then(|v| v.as_bool())
                 .unwrap_or(false);
-            handle_generation(&mut stream, &engine, request, false, streaming, false);
+            let progress = body
+                .get("return_progress")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
+            handle_generation(&mut stream, &engine, request, false, streaming, false, progress);
             eprintln!(
                 "[serve] POST {path} stream={streaming} {:.0} ms",
                 t0.elapsed().as_secs_f64() * 1e3

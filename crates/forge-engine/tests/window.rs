@@ -45,7 +45,10 @@ fn greedy() -> SamplingParams {
     }
 }
 
-fn generate(e: &Engine, prompt: &str, max_tokens: usize) -> (String, Usage, FinishReason, usize) {
+/// (processed, total, cached) of the progress events a request sent
+type Progress = Vec<(usize, usize, usize)>;
+
+fn generate(e: &Engine, prompt: &str, max_tokens: usize) -> (String, Usage, FinishReason, usize, Progress) {
     let g = e
         .start(Request {
             prompt: Prompt::Raw(prompt.to_string()),
@@ -54,12 +57,18 @@ fn generate(e: &Engine, prompt: &str, max_tokens: usize) -> (String, Usage, Fini
             stop: vec![],
         })
         .unwrap();
-    let (mut text, mut cached) = (String::new(), 0);
+    let (mut text, mut cached, mut progress) = (String::new(), 0, Vec::new());
     for ev in g.rx.iter() {
         match ev {
             Event::Started { cached_tokens, .. } => cached = cached_tokens,
+            Event::Progress {
+                processed,
+                total,
+                cached,
+                ..
+            } => progress.push((processed, total, cached)),
             Event::Content(s) => text.push_str(&s),
-            Event::Finished { usage, reason, .. } => return (text, usage, reason, cached),
+            Event::Finished { usage, reason, .. } => return (text, usage, reason, cached, progress),
             Event::Error(err) => panic!("engine error: {err}"),
             _ => {}
         }
@@ -135,6 +144,8 @@ fn the_engine_serves_a_window_checkpoint_with_the_kv_decoder() {
     let tok_path = dir.join("tokenizer.json");
     std::fs::write(&tok_path, tokenizer_json()).unwrap();
 
+    // prompts are processed 24 tokens at a time here, so a short prompt reports its progress (the engine reads the size once, before its first request)
+    std::env::set_var("FORGE_PREFILL_PIECE", "24");
     let engine = Engine::load(EngineConfig {
         model: ckpt.clone(),
         tokenizer: Some(tok_path),
@@ -169,7 +180,16 @@ fn the_engine_serves_a_window_checkpoint_with_the_kv_decoder() {
     // shares its first 60 characters with the first prompt (prefix reuse), then continues differently
     let second = format!("{} cat sat on a mat", &first[..60]);
     for (i, prompt) in [first.to_string(), second].iter().enumerate() {
-        let (text, usage, reason, cached) = generate(&engine, prompt, 48);
+        let (text, usage, reason, cached, progress) = generate(&engine, prompt, 48);
+        // a prompt of more than one piece: an event before the first piece and one after every piece but the last (a shorter one sends none); the tokens in the cache grow by the piece, never reach
+        // the total, and the events carry the request's own numbers
+        let new = usage.prompt_tokens - cached;
+        let want = if new > 24 { (new + 23) / 24 } else { 0 };
+        assert_eq!(progress.len(), want, "request {i}: progress events {progress:?} for {new} new tokens");
+        for (k, &(done, total, from)) in progress.iter().enumerate() {
+            assert_eq!((done, total, from), (cached + 24 * k, usage.prompt_tokens, cached), "request {i}: event {k}");
+            assert!(done < total);
+        }
         let (want, n) = reference(&mut reference_tr, &engine, prompt, 48);
         eprintln!(
             "request {i}: {} prompt tokens, {} cached, {} generated ({reason:?}); engine text {text:?}",

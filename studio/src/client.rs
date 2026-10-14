@@ -108,10 +108,37 @@ pub struct ChatParams {
     pub gen: GenParams,
 }
 
+/// How far the server has read the prompt (`prompt_progress` of the stream, llama.cpp's `return_progress`): `processed` of `total` tokens are in its cache, the first `cached` of them from an earlier request.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct PromptProgress {
+    pub processed: u32,
+    pub total: u32,
+    pub cached: u32,
+    pub time_ms: f32,
+}
+
+impl PromptProgress {
+    /// The share of the prompt that is in the cache.
+    pub fn fraction(&self) -> f32 {
+        (self.processed as f32 / self.total.max(1) as f32).clamp(0.0, 1.0)
+    }
+
+    /// Seconds the rest of the prompt will take at the speed so far (None before there is a speed to go by).
+    pub fn seconds_left(&self) -> Option<f32> {
+        let done = self.processed.saturating_sub(self.cached) as f32;
+        if done < 1.0 || self.time_ms < 50.0 {
+            return None;
+        }
+        Some((self.total.saturating_sub(self.processed)) as f32 / (done / (self.time_ms / 1e3)))
+    }
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub enum ChatEvent {
     Content(String),
     Reasoning(String),
+    /// The server is still reading the prompt.
+    Progress(PromptProgress),
     Finished(Stats),
     Failed(String),
 }
@@ -135,6 +162,8 @@ pub fn chat_body(p: &ChatParams, extended: bool) -> Value {
         body["max_tokens"] = json!(p.gen.max_tokens);
     }
     if extended {
+        // a long prompt takes seconds to read: servers that know the field report how far they are (llama.cpp, ForgeInfer)
+        body["return_progress"] = json!(true);
         if p.gen.top_k > 0 {
             body["top_k"] = json!(p.gen.top_k);
         }
@@ -162,6 +191,8 @@ pub struct Chunk {
     pub prompt_tokens: Option<u32>,
     /// The server's own decode speed, when it reports one.
     pub tok_per_s: Option<f32>,
+    /// A report of how far the server has read the prompt.
+    pub progress: Option<PromptProgress>,
 }
 
 pub fn parse_chunk(data: &str) -> Option<Chunk> {
@@ -182,6 +213,16 @@ pub fn parse_chunk(data: &str) -> Option<Chunk> {
     if let Some(u) = v.get("usage").filter(|u| u.is_object()) {
         c.completion_tokens = u["completion_tokens"].as_u64().map(|n| n as u32);
         c.prompt_tokens = u["prompt_tokens"].as_u64().map(|n| n as u32);
+    }
+    if let Some(p) = v.get("prompt_progress").filter(|p| p.is_object()) {
+        if let (Some(total), Some(processed)) = (p["total"].as_u64(), p["processed"].as_u64()) {
+            c.progress = Some(PromptProgress {
+                processed: processed as u32,
+                total: total as u32,
+                cached: p["cache"].as_u64().unwrap_or(0) as u32,
+                time_ms: p["time_ms"].as_f64().unwrap_or(0.0) as f32,
+            });
+        }
     }
     if let Some(t) = v.get("timings").filter(|t| t.is_object()) {
         c.tok_per_s = t["predicted_per_second"].as_f64().map(|x| x as f32);
@@ -277,6 +318,9 @@ pub fn stream_chat(
         let Some(chunk) = parse_chunk(data) else {
             continue;
         };
+        if let Some(p) = chunk.progress {
+            emit(ChatEvent::Progress(p));
+        }
         if !chunk.reasoning.is_empty() || !chunk.content.is_empty() {
             if first.is_none() {
                 first = Some(t0.elapsed().as_secs_f32());
@@ -379,6 +423,21 @@ mod tests {
     }
 
     #[test]
+    fn prompt_progress_chunks() {
+        let c = parse_chunk(r#"{"choices":[{"index":0,"delta":{},"finish_reason":null}],"prompt_progress":{"total":27000,"cache":1000,"processed":13288,"time_ms":3000.0}}"#).unwrap();
+        let p = c.progress.unwrap();
+        assert_eq!((p.processed, p.total, p.cached), (13288, 27000, 1000));
+        assert!(c.content.is_empty() && c.reasoning.is_empty() && c.finish.is_none());
+        assert!((p.fraction() - 0.4922).abs() < 0.001);
+        // 12,288 tokens in 3 s: the remaining 13,712 take 3.35 s
+        assert!((p.seconds_left().unwrap() - 3.348).abs() < 0.01);
+        // no speed yet: no estimate
+        let early = PromptProgress { processed: 1024, total: 9000, cached: 1024, time_ms: 10.0 };
+        assert!(early.seconds_left().is_none());
+        assert!(parse_chunk(r#"{"choices":[{"delta":{"content":"x"}}]}"#).unwrap().progress.is_none());
+    }
+
+    #[test]
     fn the_request_body_carries_the_samplers() {
         let p = ChatParams {
             model: "m".into(),
@@ -402,7 +461,9 @@ mod tests {
             chat_body(&q, true)["chat_template_kwargs"]["enable_thinking"],
             false
         );
+        assert_eq!(b["return_progress"], true);
         let plain = chat_body(&p, false);
+        assert!(plain.get("return_progress").is_none());
         assert!(plain.get("top_k").is_none());
         assert!(plain.get("chat_template_kwargs").is_none());
     }

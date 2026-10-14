@@ -255,6 +255,7 @@ struct Kernels {
     mmq_ok: bool,
     /// fp16 [M][K] -> int8 plus a scale and a sum per 32 values (the activation arrays of the decode kernels and the input of `mmq`)
     quant_rows_h: Function,
+    swiglu_quant_rows: Function,
     /// the plain tensor-core GEMMs of gemm_s80.cu (cp.async pipeline, m16n8k16; sm_80 and newer): C (+)= A B^T for contiguous A [M][K] and B [N][K], [fp16 out, fp32 out, fp32 add]; `gemm_s80h` accumulates in fp16
     /// (flushed into fp32 after every k16 step): 41 against 31 TFLOPs on the RTX 4060. They multiply a dequantized weight matrix (the long chunks of a prompt) and need `S80_SMEM` bytes of shared memory.
     gemm_s80: Vec<Function>,
@@ -1010,6 +1011,7 @@ impl GpuModel {
             mmq,
             mmq_ok,
             quant_rows_h: module.function("quant_rows_h_kernel")?,
+            swiglu_quant_rows: module.function("swiglu_quant_rows_kernel")?,
             embed_batch: module.function("embed_batch_kernel")?,
             rmsnorm_rows: module.function("rmsnorm_rows_kernel")?,
             colsq: module.function("colsq_accum_kernel")?,
@@ -1708,6 +1710,12 @@ pub struct GpuSession<'m> {
     /// numerics of the decode kernels and of llama.cpp's mul_mat_q kernels) and the weights stay 4-bit. On by default from compute capability 8.0 (FORGE_MMQ=0 turns it off, FORGE_MMQ_MIN_M=N sets the shortest chunk, 16)
     mmq: bool,
     mmq_min_m: usize,
+    /// roles (bit i of `role`) whose matrices skip the integer GEMMs (FORGE_MMQ_SKIP, for quality studies)
+    mmq_skip: u32,
+    /// the role of the matrix `gemm_w` is about to multiply (set by the layer code)
+    role: std::cell::Cell<u8>,
+    /// the SwiGLU and the int8 quantization of the down projection's input in one kernel (FORGE_SWIGLU_Q=0 keeps the two kernels); bit-identical results
+    swiglu_q: bool,
     /// the int8 activation buffers could not be allocated (a model that fills the card): the integer GEMMs stay off for the rest of the session
     mmq_no_mem: std::cell::Cell<bool>,
     /// the prompt attention runs on the Ampere kernels of flash_a80.cu (from compute capability 8; FORGE_FLASH_A80=0 keeps the sm_75 kernels of flash.cu / flash256.cu); fp32 accumulators throughout, bit-identical
@@ -1869,6 +1877,29 @@ fn default_fused_max(cc_major: i32, cc_minor: i32, two_pass_s80: bool) -> [usize
 }
 
 /// Tokens per prefill chunk: 1024 (longer chunks were measured: 2048 is +2 % on the 4B and -4 % on the 9B, so the buffers stay at 1024). FORGE_PREFILL_CHUNK can lower it.
+/// The roles of FORGE_MMQ_SKIP (names or groups, comma separated) as a bit mask: 0 dn_qkv, 1 dn_z, 2 dn_out, 3 attn_q, 4 attn_kv, 5 attn_o, 6 ffn_gate_up, 7 ffn_down; groups dn, attn, ffn, all.
+fn mmq_skip_mask() -> u32 {
+    let mut m = 0u32;
+    for name in std::env::var("FORGE_MMQ_SKIP").unwrap_or_default().split(',') {
+        m |= match name.trim() {
+            "dn_qkv" => 1,
+            "dn_z" => 2,
+            "dn_out" => 4,
+            "attn_q" => 8,
+            "attn_kv" => 16,
+            "attn_o" => 32,
+            "ffn_gate_up" => 64,
+            "ffn_down" => 128,
+            "dn" => 1 | 2 | 4,
+            "attn" => 8 | 16 | 32,
+            "ffn" => 64 | 128,
+            "all" => 255,
+            _ => 0,
+        };
+    }
+    m
+}
+
 pub fn prefill_chunk_len() -> usize {
     std::env::var("FORGE_PREFILL_CHUNK")
         .ok()
@@ -2007,6 +2038,9 @@ impl<'m> GpuSession<'m> {
                 .and_then(|v| v.parse().ok())
                 .unwrap_or(16),
             mmq_no_mem: std::cell::Cell::new(false),
+            mmq_skip: mmq_skip_mask(),
+            role: std::cell::Cell::new(0),
+            swiglu_q: std::env::var("FORGE_SWIGLU_Q").map(|v| v != "0").unwrap_or(true),
             flash_a80,
             scan_nc: std::env::var("FORGE_SCAN_NC").map(|v| v != "0").unwrap_or(true),
             attn_split: match std::env::var("FORGE_ATTN_SPLIT").ok().as_deref() {
@@ -3291,6 +3325,11 @@ impl<'m> GpuSession<'m> {
         self.mmq = on && self.m.k.mmq_ok;
     }
 
+    /// The fused SwiGLU + int8 quantization of the FFN's down-projection input on or off (for A/B tests).
+    pub fn set_swiglu_q(&mut self, on: bool) {
+        self.swiglu_q = on;
+    }
+
     /// The fused GEMMs accumulate in fp16 (for A/B tests; ignored below compute capability 8).
     pub fn set_f16acc(&mut self, on: bool) {
         self.f16acc = on && self.m.dev.info.cc_major >= 8;
@@ -3399,34 +3438,9 @@ impl<'m> GpuSession<'m> {
             return self.gemm_host(epi, a, g, c, m, n, k, ldc);
         }
         // Q4_K weights and a chunk long enough for the 128-row tiles: the integer GEMM on int8 activations
-        let mmq_fmt = match g.qf {
-            Some(QFmt::Q4_K) => Some(0),
-            Some(QFmt::Q5_K) => Some(1),
-            Some(QFmt::Q6_K) => Some(2),
-            _ => None,
-        };
-        if let (true, Some(mf), true) = (self.mmq, mmq_fmt, !g.is_host() && m >= self.mmq_min_m && k % 256 == 0 && n % 8 == 0 && ldc % 2 == 0) {
+        if let Some(mf) = self.mmq_fmt_of(g, m, n, k, ldc) {
             if let Some((aq, ad, asum)) = self.quant_acts(a, m, k)? {
-                let p = g.ptrs();
-                return self.m.k.mmq[mf * 3 + epi.min(2)].launch(
-                    (((n + 127) / 128) as u32, ((m + 127) / 128) as u32, 1),
-                    (256, 1, 1),
-                    if mf == 2 { MMQ6_SMEM } else { MMQ_SMEM },
-                    &self.stream,
-                    &Args::new()
-                        .ptr(aq)
-                        .ptr(ad)
-                        .ptr(asum)
-                        .ptr(p[0])
-                        .ptr(p[1])
-                        .ptr(p[2])
-                        .ptr(p[3])
-                        .ptr(c)
-                        .i32(m as i32)
-                        .i32(n as i32)
-                        .i32(k as i32)
-                        .i32(ldc as i32),
-                );
+                return self.launch_mmq(mf, epi, g, (aq, ad, asum), c, m, n, k, ldc);
             }
         }
         // (a matrix in host memory goes through the dequantizing pass instead: the fused kernels read every weight once per tile of the output, which over PCIe is a multiple of the matrix)
@@ -3486,23 +3500,88 @@ impl<'m> GpuSession<'m> {
         self.gemm(f, a, w16, c, m, n, k, ldc)
     }
 
-    /// Quantize the fp16 activations `a` [m][k] to int8 with a scale and a minimum operand per 32 values (the arrays gemm_mmq.cu reads) and return the device addresses of (q, d, s); None when the buffers cannot hold m x k.
-    fn quant_acts(&self, a: u64, m: usize, k: usize) -> Result<Option<(u64, u64, u64)>> {
-        let Some(pf) = self.pf.as_ref() else {
-            return Ok(None);
+    /// The format index (0 Q4_K, 1 Q5_K, 2 Q6_K) when `g` (n rows of k weights, output row stride ldc) goes through the integer GEMMs for a chunk of m tokens, else None.
+    fn mmq_fmt_of(&self, g: &GpuMat, m: usize, n: usize, k: usize, ldc: usize) -> Option<usize> {
+        let mf = match g.qf {
+            Some(QFmt::Q4_K) => 0,
+            Some(QFmt::Q5_K) => 1,
+            Some(QFmt::Q6_K) => 2,
+            _ => return None,
         };
+        if self.mmq_skip >> self.role.get() & 1 != 0 {
+            return None;
+        }
+        (self.mmq && !g.is_host() && m >= self.mmq_min_m && k % 256 == 0 && n % 8 == 0 && ldc % 2 == 0).then_some(mf)
+    }
+
+    /// C (+)= A W^T with the integer GEMM of gemm_mmq.cu on int8 activations that are already quantized (arrays q, d, s of `quant_acts`).
+    #[allow(clippy::too_many_arguments)]
+    fn launch_mmq(&self, mf: usize, epi: usize, g: &GpuMat, qa: (u64, u64, u64), c: u64, m: usize, n: usize, k: usize, ldc: usize) -> Result<()> {
+        let p = g.ptrs();
+        self.m.k.mmq[mf * 3 + epi.min(2)].launch(
+            (((n + 127) / 128) as u32, ((m + 127) / 128) as u32, 1),
+            (256, 1, 1),
+            if mf == 2 { MMQ6_SMEM } else { MMQ_SMEM },
+            &self.stream,
+            &Args::new()
+                .ptr(qa.0)
+                .ptr(qa.1)
+                .ptr(qa.2)
+                .ptr(p[0])
+                .ptr(p[1])
+                .ptr(p[2])
+                .ptr(p[3])
+                .ptr(c)
+                .i32(m as i32)
+                .i32(n as i32)
+                .i32(k as i32)
+                .i32(ldc as i32),
+        )
+    }
+
+    /// The down projection of a SwiGLU FFN for a prompt chunk: x += (silu(g) * u) W_down^T with g, u the gate and up outputs [m][f] in the prefill buffers. When the down matrix goes through the integer GEMMs
+    /// the SwiGLU and the int8 quantization of its result happen in one pass (swiglu_quant_rows_kernel: the fp16 activations are never stored); otherwise the SwiGLU kernel writes them and `gemm_w` takes over.
+    #[allow(clippy::too_many_arguments)]
+    fn ffn_down(&self, pf: &PrefillBufs, wd: &GpuMat, li: usize, m: usize, f: usize, e: usize) -> Result<()> {
+        let st = &self.stream;
+        self.role.set(7);
+        if self.swiglu_q && self.stats.is_none() {
+            if let Some(mf) = self.mmq_fmt_of(wd, m, e, f, e) {
+                if let Some(qa) = self.qa_buffers(m, f) {
+                    self.m.k.swiglu_quant_rows.launch(
+                        (m as u32, 1, 1),
+                        (256, 1, 1),
+                        0,
+                        st,
+                        &Args::new().ptr(pf.g_ptr()).ptr(pf.u_ptr()).ptr(qa.0).ptr(qa.1).ptr(qa.2).i32(m as i32).i32(f as i32),
+                    )?;
+                    return self.launch_mmq(mf, 2, wd, qa, pf.x.ptr(), m, e, f, e);
+                }
+            }
+        }
+        let n = (m * f) as u64;
+        self.m.k.swiglu.launch(
+            (((n + 255) / 256).min(4096) as u32, 1, 1),
+            (256, 1, 1),
+            0,
+            st,
+            &Args::new().ptr(pf.g_ptr()).ptr(pf.u_ptr()).buf(&pf.a).u64(n),
+        )?;
+        self.stat(li, 3, &pf.a, m, f)?;
+        self.gemm_w(2, pf.a.ptr(), wd, pf.x.ptr(), m, e, f, e)
+    }
+
+    /// The int8 activation arrays of the integer GEMMs (q, d, s) for m tokens of k values, allocated on first use; None when they do not fit (the GEMMs then stay off) or the chunk is longer than they were made for.
+    fn qa_buffers(&self, m: usize, k: usize) -> Option<(u64, u64, u64)> {
+        let pf = self.pf.as_ref()?;
         if self.mmq_no_mem.get() {
-            return Ok(None);
+            return None;
         }
         let qa = match pf.qa.get() {
             Some(b) => b,
             None => {
                 let c = &self.m.cfg;
-                let kmax = c
-                    .n_embd
-                    .max(c.q_dim())
-                    .max(c.n_ff)
-                    .max(c.delta.as_ref().map_or(0, |d| d.value_dim()));
+                let kmax = c.n_embd.max(c.q_dim()).max(c.n_ff).max(c.delta.as_ref().map_or(0, |d| d.value_dim()));
                 let rows = (prefill_chunk_len().max(EVAL_ROWS) + 127) / 128 * 128;
                 let made = (|| -> Result<QaBufs> {
                     Ok(QaBufs {
@@ -3521,28 +3600,30 @@ impl<'m> GpuSession<'m> {
                     Err(e) => {
                         eprintln!("[gpu] the int8 activation buffers of the integer GEMMs ({:.0} MiB) do not fit ({e}): those GEMMs stay off", (rows * kmax + rows * kmax / 32 * 6) as f64 / (1u64 << 20) as f64);
                         self.mmq_no_mem.set(true);
-                        return Ok(None);
+                        return None;
                     }
                 }
             }
         };
         if m > qa.rows || k > qa.kmax {
-            return Ok(None);
+            return None;
         }
+        Some((qa.q.ptr(), qa.d.ptr(), qa.s.ptr()))
+    }
+
+    /// Quantize the fp16 activations `a` [m][k] to int8 with a scale and a minimum operand per 32 values (the arrays gemm_mmq.cu reads) and return the device addresses of (q, d, s); None when the buffers cannot hold m x k.
+    fn quant_acts(&self, a: u64, m: usize, k: usize) -> Result<Option<(u64, u64, u64)>> {
+        let Some((q, d, s)) = self.qa_buffers(m, k) else {
+            return Ok(None);
+        };
         self.m.k.quant_rows_h.launch(
             (m as u32, 1, 1),
             (256, 1, 1),
             0,
             &self.stream,
-            &Args::new()
-                .ptr(a)
-                .ptr(qa.q.ptr())
-                .ptr(qa.d.ptr())
-                .ptr(qa.s.ptr())
-                .i32(m as i32)
-                .i32(k as i32),
+            &Args::new().ptr(a).ptr(q).ptr(d).ptr(s).i32(m as i32).i32(k as i32),
         )?;
-        Ok(Some((qa.q.ptr(), qa.d.ptr(), qa.s.ptr())))
+        Ok(Some((q, d, s)))
     }
 
     /// C (+)= A B^T with the Ampere kernels of gemm_s80.cu (A [m][k] and B [n][k] contiguous fp16): fp16 accumulation (flushed into fp32 after every k16 step) when `f16acc`, else fp32. `epi`: 0 fp16 out, 1 fp32 out,
@@ -3957,6 +4038,7 @@ impl<'m> GpuSession<'m> {
             if let Some(dl) = &l.delta {
                 let slot = self.dn_slot[li];
                 let conv_state = self.dn_conv.ptr() + (slot * conv_bytes) as u64;
+                self.role.set(0);
                 self.gemm_w(
                     1,
                     pf.h.ptr(),
@@ -3967,6 +4049,7 @@ impl<'m> GpuSession<'m> {
                     e,
                     conv_dim,
                 )?;
+                self.role.set(1);
                 self.gemm_w(
                     1,
                     pf.h.ptr(),
@@ -4083,11 +4166,14 @@ impl<'m> GpuSession<'m> {
                         .f32(c.rms_eps),
                 )?;
                 self.stat(li, 1, &hy.y, t, value_dim)?;
+                self.role.set(2);
                 self.gemm_w(2, hy.y.ptr(), &dl.w_out, pf.x.ptr(), t, e, value_dim, e)?;
             } else {
                 let kc = self.k_cache.ptr() + self.kv_off(li);
                 let vc = self.v_cache.ptr() + self.kv_off(li);
+                self.role.set(3);
                 self.gemm_w(0, pf.h.ptr(), &l.wq, pf.qkv.ptr(), t, q_rows, e, stride)?;
+                self.role.set(4);
                 self.gemm_w(
                     0,
                     pf.h.ptr(),
@@ -4179,6 +4265,7 @@ impl<'m> GpuSession<'m> {
                 }
                 self.kv_post(li, Some(pos0), t, self.state.ptr())?;
                 self.stat(li, 1, &pf.o, t, qd)?;
+                self.role.set(5);
                 self.gemm_w(2, pf.o.ptr(), &l.wo, pf.x.ptr(), t, e, qd, e)?;
             }
             k.rmsnorm_rows.launch(
@@ -4194,18 +4281,10 @@ impl<'m> GpuSession<'m> {
                     .f32(c.rms_eps),
             )?;
             self.stat(li, 2, &pf.h, t, e)?;
+            self.role.set(6);
             self.gemm_w(0, pf.h.ptr(), &l.w_gate, pf.g_ptr(), t, f, e, f)?;
             self.gemm_w(0, pf.h.ptr(), &l.w_up, pf.u_ptr(), t, f, e, f)?;
-            let n = (t * f) as u64;
-            k.swiglu.launch(
-                (((n + 255) / 256).min(4096) as u32, 1, 1),
-                (256, 1, 1),
-                0,
-                st,
-                &Args::new().ptr(pf.g_ptr()).ptr(pf.u_ptr()).buf(&pf.a).u64(n),
-            )?;
-            self.stat(li, 3, &pf.a, t, f)?;
-            self.gemm_w(2, pf.a.ptr(), &l.w_down, pf.x.ptr(), t, e, f, e)?;
+            self.ffn_down(pf, &l.w_down, li, t, f, e)?;
         }
         if self.resid_out.is_some() && self.stats.as_ref().map(|s| s.body_only).unwrap_or(false) {
             // (`eval_chunk_resid` asked for the residual stream where this pass stopped)
@@ -4432,7 +4511,9 @@ impl<'m> GpuSession<'m> {
                     .f32(c.rms_eps),
             )?;
             self.stat(li, 0, &pf.h, t, e)?;
+            self.role.set(3);
             self.gemm_w(0, pf.h.ptr(), &l.wq, pf.qkv.ptr(), t, qd, e, stride)?;
+            self.role.set(4);
             self.gemm_w(
                 0,
                 pf.h.ptr(),
@@ -4511,6 +4592,7 @@ impl<'m> GpuSession<'m> {
             )?;
             self.kv_post(li, Some(pos0), t, self.state.ptr())?;
             self.stat(li, 1, &pf.o, t, qd)?;
+            self.role.set(5);
             self.gemm_w(2, pf.o.ptr(), &l.wo, pf.x.ptr(), t, e, qd, e)?;
             k.rmsnorm_rows.launch(
                 (t as u32, 1, 1),
@@ -4525,18 +4607,10 @@ impl<'m> GpuSession<'m> {
                     .f32(c.rms_eps),
             )?;
             self.stat(li, 2, &pf.h, t, e)?;
+            self.role.set(6);
             self.gemm_w(0, pf.h.ptr(), &l.w_gate, pf.g_ptr(), t, f, e, f)?;
             self.gemm_w(0, pf.h.ptr(), &l.w_up, pf.u_ptr(), t, f, e, f)?;
-            let n = (t * f) as u64;
-            k.swiglu.launch(
-                (((n + 255) / 256).min(4096) as u32, 1, 1),
-                (256, 1, 1),
-                0,
-                st,
-                &Args::new().ptr(pf.g_ptr()).ptr(pf.u_ptr()).buf(&pf.a).u64(n),
-            )?;
-            self.stat(li, 3, &pf.a, t, f)?;
-            self.gemm_w(2, pf.a.ptr(), &l.w_down, pf.x.ptr(), t, e, f, e)?;
+            self.ffn_down(pf, &l.w_down, li, t, f, e)?;
         }
         if self.resid_out.is_some() && self.stats.as_ref().map(|s| s.body_only).unwrap_or(false) {
             // (`eval_chunk_resid` asked for the residual stream where this pass stopped)

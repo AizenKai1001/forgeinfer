@@ -254,12 +254,12 @@ async function send() {
   for (const id of ["intro", "chips"]) { const e = document.getElementById(id); if (e) e.remove(); }
   const c = conv; add("user", text); c.h.push({role: "user", content: text});
   const ui = add("assistant", ""); const out = ui.out;
-  let acc = "", think = "", n = 0, aborted = false, tFirst = 0, timings = null, finish = "", pending = false, done = false;
+  let acc = "", think = "", n = 0, aborted = false, tFirst = 0, timings = null, finish = "", pending = false, done = false, reading = false;
   const draw = () => { pending = false; if (!done) { renderMd(out, acc); log.scrollTop = log.scrollHeight; } };
   const t0 = performance.now();
   ctrl = new AbortController();
   try {
-    const body = {model: alias, messages: [{role: "system", content: cfg.system !== undefined ? cfg.system : DEFAULT_SYSTEM}].concat(c.h), stream: true, stream_options: {include_usage: true},
+    const body = {model: alias, messages: [{role: "system", content: cfg.system !== undefined ? cfg.system : DEFAULT_SYSTEM}].concat(c.h), stream: true, stream_options: {include_usage: true}, return_progress: true,
                   temperature: parseFloat(document.getElementById("temp").value), max_tokens: parseInt(document.getElementById("maxt").value)};
     body.repetition_penalty = cfg.repetition_penalty !== undefined ? cfg.repetition_penalty : (/[0-9]|python|code|function|script|program/i.test(text) ? 1.0 : 1.1);
     if (cfg.thinking) body.chat_template_kwargs = {enable_thinking: thinkBox.checked};
@@ -277,9 +277,15 @@ async function send() {
           const j = JSON.parse(p); const ch = j.choices && j.choices[0]; const d = ch && ch.delta;
           if (ch && ch.finish_reason) finish = ch.finish_reason;
           if (j.timings) timings = j.timings;
+          const pp = j.prompt_progress;
+          if (pp && pp.total && !tFirst) {
+            // a long prompt: how far the engine has read it (the answer replaces this line with its first token)
+            reading = true;
+            out.textContent = "Reading the prompt: " + pp.processed.toLocaleString("en-US") + " of " + pp.total.toLocaleString("en-US") + " tokens (" + Math.round(100 * pp.processed / pp.total) + " percent)";
+          }
           const rc = d && d.reasoning_content, ct = d && d.content;
           if (rc || ct) {
-            if (!tFirst) tFirst = performance.now() - t0;
+            if (!tFirst) { tFirst = performance.now() - t0; if (reading) { out.textContent = ""; reading = false; } }
             n += 1;
             if (rc) { think += rc; ui.think.textContent = think; ui.box.style.display = ""; ui.box.open = !acc; }
             if (ct) { acc += ct; ui.box.open = false; if (!pending) { pending = true; setTimeout(draw, 40); } }
