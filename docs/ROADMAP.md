@@ -18,7 +18,7 @@ What is missing, roughly in the order that would help the most people. Nothing h
 
 ## Forge Studio
 
-- Image input for vision models (the `mmproj` files are already listed), speech; document chat is there for text, code, PDF, Word, PowerPoint, EPUB and HTML files ([STUDIO.md](STUDIO.md#chat-with-documents)); missing: scanned PDFs (OCR), Excel and OpenDocument files.
+- Image input for vision models (the `mmproj` files are already listed), speech; document chat is there for text, code, PDF, Word, Excel, PowerPoint, OpenDocument, RTF, EPUB and HTML files ([STUDIO.md](STUDIO.md#chat-with-documents)); missing: scanned PDFs (OCR) and the old binary Office formats (.doc, .xls, .ppt).
 - Presets for system prompts and sampler settings, per-model default parameters, a prompt-template editor.
 - Several models loaded at once; a benchmark screen (tokens per second on your machine at several context lengths); a request log for the local server.
 - Gated Hugging Face repositories (login), split-file downloads in one step, a "recommended for your hardware" list.

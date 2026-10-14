@@ -125,7 +125,7 @@ pub enum Msg {
     Models(Result<Vec<String>, String>),
     Inspected(Result<Inspect, String>),
     Embedded(Result<EmbedOut, String>),
-    /// A PDF, Word or PowerPoint file has been read for the next message (or could not be).
+    /// A PDF, Office, OpenDocument, EPUB or HTML file has been read for the next message (or could not be).
     Attached(Result<chats::Attachment, String>),
     /// A search of the files of a chat is over: the index that now holds them and the passages found for the question.
     Retrieved {
@@ -1370,7 +1370,7 @@ impl StudioApp {
             if !is_model {
                 // a chat that can search its files takes much longer ones than one that has to send them whole
                 let limit = if self.embedding_endpoint().is_some() { 24 << 20 } else { 2 << 20 };
-                // a PDF, Word or PowerPoint file is read on a thread of its own (a long PDF takes a moment)
+                // a PDF, Office, OpenDocument, EPUB or HTML file is read on a thread of its own (a long PDF takes a moment)
                 if crate::office::is_office(&p) {
                     let name = p.file_name().map(|s| s.to_string_lossy().to_string()).unwrap_or_else(|| "file".into());
                     self.toast(format!("Reading {name} ..."));
