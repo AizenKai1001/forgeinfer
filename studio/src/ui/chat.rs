@@ -221,7 +221,8 @@ fn conversation(app: &mut StudioApp, ui: &mut Ui) {
             .resizable(false)
             .frame(Frame::new().fill(theme::PANEL).inner_margin(Margin::symmetric(16, 4)))
             .show(ui, |ui| {
-                ui.add(egui::Label::new(RichText::new(format!("Searching {}: the model reads the best passages for each question", parts.join(", "))).small().color(theme::MUTED)).truncate());
+                let summary = if app.settings.docs_summarize { "; a request to summarize them is read part by part" } else { "" };
+                ui.add(egui::Label::new(RichText::new(format!("Searching {}: the model reads the best passages for each question{summary}", parts.join(", "))).small().color(theme::MUTED)).truncate());
             });
     }
     Panel::bottom("chat_input")
@@ -487,7 +488,14 @@ fn passages(app: &StudioApp, ui: &mut Ui, m: &crate::chats::Message) {
                 Some(r) => {
                     let total = r.progress.total.load(std::sync::atomic::Ordering::Relaxed);
                     let done = r.progress.done.load(std::sync::atomic::Ordering::Relaxed);
-                    if total > done || (total > 0 && done == 0) {
+                    if r.progress.summarizing.load(std::sync::atomic::Ordering::Relaxed) {
+                        // a request to summarize: the chat model reads the files part by part
+                        if total > done {
+                            format!("reading your files part by part: {} of {} summarized ({} s)", human_count(done as u64), human_count(total as u64), r.started.elapsed().as_secs())
+                        } else {
+                            "putting the summaries together ...".to_string()
+                        }
+                    } else if total > done || (total > 0 && done == 0) {
                         format!("reading your files: {} of {} passages ({} s)", human_count(done as u64), human_count(total as u64), r.started.elapsed().as_secs())
                     } else {
                         "looking for the passages that answer this ...".to_string()
@@ -499,12 +507,16 @@ fn passages(app: &StudioApp, ui: &mut Ui, m: &crate::chats::Message) {
         });
         return;
     }
-    if !m.by_retrieval {
+    // a search that failed has its error line, not a claim that nothing matched
+    if !m.by_retrieval || m.error.is_some() {
         return;
     }
     let n = m.citations.len();
     let weak = m.citations.first().is_some_and(|c| c.weak);
-    let title = if n == 0 {
+    let summarized = m.citations.first().is_some_and(|c| c.part.is_some());
+    let title = if summarized {
+        format!("the model read {n} part summar{} of your files", if n == 1 { "y" } else { "ies" })
+    } else if n == 0 {
         format!("no passage of your files matched (minimum score {:.2})", app.settings.docs_threshold)
     } else if weak {
         format!("no close match: the model read the {n} nearest passage{} of your files", if n == 1 { "" } else { "s" })
@@ -514,7 +526,10 @@ fn passages(app: &StudioApp, ui: &mut Ui, m: &crate::chats::Message) {
     egui::CollapsingHeader::new(RichText::new(title).small().color(theme::MUTED)).id_salt(("passages", &m.id)).default_open(app.opts.open_passages).show(ui, |ui| {
         for c in &m.citations {
             let page = c.page.map(|p| format!(" \u{00B7} page {p}")).unwrap_or_default();
-            ui.label(RichText::new(format!("{}{page} \u{00B7} score {:.2}", c.file, c.score)).small().color(theme::ACCENT));
+            match c.part {
+                Some((i, parts)) => ui.label(RichText::new(format!("{} \u{00B7} part {i} of {parts}", c.file)).small().color(theme::ACCENT)),
+                None => ui.label(RichText::new(format!("{}{page} \u{00B7} score {:.2}", c.file, c.score)).small().color(theme::ACCENT)),
+            };
             ui.add(egui::Label::new(RichText::new(truncate(&c.text, 900)).small().color(theme::TEXT)).wrap());
             ui.add_space(4.0);
         }

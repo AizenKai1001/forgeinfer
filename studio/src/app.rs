@@ -4,7 +4,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{channel, Receiver, Sender};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use eframe::egui;
@@ -16,7 +16,7 @@ use crate::hardware::{self, HardwareInfo};
 use crate::hf::{self, Progress, Repo, RepoFile};
 use crate::library::{self, Inspect, ModelEntry};
 use crate::rag::{self, DocIndex, Strategy};
-use crate::settings::{self, data_dir, EngineKind, OverflowPolicy, Settings};
+use crate::settings::{self, data_dir, EngineKind, GenParams, OverflowPolicy, Settings, ThinkingMode};
 use crate::util::{free_port, new_id};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -289,6 +289,8 @@ pub struct StudioApp {
     /// Chat with documents: the passages of the files of each chat with their vectors, and the search that is running.
     pub doc_index: HashMap<String, DocIndex>,
     pub retrieval: Option<Retrieval>,
+    /// What the parts of the files were summarized to for a request to summarize them (shared with the thread that does it).
+    pub summaries: Arc<Mutex<rag::SummaryCache>>,
 
     pub hf_query: String,
     pub hf_results: Vec<Repo>,
@@ -374,6 +376,7 @@ impl StudioApp {
             pending_embed: opts.embed,
             doc_index: HashMap::new(),
             retrieval: None,
+            summaries: Arc::new(Mutex::new(HashMap::new())),
             hf_query: opts.hf_query.clone().unwrap_or_default(),
             hf_results: Vec::new(),
             hf_busy: false,
@@ -928,10 +931,39 @@ impl StudioApp {
         let file = self.engine.current().and_then(|l| l.embedding.clone()).map(|p| p.file_name().map(|s| s.to_string_lossy().to_string()).unwrap_or_default()).unwrap_or_default();
         let (doc_prefix, query_prefix) = rag::prefixes_for(&file);
         let progress = rag::Progress::default();
+        // a request to summarize files that are too long to read at once: the chat model reads them part by part and summarizes each (the passages that best match such a request are a poor summary)
+        let summary_ctx = if self.settings.docs_summarize && rag::wants_summary(&question) { Some(self.effective_ctx() as usize) } else { None };
+        let chat = if summary_ctx.is_some() { self.active_endpoint() } else { None };
+        let gen = self.settings.gen.clone();
+        let cache = self.summaries.clone();
         self.retrieval = Some(Retrieval { chat_id: chat_id.clone(), msg_id: msg_id.clone(), started: Instant::now(), progress: progress.clone() });
         self.spawn(move |tx, wake| {
-            let mut embed = |texts: &[String]| client::embed(&ep, &name, texts).map(|r| r.0);
-            let result = rag::search(index, &docs, &question, limit, threshold, (doc_prefix, query_prefix), &progress, &mut embed);
+            let result = (|| {
+                // (the files are cut into parts here, on this thread: a long one takes a moment)
+                let targets = rag::files_named(&question, &docs);
+                let plan = summary_ctx.and_then(|ctx| rag::summary_plan(&targets, ctx));
+                if let (Some(plan), Some((chat_ep, chat_model))) = (plan, chat) {
+                    progress.summarizing.store(true, Ordering::Relaxed);
+                    let params = |prompt: &str| ChatParams {
+                        model: chat_model.clone(),
+                        messages: vec![(Role::User, prompt.to_string())],
+                        gen: GenParams { temperature: 0.2, max_tokens: (plan.words * 2 + 40) as u32, thinking: ThinkingMode::Off, ..gen.clone() },
+                    };
+                    let mut ask = |prompt: &str| client::complete(&chat_ep, &params(prompt), &progress.cancel);
+                    match rag::summarize(&cache, &targets, &plan, &progress, &mut ask) {
+                        Ok(citations) => return Ok((index, citations)),
+                        Err(e) if progress.cancel.load(Ordering::Relaxed) => return Err(e),
+                        // the model could not do it (the server failed, say): the passages that match answer instead
+                        Err(_) => {
+                            progress.summarizing.store(false, Ordering::Relaxed);
+                            progress.done.store(0, Ordering::Relaxed);
+                            progress.total.store(0, Ordering::Relaxed);
+                        }
+                    }
+                }
+                let mut embed = |texts: &[String]| client::embed(&ep, &name, texts).map(|r| r.0);
+                rag::search(index, &docs, &question, limit, threshold, (doc_prefix, query_prefix), &progress, &mut embed)
+            })();
             let _ = tx.send(Msg::Retrieved { chat_id, msg_id, result });
             wake();
         });

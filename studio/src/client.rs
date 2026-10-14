@@ -452,6 +452,25 @@ pub fn stream_chat(
     }));
 }
 
+/// One chat completion run to its end on the calling thread: the reply (any reasoning left out), or why it failed. Setting `cancel` stops it early, with the error "stopped".
+pub fn complete(ep: &Endpoint, p: &ChatParams, cancel: &AtomicBool) -> Result<String, String> {
+    let mut text = String::new();
+    let mut failed: Option<String> = None;
+    stream_chat(ep, p, cancel, &mut |ev| match ev {
+        ChatEvent::Content(c) => text.push_str(&c),
+        ChatEvent::Failed(e) => failed = Some(e),
+        _ => {}
+    });
+    if let Some(e) = failed {
+        return Err(e);
+    }
+    if cancel.load(Ordering::Relaxed) {
+        return Err("stopped".to_string());
+    }
+    // a server that carries the reasoning inline, ahead of the answer
+    Ok(split_think(&text).1)
+}
+
 /// Start a completion on its own thread. Events arrive tagged with `request`; setting `cancel` stops reading.
 pub fn spawn_chat<T: Send + 'static>(
     ep: Endpoint,

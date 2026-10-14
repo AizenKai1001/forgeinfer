@@ -57,6 +57,9 @@ pub struct Citation {
     /// The page of a PDF the passage is on.
     #[serde(default)]
     pub page: Option<u32>,
+    /// Set when `text` is the summary of a part of the file (a request for a summary of the whole file): the number of the part and how many parts the file has.
+    #[serde(default)]
+    pub part: Option<(u32, u32)>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -111,6 +114,10 @@ impl Message {
     /// What the model reads: the attached files (each between `<file name=...>` tags), then the text; for a question about files that are searched, the passages found and the question.
     pub fn prompt_text(&self) -> String {
         if self.by_retrieval {
+            if self.citations.first().is_some_and(|c| c.part.is_some()) {
+                let parts: Vec<(String, (u32, u32), String)> = self.citations.iter().filter_map(|c| c.part.map(|p| (c.file.clone(), p, c.text.clone()))).collect();
+                return crate::rag::summaries_prompt(&parts, &self.content);
+            }
             let passages: Vec<(String, Option<u32>, String)> = self.citations.iter().map(|c| (c.file.clone(), c.page, c.text.clone())).collect();
             return crate::rag::citations_prompt(&passages, self.citations.first().is_some_and(|c| c.weak), &self.content);
         }
@@ -487,7 +494,7 @@ mod tests {
         let mut m = Message::new(Role::User, "When does the ship dock?");
         m.attachments.push(Attachment { name: "log.txt".into(), text: "x".repeat(100_000) });
         m.by_retrieval = true;
-        m.citations.push(Citation { file: "log.txt".into(), text: "The ship docks at six.".into(), score: 0.8, weak: false, page: None });
+        m.citations.push(Citation { file: "log.txt".into(), text: "The ship docks at six.".into(), score: 0.8, weak: false, page: None, part: None });
         c.messages.push(m);
         c.messages.push(Message::new(Role::Assistant, "At six."));
         // a later question has no files of its own and is searched too
@@ -511,6 +518,25 @@ mod tests {
         assert!(c.replace_from(0, "When does it leave?"));
         assert!(c.messages[0].by_retrieval && c.messages[0].citations.is_empty());
         assert_eq!(c.messages[0].attachments.len(), 1);
+    }
+
+    #[test]
+    fn a_request_to_summarize_reads_the_part_summaries() {
+        let mut c = Chat::new();
+        let mut m = Message::new(Role::User, "Summarize the report");
+        m.by_retrieval = true;
+        m.citations.push(Citation { file: "report.pdf".into(), text: "It starts with costs.".into(), score: 1.0, weak: false, page: None, part: Some((1, 2)) });
+        m.citations.push(Citation { file: "report.pdf".into(), text: "It ends with plans.".into(), score: 1.0, weak: false, page: None, part: Some((2, 2)) });
+        c.messages.push(m);
+        let p = c.api_messages("");
+        assert!(p[0].1.contains("File \"report.pdf\", part 1 of 2: It starts with costs.") && p[0].1.contains("part 2 of 2: It ends with plans.") && p[0].1.ends_with("Summarize the report"), "{}", p[0].1);
+        assert!(!p[0].1.contains("Citation 1"), "not the wording of passages");
+        // the parts survive the chat file; a chat file of an earlier version has none
+        let back: Chat = serde_json::from_str(&serde_json::to_string(&c).unwrap()).unwrap();
+        assert_eq!(back.messages[0].citations[1].part, Some((2, 2)));
+        let old = r#"{"id":"x","title":"t","created":1,"updated":1,"messages":[{"id":"m","role":"user","content":"hi","by_retrieval":true,"citations":[{"file":"a","text":"b","score":0.7}]}]}"#;
+        let old: Chat = serde_json::from_str(old).unwrap();
+        assert_eq!(old.messages[0].citations[0].part, None);
     }
 
     /// A chat of `turns` user / assistant pairs, every message of `chars` characters.

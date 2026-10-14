@@ -1,8 +1,9 @@
 //! Chat with documents: split attached files into passages, rank the passages against a question by the vectors an embedding model made of them, and write the prompt the way LM Studio does
 //! (the citations in front of the question). Nothing here touches the network or the window: `app.rs` embeds and calls these.
 
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use crate::chats::Citation;
 
@@ -231,10 +232,158 @@ impl DocIndex {
 /// What a search reports while it runs, and how it is told to stop.
 #[derive(Clone, Default)]
 pub struct Progress {
-    /// Passages embedded so far, and passages that need it in all (known once a file is split).
+    /// Passages embedded so far, and passages that need it in all (known once a file is split). While files are summarized: parts summarized so far, and parts that need it.
     pub done: Arc<AtomicUsize>,
     pub total: Arc<AtomicUsize>,
     pub cancel: Arc<AtomicBool>,
+    /// The counts above are those of a summary, not of an embedding.
+    pub summarizing: Arc<AtomicBool>,
+}
+
+/// Words that make a question a request for a summary of the files as a whole. Searching by meaning cannot read a whole file: for such a request every part of the files is summarized and the answer is written
+/// from the summaries (`summarize`).
+const SUMMARY_WORDS: &[&str] = &[
+    "summar", "overview", "outline of", "tl;dr", "tldr", "the gist", "main point", "main idea", "key point", "takeaway", "what is this about", "what's this about", "what is it about", "what's it about", "document about", "paper about",
+    "file about", "pdf about", "chapter about", "book about", "article about", "report about", "describe this document", "describe this file", "describe this paper", "explain this document", "explain this file", "explain this paper",
+];
+
+pub fn wants_summary(question: &str) -> bool {
+    let q = question.to_lowercase();
+    if q.contains("summar") {
+        return true;
+    }
+    // "the main idea of section 3", "the key points on page 12": a request about a part of the file, which the passages that match answer better than the summaries of all of it
+    if ["section ", "chapter ", "page ", "paragraph", "figure ", "table ", "slide ", "line ", "function", "class "].iter().any(|k| q.contains(k)) {
+        return false;
+    }
+    SUMMARY_WORDS.iter().any(|k| q.contains(k))
+}
+
+/// The files a request names (by their name, or by their name without the extension when that is at least four characters); all of them when it names none.
+pub fn files_named(question: &str, docs: &[(String, String)]) -> Vec<(String, String)> {
+    let q = question.to_lowercase();
+    let named: Vec<(String, String)> = docs
+        .iter()
+        .filter(|(name, _)| {
+            let l = name.to_lowercase();
+            let stem = l.rsplit_once('.').map_or(l.as_str(), |s| s.0);
+            q.contains(&l) || (stem.chars().count() >= 4 && q.contains(stem))
+        })
+        .cloned()
+        .collect();
+    if named.is_empty() {
+        docs.to_vec()
+    } else {
+        named
+    }
+}
+
+/// The largest number of parts, in all the files together, that are summarized: a request for a summary of more is answered from the passages that match, as before.
+pub const MAX_SUMMARY_PARTS: usize = 48;
+
+/// How a request for a summary is carried out for some files.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct SummaryPlan {
+    /// Characters of one part of a file.
+    pub part_chars: usize,
+    /// Words the summary of a part may have: all the summaries together fill about half of the context.
+    pub words: usize,
+    /// Parts of all the files together.
+    pub parts: usize,
+}
+
+/// The plan for summarizing `docs` (name, text) with a context of `ctx` tokens; None when the files are too short to need it (one part) or too long to be read in reasonable time.
+pub fn summary_plan(docs: &[(String, String)], ctx: usize) -> Option<SummaryPlan> {
+    // a part, the instructions and the summary must fit the context at about three characters to the token; a bigger part than 14,000 characters gains little and takes longer to read
+    let part_chars = (ctx.saturating_sub(700) * 9 / 10 * 3).clamp(2_000, 14_000);
+    // (a file that is plainly too long is not even cut into parts)
+    if docs.iter().map(|d| d.1.chars().count()).sum::<usize>() > MAX_SUMMARY_PARTS * part_chars {
+        return None;
+    }
+    let parts: usize = docs.iter().map(|d| split(&d.1, part_chars, 0).len()).sum();
+    if !(2..=MAX_SUMMARY_PARTS).contains(&parts) {
+        return None;
+    }
+    // the summaries are read together with the question: half of the context between them, 260 tokens (about 195 words) at most for one
+    let tokens = ((ctx / 2).saturating_sub(300) / parts).clamp(50, 260);
+    Some(SummaryPlan { part_chars, words: tokens * 3 / 4, parts })
+}
+
+/// What each part of a file was summarized to, by (fingerprint of the file's text, characters of a part, words of a summary): asking for the summary again costs nothing.
+pub type SummaryCache = HashMap<(u64, usize, usize), Vec<String>>;
+
+/// A summary that the length limit cut off ends in the middle of a sentence: keep the whole sentences when they are most of the text.
+fn whole_sentences(text: &str) -> String {
+    let t = text.trim();
+    if t.ends_with(['.', '!', '?', ')', '"', '\'', '*', '`', ':', ';', '\u{2019}', '\u{201d}']) {
+        return t.to_string();
+    }
+    let cut = t.char_indices().filter(|&(i, c)| matches!(c, '.' | '!' | '?') && t[i + c.len_utf8()..].starts_with(char::is_whitespace)).map(|(i, c)| i + c.len_utf8()).last();
+    match cut {
+        Some(end) if end * 2 >= t.len() => t[..end].to_string(),
+        _ => t.to_string(),
+    }
+}
+
+/// The request the model gets for one part of a file.
+pub fn summary_prompt(file: &str, part: usize, parts: usize, text: &str, words: usize) -> String {
+    format!(
+        "Summarize this part of the file \"{file}\" (part {part} of {parts}) in at most {words} words. Keep the names, numbers, dates and terms that matter. Reply with the summary only.\n\n{}",
+        text.replace('\u{c}', "\n\n").trim()
+    )
+}
+
+/// Summarize every part of the files (those the cache does not hold yet) with `ask`, which sends one request to the chat model and returns its reply; the summaries come back as citations, in the order of
+/// the files and of their parts. `progress` counts the parts and can stop it between two of them.
+pub fn summarize(cache: &Mutex<SummaryCache>, docs: &[(String, String)], plan: &SummaryPlan, progress: &Progress, ask: &mut dyn FnMut(&str) -> Result<String, String>) -> Result<Vec<Citation>, String> {
+    let key = |text: &str| (fingerprint(text), plan.part_chars, plan.words);
+    let held = |k: &(u64, usize, usize)| cache.lock().unwrap_or_else(|e| e.into_inner()).get(k).cloned();
+    let split_docs: Vec<Vec<String>> = docs.iter().map(|d| split(&d.1, plan.part_chars, 0)).collect();
+    let missing: usize = docs.iter().zip(&split_docs).filter(|(d, _)| held(&key(&d.1)).is_none()).map(|(_, p)| p.len()).sum();
+    progress.done.store(0, Ordering::Relaxed);
+    progress.total.store(missing, Ordering::Relaxed);
+    let mut out = Vec::new();
+    for ((name, text), parts) in docs.iter().zip(&split_docs) {
+        let k = key(text);
+        let summaries = match held(&k) {
+            Some(s) => s,
+            None => {
+                let mut s: Vec<String> = Vec::with_capacity(parts.len());
+                for (i, part) in parts.iter().enumerate() {
+                    if progress.cancel.load(Ordering::Relaxed) {
+                        return Err("stopped".to_string());
+                    }
+                    let reply = whole_sentences(&ask(&summary_prompt(name, i + 1, parts.len(), part, plan.words))?);
+                    let reply = reply.as_str();
+                    // a model that gave nothing (it spent its answer on reasoning, say): the start of the part stands in for the summary
+                    s.push(if reply.is_empty() { part.chars().take(400).collect::<String>() } else { reply.to_string() });
+                    progress.done.fetch_add(1, Ordering::Relaxed);
+                }
+                let mut c = cache.lock().unwrap_or_else(|e| e.into_inner());
+                if c.len() >= 32 {
+                    c.clear();
+                }
+                c.insert(k, s.clone());
+                s
+            }
+        };
+        let n = summaries.len() as u32;
+        for (i, text) in summaries.into_iter().enumerate() {
+            out.push(Citation { file: name.clone(), text, score: 1.0, weak: false, page: None, part: Some((i as u32 + 1, n)) });
+        }
+    }
+    Ok(out)
+}
+
+/// What the model reads for a request to summarize files that were read in parts: the summaries of the parts in front of the request.
+pub fn summaries_prompt(parts: &[(String, (u32, u32), String)], question: &str) -> String {
+    let mut s = String::from("The user attached files that are too long to read at once. Each was read in parts, one after the other, and every part was summarized. These are the summaries, in the order of the files and of their parts:\n\n");
+    for (file, (i, n), text) in parts {
+        s.push_str(&format!("File \"{file}\", part {i} of {n}: {}\n\n", text.trim()));
+    }
+    s.push_str("Use the summaries to respond to the user query. Only if the query asks for a specific detail that the summaries do not contain, say that they do not cover it.\n\nUser Query:\n\n");
+    s.push_str(question);
+    s
 }
 
 /// Passages per request to the embedding model.
@@ -316,7 +465,7 @@ pub fn search(
         }
         hits = merged;
     }
-    let citations = hits.iter().map(|h| Citation { file: index.passages[h.passage].file.clone(), text: index.passages[h.passage].text.clone(), score: h.score, weak, page: index.passages[h.passage].page }).collect();
+    let citations = hits.iter().map(|h| Citation { file: index.passages[h.passage].file.clone(), text: index.passages[h.passage].text.clone(), score: h.score, weak, page: index.passages[h.passage].page, part: None }).collect();
     Ok((index, citations))
 }
 
@@ -573,5 +722,157 @@ mod tests {
         assert_eq!(fingerprint("abc"), fingerprint("abc"));
         assert_ne!(fingerprint("abc"), fingerprint("abd"));
         assert_ne!(fingerprint(""), fingerprint("a"));
+    }
+
+    #[test]
+    fn only_requests_for_the_whole_file_want_a_summary() {
+        for yes in ["Summarize this PDF", "give me a summary", "What is this document about?", "what's it about", "tl;dr please", "Give an overview of the file", "list the key points", "explain this paper", "Summarize section 3"] {
+            assert!(wants_summary(yes), "{yes}");
+        }
+        for no in ["What does the author say about transformers?", "When does the ship dock?", "what is this variable", "describe this function", "Who wrote it?", "what is the capital of France", "What is the main idea of section 3?", "the key points on page 12"] {
+            assert!(!wants_summary(no), "{no}");
+        }
+    }
+
+    fn long_docs() -> Vec<(String, String)> {
+        // 40 paragraphs of 1,000 characters: three parts of 14,000 characters
+        let text: String = (0..40).map(|i| format!("Paragraph {i}: {}\n\n", "word ".repeat(195))).collect();
+        vec![("report.txt".to_string(), text)]
+    }
+
+    #[test]
+    fn the_plan_fits_the_parts_and_their_summaries_to_the_context() {
+        let docs = long_docs();
+        let big = summary_plan(&docs, 8192).unwrap();
+        assert_eq!((big.part_chars, big.words), (14_000, 195));
+        assert!((3..=4).contains(&big.parts), "{big:?}");
+        // a small context makes smaller parts and shorter summaries
+        let small = summary_plan(&docs, 2048).unwrap();
+        assert!(small.part_chars < 4_000 && small.parts > big.parts && small.words < big.words, "{small:?}");
+        // everything has to stay within half the context
+        assert!(small.parts * (small.words * 4 / 3) <= 2048 / 2 + small.parts * 20, "{small:?}");
+        // a file of one part needs no summary, a file of hundreds of parts is not read part by part
+        assert_eq!(summary_plan(&[("a".to_string(), "short".to_string())], 8192), None);
+        assert_eq!(summary_plan(&[("a".to_string(), "word ".repeat(400_000))], 8192), None);
+    }
+
+    #[test]
+    fn every_part_is_summarized_once_and_remembered() {
+        let docs = long_docs();
+        let plan = summary_plan(&docs, 8192).unwrap();
+        let cache = Mutex::new(SummaryCache::new());
+        let asked = std::cell::RefCell::new(Vec::<String>::new());
+        let mut ask = |p: &str| {
+            asked.borrow_mut().push(p.to_string());
+            Ok(format!(" summary number {} ", asked.borrow().len()))
+        };
+        let progress = Progress::default();
+        let cites = summarize(&cache, &docs, &plan, &progress, &mut ask).unwrap();
+        assert_eq!(cites.len(), plan.parts);
+        assert_eq!((progress.done.load(Ordering::Relaxed), progress.total.load(Ordering::Relaxed)), (plan.parts, plan.parts));
+        assert_eq!(cites[0].text, "summary number 1");
+        assert_eq!((cites[0].file.as_str(), cites[0].part, cites[1].part), ("report.txt", Some((1, plan.parts as u32)), Some((2, plan.parts as u32))));
+        // each request names its part and carries the text of it, the first part starts the file
+        let first = asked.borrow()[0].clone();
+        assert!(first.starts_with("Summarize this part of the file \"report.txt\" (part 1 of ") && first.contains("at most 195 words") && first.contains("Paragraph 0:"), "{}", &first[..200]);
+        assert!(asked.borrow()[1].contains("(part 2 of "));
+        // the second request for the same file asks nothing
+        let before = asked.borrow().len();
+        let again = summarize(&cache, &docs, &plan, &Progress::default(), &mut ask).unwrap();
+        assert_eq!(asked.borrow().len(), before);
+        assert_eq!(again, cites);
+        // another size of part is another summary
+        let other = SummaryPlan { part_chars: 7_000, words: 100, parts: 8 };
+        summarize(&cache, &docs, &other, &Progress::default(), &mut ask).unwrap();
+        assert!(asked.borrow().len() > before);
+    }
+
+    #[test]
+    fn a_stopped_or_failing_summary_is_an_error_and_an_empty_reply_gets_the_start_of_the_part() {
+        let docs = long_docs();
+        let plan = summary_plan(&docs, 8192).unwrap();
+        let stop = Progress::default();
+        stop.cancel.store(true, Ordering::Relaxed);
+        assert_eq!(summarize(&Mutex::new(SummaryCache::new()), &docs, &plan, &stop, &mut |_| Ok("x".to_string())).unwrap_err(), "stopped");
+        assert_eq!(summarize(&Mutex::new(SummaryCache::new()), &docs, &plan, &Progress::default(), &mut |_| Err("server down".to_string())).unwrap_err(), "server down");
+        let cites = summarize(&Mutex::new(SummaryCache::new()), &docs, &plan, &Progress::default(), &mut |_| Ok("   ".to_string())).unwrap();
+        assert!(cites[0].text.starts_with("Paragraph 0:") && cites[0].text.chars().count() <= 400, "{:?}", cites[0].text);
+        // a failure leaves nothing half-done in the cache
+        let cache = Mutex::new(SummaryCache::new());
+        let mut calls = 0;
+        let _ = summarize(&cache, &docs, &plan, &Progress::default(), &mut |_| {
+            calls += 1;
+            if calls == 2 { Err("broke".to_string()) } else { Ok("ok".to_string()) }
+        });
+        assert!(cache.lock().unwrap().is_empty());
+    }
+
+    /// Against a running ForgeInfer server: FORGE_TEST_DOCS=file;file FORGE_TEST_SERVER=8080 FORGE_TEST_QUESTION="Summarize it" cargo test --lib live_summary -- --ignored --nocapture
+    #[test]
+    #[ignore]
+    fn live_summary() {
+        use crate::chats::Role;
+        use crate::client::{self, ChatParams, Endpoint};
+        use crate::settings::{GenParams, ThinkingMode};
+        let port: u16 = std::env::var("FORGE_TEST_SERVER").ok().and_then(|v| v.parse().ok()).unwrap_or(8080);
+        let ep = Endpoint::local(port, "");
+        let ctx = client::loaded_context(&ep).unwrap_or(8192) as usize;
+        let model = client::list_models(&ep).unwrap().remove(0);
+        let docs: Vec<(String, String)> = std::env::var("FORGE_TEST_DOCS")
+            .unwrap_or_default()
+            .split(';')
+            .filter(|p| !p.is_empty())
+            .map(|p| (std::path::Path::new(p).file_name().unwrap().to_string_lossy().to_string(), crate::office::read_document(std::path::Path::new(p), 24 << 20).unwrap()))
+            .collect();
+        let plan = summary_plan(&docs, ctx).expect("these files need no summary or are too long for one");
+        println!("model {model}, context {ctx}: {plan:?}");
+        let progress = Progress::default();
+        let cache = Mutex::new(SummaryCache::new());
+        let gen = GenParams { temperature: 0.2, max_tokens: (plan.words * 2 + 40) as u32, thinking: ThinkingMode::Off, ..GenParams::default() };
+        let mut ask = |prompt: &str| client::complete(&ep, &ChatParams { model: model.clone(), messages: vec![(Role::User, prompt.to_string())], gen: gen.clone() }, &progress.cancel);
+        let t0 = std::time::Instant::now();
+        let cites = summarize(&cache, &docs, &plan, &progress, &mut ask).unwrap();
+        println!("{} parts summarized in {:.1} s", cites.len(), t0.elapsed().as_secs_f32());
+        for c in &cites {
+            println!("--- {} part {:?} ({} characters)\n{}", c.file, c.part, c.text.chars().count(), c.text);
+        }
+        let question = std::env::var("FORGE_TEST_QUESTION").unwrap_or_else(|_| "Summarize the file.".to_string());
+        let parts: Vec<(String, (u32, u32), String)> = cites.iter().filter_map(|c| c.part.map(|p| (c.file.clone(), p, c.text.clone()))).collect();
+        let prompt = summaries_prompt(&parts, &question);
+        println!("=== the answer prompt is {} characters", prompt.chars().count());
+        let t1 = std::time::Instant::now();
+        let params = ChatParams { model, messages: vec![(Role::User, prompt)], gen: GenParams { thinking: ThinkingMode::Off, ..GenParams::default() } };
+        let answer = client::complete(&ep, &params, &AtomicBool::new(false)).unwrap();
+        println!("=== answer in {:.1} s:\n{answer}", t1.elapsed().as_secs_f32());
+    }
+
+    #[test]
+    fn a_request_that_names_a_file_is_about_that_file() {
+        let docs = vec![("Report 2025.pdf".to_string(), "r".to_string()), ("slides.pptx".to_string(), "s".to_string()), ("a.txt".to_string(), "t".to_string())];
+        let names = |q: &str| files_named(q, &docs).into_iter().map(|d| d.0).collect::<Vec<_>>();
+        assert_eq!(names("Summarize slides.pptx please"), ["slides.pptx"]);
+        assert_eq!(names("summarize the report 2025"), ["Report 2025.pdf"]);
+        assert_eq!(names("Summarize the SLIDES"), ["slides.pptx"]);
+        // no name, or a name too short to mean anything ("a"): all the files
+        assert_eq!(names("Summarize everything"), ["Report 2025.pdf", "slides.pptx", "a.txt"]);
+        assert_eq!(names("summarize a story"), ["Report 2025.pdf", "slides.pptx", "a.txt"]);
+    }
+
+    #[test]
+    fn a_summary_cut_off_by_the_length_limit_keeps_its_whole_sentences() {
+        assert_eq!(whole_sentences("  One. Two is longer than one. Three is cut o"), "One. Two is longer than one.");
+        // complete, or too little of it is whole sentences: left alone
+        assert_eq!(whole_sentences("It ends here."), "It ends here.");
+        assert_eq!(whole_sentences("A list:\n- one\n- two (cut"), "A list:\n- one\n- two (cut");
+        assert_eq!(whole_sentences("Ok. A very long second sentence that never ends and never stops going on and on"), "Ok. A very long second sentence that never ends and never stops going on and on");
+        assert_eq!(whole_sentences("Version 3.5 was cut at the number 4"), "Version 3.5 was cut at the number 4");
+        assert_eq!(whole_sentences(""), "");
+    }
+
+    #[test]
+    fn the_summaries_are_written_into_the_prompt_in_order() {
+        let p = summaries_prompt(&[("a.pdf".to_string(), (1, 2), "First half.".to_string()), ("a.pdf".to_string(), (2, 2), " Second half. ".to_string())], "Summarize it");
+        assert!(p.contains("File \"a.pdf\", part 1 of 2: First half.\n\nFile \"a.pdf\", part 2 of 2: Second half.\n\n"), "{p}");
+        assert!(p.starts_with("The user attached files that are too long to read at once.") && p.ends_with("User Query:\n\nSummarize it"));
     }
 }

@@ -223,6 +223,8 @@ pub struct Settings {
     /// How many passages of the files a question gets, and the lowest cosine a passage may have to count (nomic-embed-text with its task prefixes: related passages score 0.65 to 0.9, unrelated ones 0.35 to 0.56).
     pub docs_limit: u32,
     pub docs_threshold: f32,
+    /// A request for a summary of files that are searched has the model read them part by part and summarize each, instead of answering from the passages that best match the request.
+    pub docs_summarize: bool,
     /// Port of the local server (the default is the one LM Studio uses, so tools that know it just work).
     pub port: u16,
     /// Listen on every network interface instead of this computer only.
@@ -272,6 +274,7 @@ impl Default for Settings {
             retrieval_model: String::new(),
             docs_limit: 3,
             docs_threshold: 0.6,
+            docs_summarize: true,
             port: 1234,
             serve_on_lan: false,
             api_key: String::new(),

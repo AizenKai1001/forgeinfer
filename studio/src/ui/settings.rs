@@ -265,6 +265,9 @@ fn documents(app: &mut StudioApp, ui: &mut Ui) {
             ui.add(egui::DragValue::new(&mut app.settings.docs_threshold).range(0.0..=1.0).speed(0.01).fixed_decimals(2));
         });
         muted(ui, "A passage counts when the cosine of its vector and the question's is above the minimum (LM Studio's defaults are 3 passages and 0.5, for texts embedded without the task prefixes that nomic-embed-text was trained with; with them related passages score 0.65 and up, unrelated ones stay below 0.56).");
+        ui.add_space(4.0);
+        ui.checkbox(&mut app.settings.docs_summarize, "Read the whole file for a request to summarize it");
+        muted(ui, "Searching by meaning cannot summarize a file. With this on, a request such as \"summarize this\" or \"what is this about\" on files that are searched has the chat model read them part by part (a part is about 14,000 characters at most) and summarize each one, which takes about five seconds a part; the answer is then written from those summaries, which are kept for the next request. Off: the answer comes from the opening of the file and the passages that match best.");
     });
 }
 

@@ -21,7 +21,7 @@ members = [
 exclude = ["spikes/avx2_rust", "spikes/cuda_ffi", "spikes/threadpool"]
 
 [workspace.package]
-version = "0.1.11"
+version = "0.1.12"
 edition = "2021"
 publish = false
 
