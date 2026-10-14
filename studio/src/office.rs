@@ -118,7 +118,10 @@ fn tidy_run(text: &str) -> String {
             continue;
         }
         // a hyphen that ends a line right after a letter, and a lower-case letter that starts the next one: one word
-        let hyphenated = blank == 0 && out.ends_with('-') && out.chars().rev().nth(1).is_some_and(|c| c.is_alphabetic()) && line.chars().next().is_some_and(|c| c.is_lowercase());
+        // (not in a web address or an e-mail address: "solutions/hybrid-" and "cloud" are two parts of a path, not one word)
+        let address = |t: &str| t.contains('/') || t.contains('@');
+        let in_address = out.rsplit(char::is_whitespace).next().is_some_and(address) || line.split_whitespace().next().is_some_and(address);
+        let hyphenated = blank == 0 && out.ends_with('-') && !in_address && out.chars().rev().nth(1).is_some_and(|c| c.is_alphabetic()) && line.chars().next().is_some_and(|c| c.is_lowercase());
         if hyphenated {
             out.pop();
         } else if !out.is_empty() {
@@ -288,7 +291,7 @@ fn xlsx_text(path: &Path) -> Result<String, String> {
     let workbook = zip_entry(&mut z, "xl/workbook.xml")?;
     let rels = zip_entry(&mut z, "xl/_rels/workbook.xml.rels").unwrap_or_default();
     let strings = zip_entry(&mut z, "xl/sharedStrings.xml").map(|x| shared_strings(&x)).unwrap_or_default();
-    let dates = zip_entry(&mut z, "xl/styles.xml").map(|x| date_styles(&x)).unwrap_or_default();
+    let dates = zip_entry(&mut z, "xl/styles.xml").map(|x| cell_styles(&x)).unwrap_or_default();
     let mut out = String::new();
     for (i, tag) in workbook.split('<').filter(|t| t.starts_with("sheet ")).enumerate() {
         let name = attr(tag, "name").map(decode_entities).unwrap_or_else(|| format!("Sheet{}", i + 1));
@@ -357,7 +360,7 @@ fn column_of(cell_ref: &str) -> Option<usize> {
 }
 
 /// The rows of one worksheet part, one text line each (an empty row leaves no line).
-fn sheet_rows(xml: &str, strings: &[String], dates: &HashSet<usize>) -> String {
+fn sheet_rows(xml: &str, strings: &[String], dates: &CellStyles) -> String {
     let mut out = String::new();
     let mut row: Vec<String> = Vec::new();
     let mut next_col = 0usize;
@@ -426,7 +429,7 @@ fn sheet_rows(xml: &str, strings: &[String], dates: &HashSet<usize>) -> String {
 
 /// What a cell shows, by its type: "s" an entry of the shared strings, "inlineStr" its own text, "b" a truth value, "str" (the result of a formula), "e" (an error such as #DIV/0!) and "d" as written,
 /// anything else a number.
-fn cell_text(kind: &str, value: &str, inline: &str, style: usize, strings: &[String], dates: &HashSet<usize>) -> String {
+fn cell_text(kind: &str, value: &str, inline: &str, style: usize, strings: &[String], dates: &CellStyles) -> String {
     match kind {
         "s" => value.trim().parse::<usize>().ok().and_then(|i| strings.get(i)).cloned().unwrap_or_default(),
         "inlineStr" => inline.to_string(),
@@ -438,11 +441,21 @@ fn cell_text(kind: &str, value: &str, inline: &str, style: usize, strings: &[Str
             }
         }
         "str" | "e" | "d" => value.to_string(),
-        _ => number_text(value.trim(), dates.contains(&style)),
+        _ => number_text(value.trim(), style, dates),
     }
 }
 
-fn number_text(v: &str, date: bool) -> String {
+/// A number cell as it is shown: a date or time by its format, a number by the format code of its style when `format_number` understands it, else the number as stored.
+fn number_text(v: &str, style: usize, styles: &CellStyles) -> String {
+    if let (Ok(x), false) = (v.parse::<f64>(), styles.dates.contains(&style)) {
+        if let Some(shown) = styles.numbers.get(&style).and_then(|code| format_number(x, code)) {
+            return shown;
+        }
+    }
+    raw_number_text(v, styles.dates.contains(&style))
+}
+
+fn raw_number_text(v: &str, date: bool) -> String {
     let Ok(x) = v.parse::<f64>() else { return v.to_string() };
     // serial 2958465 is the last day Excel knows (31 December 9999)
     if date && (0.0..2_958_466.0).contains(&x) {
@@ -487,10 +500,204 @@ fn civil_from_days(z: i64) -> (i64, i64, i64) {
     (yoe + era * 400 + i64::from(m <= 2), m, d)
 }
 
-/// The cell styles (positions in `cellXfs`) whose number format is a date or a time.
-fn date_styles(xml: &str) -> HashSet<usize> {
+/// How the cells of a workbook show their numbers: the styles (positions in `cellXfs`) whose number format is a date or a time, and the format code of the styles that have one of their own.
+#[derive(Default)]
+struct CellStyles {
+    dates: HashSet<usize>,
+    numbers: HashMap<usize, String>,
+}
+
+/// The format codes that Excel has built in (the numbers it does not list are General, dates and times, fractions, accounting and text).
+fn builtin_format(id: u32) -> Option<&'static str> {
+    Some(match id {
+        1 => "0",
+        2 => "0.00",
+        3 => "#,##0",
+        4 => "#,##0.00",
+        9 => "0%",
+        10 => "0.00%",
+        11 => "0.00E+00",
+        37 => "#,##0 ;(#,##0)",
+        38 => "#,##0 ;[Red](#,##0)",
+        39 => "#,##0.00;(#,##0.00)",
+        40 => "#,##0.00;[Red](#,##0.00)",
+        _ => return None,
+    })
+}
+
+/// The number as the format code of a cell shows it (the first section for positive numbers, the second for negative ones, the third for zero): digit placeholders 0 # ?, a decimal point, thousands
+/// separators, percent, scientific notation, quoted text, backslash escapes, currency blocks [$EUR-407], padding with _x. None for what is not understood (fractions, conditions, scaling commas,
+/// General and text formats): the number is then shown as stored.
+fn format_number(x: f64, code: &str) -> Option<String> {
+    if !x.is_finite() {
+        return None;
+    }
+    // the sections, split at the semicolons that are not quoted, bracketed or escaped
+    let mut sections: Vec<String> = vec![String::new()];
+    let (mut quoted, mut bracketed, mut escaped) = (false, false, false);
+    for c in code.chars() {
+        if escaped {
+            escaped = false;
+        } else if quoted {
+            quoted = c != '"';
+        } else if bracketed {
+            bracketed = c != ']';
+        } else {
+            match c {
+                '"' => quoted = true,
+                '[' => bracketed = true,
+                '\\' | '_' | '*' => escaped = true,
+                ';' => {
+                    sections.push(String::new());
+                    continue;
+                }
+                _ => {}
+            }
+        }
+        sections.last_mut()?.push(c);
+    }
+    if sections.iter().any(|s| s.trim().is_empty() && sections.len() == 1) || code.trim().eq_ignore_ascii_case("general") || code.trim() == "@" {
+        return None;
+    }
+    // the section that applies: a second one is for negative numbers (and then shows no minus sign of its own), a third one for zero
+    let (section, own_sign) = if x < 0.0 && sections.len() >= 2 {
+        (&sections[1], true)
+    } else if x == 0.0 && sections.len() >= 3 {
+        (&sections[2], false)
+    } else {
+        (&sections[0], false)
+    };
+    // literal text before the digits, the digit pattern, literal text after them
+    let (mut prefix, mut suffix) = (String::new(), String::new());
+    let (mut int_pat, mut frac_pat) = (String::new(), String::new());
+    let (mut in_fraction, mut seen_digits, mut digits_over) = (false, false, false);
+    let (mut percent, mut exponent) = (0i32, None::<usize>);
+    let chars: Vec<char> = section.chars().collect();
+    let mut i = 0;
+    while i < chars.len() {
+        let c = chars[i];
+        i += 1;
+        let literal = if seen_digits { &mut suffix } else { &mut prefix };
+        match c {
+            '"' => {
+                while i < chars.len() && chars[i] != '"' {
+                    literal.push(chars[i]);
+                    i += 1;
+                }
+                i += 1;
+            }
+            '\\' => {
+                if let Some(&n) = chars.get(i) {
+                    literal.push(n);
+                    i += 1;
+                }
+            }
+            '_' => {
+                i += 1;
+                literal.push(' ');
+            }
+            '*' => i += 1,
+            '[' => {
+                let end = chars[i..].iter().position(|&c| c == ']').map_or(chars.len(), |p| i + p);
+                let inner: String = chars[i..end].iter().collect();
+                i = end + 1;
+                if let Some(cur) = inner.strip_prefix('$') {
+                    // [$EUR-407]: the currency symbol, then the locale
+                    literal.push_str(cur.split('-').next().unwrap_or(""));
+                } else if inner.contains(['<', '>', '=']) {
+                    return None;
+                }
+            }
+            '0' | '#' | '?' if !digits_over => {
+                seen_digits = true;
+                if in_fraction {
+                    frac_pat.push(c);
+                } else {
+                    int_pat.push(c);
+                }
+            }
+            ',' if seen_digits && !in_fraction && !digits_over => {
+                // a comma between digit placeholders groups thousands; one after the last digit would scale the number
+                if !chars[i..].iter().take_while(|&&n| n != '.' && !n.is_alphabetic()).any(|&n| matches!(n, '0' | '#' | '?')) {
+                    return None;
+                }
+                int_pat.push(',');
+            }
+            '.' if seen_digits && !in_fraction && !digits_over => in_fraction = true,
+            'E' | 'e' if seen_digits && matches!(chars.get(i), Some('+' | '-')) => {
+                i += 1;
+                let zeros = chars[i..].iter().take_while(|&&n| n == '0').count();
+                i += zeros;
+                exponent = Some(zeros.max(1));
+                digits_over = true;
+            }
+            '0' | '#' | '?' | ',' | '.' => return None,
+            '%' => {
+                percent += 1;
+                literal.push('%');
+            }
+            '/' if seen_digits => return None,
+            _ => {
+                if seen_digits {
+                    digits_over = true;
+                }
+                literal.push(c);
+            }
+        }
+    }
+    if !seen_digits {
+        // a section with text only ("zero")
+        return Some(format!("{prefix}{suffix}"));
+    }
+    let decimals = frac_pat.len();
+    let mandatory = frac_pat.chars().filter(|&c| c == '0').count();
+    let mut v = x.abs() * 100f64.powi(percent);
+    let body = if let Some(exp_digits) = exponent {
+        let sci = format!("{v:.decimals$e}");
+        let (mantissa, exp) = sci.split_once('e')?;
+        let exp: i32 = exp.parse().ok()?;
+        format!("{mantissa}E{}{:0width$}", if exp < 0 { '-' } else { '+' }, exp.abs(), width = exp_digits.max(2))
+    } else {
+        // round half away from zero as Excel does (Rust's formatting rounds ties to even)
+        let scale = 10f64.powi(decimals as i32);
+        v = (v * scale).round() / scale;
+        let mut s = format!("{v:.decimals$}");
+        if decimals > mandatory {
+            // optional decimals (#) drop their trailing zeros
+            let keep = s.find('.').map_or(s.len(), |d| d + 1 + mandatory);
+            while s.len() > keep && s.ends_with('0') {
+                s.pop();
+            }
+            if s.ends_with('.') {
+                s.pop();
+            }
+        }
+        let (int_s, frac_s) = s.split_once('.').map_or((s.as_str(), ""), |p| p);
+        let min_int = int_pat.chars().filter(|&c| c == '0').count();
+        let mut int_digits = if int_s == "0" && min_int == 0 && !frac_s.is_empty() { String::new() } else { int_s.to_string() };
+        while int_digits.len() < min_int {
+            int_digits.insert(0, '0');
+        }
+        if int_pat.contains(',') {
+            let mut grouped = String::new();
+            for (n, c) in int_digits.chars().enumerate() {
+                if n > 0 && (int_digits.len() - n) % 3 == 0 {
+                    grouped.push(',');
+                }
+                grouped.push(c);
+            }
+            int_digits = grouped;
+        }
+        if frac_s.is_empty() { int_digits } else { format!("{int_digits}.{frac_s}") }
+    };
+    let sign = if x < 0.0 && !own_sign { "-" } else { "" };
+    Some(format!("{sign}{prefix}{body}{suffix}"))
+}
+
+/// The cell styles of `xl/styles.xml`: the dates and times, and the number formats.
+fn cell_styles(xml: &str) -> CellStyles {
     let mut formats: HashMap<u32, String> = HashMap::new();
-    let mut styles = HashSet::new();
+    let mut styles = CellStyles::default();
     let (mut in_xfs, mut index) = (false, 0usize);
     for tag in xml.split('<') {
         if tag.starts_with("numFmt ") {
@@ -505,7 +712,9 @@ fn date_styles(xml: &str) -> HashSet<usize> {
         } else if in_xfs && (tag.starts_with("xf ") || tag.starts_with("xf/") || tag.starts_with("xf>")) {
             let id: u32 = attr(tag, "numFmtId").and_then(|v| v.parse().ok()).unwrap_or(0);
             if is_date_format(id, formats.get(&id).map(String::as_str)) {
-                styles.insert(index);
+                styles.dates.insert(index);
+            } else if let Some(code) = formats.get(&id).map(String::as_str).or_else(|| builtin_format(id)) {
+                styles.numbers.insert(index, code.to_string());
             }
             index += 1;
         }
@@ -1111,6 +1320,9 @@ mod tests {
         assert_eq!(tidy("  \n\n"), "");
         // ligatures and words cut by a hyphen at the end of a line; a hyphen before a capital, a digit or a blank line stays
         assert_eq!(tidy("the o\u{fb03}ce of neu-\nral networks and \u{fb01}ne state-\nOf the art\n\nend-\n\nnew 5-\n6"), "the office of neural networks and fine state-\nOf the art\n\nend-\n\nnew 5-\n6");
+        // a web address or an e-mail address cut at a hyphen keeps the hyphen
+        assert_eq!(tidy("see https://www.ibm.com/solutions/hybrid-\ncloud for more and neu-\nral"), "see https://www.ibm.com/solutions/hybrid-\ncloud for more and neu-\nral".replace("neu-\nral", "neural").as_str());
+        assert_eq!(tidy("write to first.last-\nname@example.org"), "write to first.last-\nname@example.org");
     }
 
     #[test]
@@ -1311,7 +1523,7 @@ mod tests {
         let rels = r#"<Relationships><Relationship Id="rId1" Type="x" Target="worksheets/sheet1.xml"/><Relationship Id="rId2" Type="x" Target="worksheets/sheet2.xml"/><Relationship Id="rId3" Type="x" Target="/xl/worksheets/sheet3.xml"/></Relationships>"#;
         // item 1 has a phonetic guide that must not show, item 2 is empty
         let strings = r#"<sst><si><t>Item</t></si><si><r><t>Ap</t></r><r><t xml:space="preserve">ples</t></r><rPh sb="0" eb="1"><t>XX</t></rPh></si><si/><si><t>Total &amp; tax</t></si></sst>"#;
-        // style 1 is a built-in date, 2 a custom one, 3 a number with a word in quotes (not a date); the cellStyleXfs entry must not count
+        // style 1 is a built-in date, 2 a custom one, 3 a number with a word in quotes (not a date: shown as Excel shows it, "5.00 days"); the cellStyleXfs entry must not count
         let styles = r#"<styleSheet><numFmts count="2"><numFmt numFmtId="164" formatCode="yyyy\-mm\-dd"/><numFmt numFmtId="165" formatCode="0.00&quot; days&quot;"/></numFmts><cellStyleXfs count="1"><xf numFmtId="14"/></cellStyleXfs><cellXfs count="4"><xf numFmtId="0"/><xf numFmtId="14"/><xf numFmtId="164"/><xf numFmtId="165"/></cellXfs></styleSheet>"#;
         let sheet1 = r#"<worksheet><sheetData>
 <row r="1"><c r="A1" t="s"><v>0</v></c><c r="B1" t="inlineStr"><is><t>Qty</t></is></c><c r="D1" t="s"><v>3</v></c></row>
@@ -1323,7 +1535,7 @@ mod tests {
         write_zip(&f, &[("xl/workbook.xml", workbook), ("xl/_rels/workbook.xml.rels", rels), ("xl/sharedStrings.xml", strings), ("xl/styles.xml", styles), ("xl/worksheets/sheet1.xml", sheet1), ("xl/worksheets/sheet2.xml", "<worksheet><sheetData/></worksheet>"), ("xl/worksheets/sheet3.xml", sheet3)]);
         assert!(is_office(&f));
         let t = read_document(&f, 1 << 20).unwrap();
-        assert_eq!(t, "Sheet: Sales & Costs\nItem\tQty\t\tTotal & tax\nApples\t3\t2023-03-15\t2023-03-15 12:00\t5\n\tTRUE\t0.3\tx < y\t\t#DIV/0!\n\nSheet: Notes\n\tApples\nmultipart", "{t:?}");
+        assert_eq!(t, "Sheet: Sales & Costs\nItem\tQty\t\tTotal & tax\nApples\t3\t2023-03-15\t2023-03-15 12:00\t5.00 days\n\tTRUE\t0.3\tx < y\t\t#DIV/0!\n\nSheet: Notes\n\tApples\nmultipart", "{t:?}");
         // without the relationships file the sheets are the parts sheet1.xml, sheet2.xml ... in the order of the workbook
         let g = dir.join("plain.xlsx");
         write_zip(&g, &[("xl/workbook.xml", r#"<workbook><sheets><sheet name="Only"/></sheets></workbook>"#), ("xl/worksheets/sheet1.xml", r#"<worksheet><sheetData><row><c t="inlineStr"><is><t>a</t></is></c><c><v>2</v></c></row></sheetData></worksheet>"#)]);
@@ -1354,11 +1566,63 @@ mod tests {
         for not in ["General", "0.00\" days\"", "#,##0.00_);[Red](#,##0.00)", "0.0%", "@", "0.00E+00"] {
             assert!(!is_date_format(170, Some(not)), "{not}");
         }
-        assert_eq!((number_text("0.30000000000000004", false), number_text("2.9999999999999996", false), number_text("-0.30000000000000004", false)), ("0.3".to_string(), "3".to_string(), "-0.3".to_string()));
-        assert_eq!((number_text("12.5", false), number_text("1E-3", false), number_text("100", false), number_text("abc", true)), ("12.5".to_string(), "1E-3".to_string(), "100".to_string(), "abc".to_string()));
-        assert_eq!(number_text("45000", true), "2023-03-15");
-        assert_eq!(number_text("-5", true), "-5");
+        assert_eq!((raw_number_text("0.30000000000000004", false), raw_number_text("2.9999999999999996", false), raw_number_text("-0.30000000000000004", false)), ("0.3".to_string(), "3".to_string(), "-0.3".to_string()));
+        assert_eq!((raw_number_text("12.5", false), raw_number_text("1E-3", false), raw_number_text("100", false), raw_number_text("abc", true)), ("12.5".to_string(), "1E-3".to_string(), "100".to_string(), "abc".to_string()));
+        assert_eq!(raw_number_text("45000", true), "2023-03-15");
+        assert_eq!(raw_number_text("-5", true), "-5");
         assert_eq!((column_of("A1"), column_of("B7"), column_of("AA3"), column_of("XFD9"), column_of("XFE1"), column_of("12"), column_of("ABCD1")), (Some(0), Some(1), Some(26), Some(16383), None, None, None));
+    }
+
+    /// What Excel itself shows (its CSV export of a workbook with these formats) for each value and format code.
+    #[test]
+    fn numbers_are_shown_as_excel_shows_them() {
+        let cases: [(f64, &str, Option<&str>); 31] = [
+            (1234.5678, "General", None),
+            (1234.5678, "0", Some("1235")),
+            (1234.5678, "0.00", Some("1234.57")),
+            (1234.5678, "#,##0", Some("1,235")),
+            (1234.5678, "#,##0.00", Some("1,234.57")),
+            (0.256, "0%", Some("26%")),
+            (0.256, "0.00%", Some("25.60%")),
+            (1234.5, "$#,##0.00", Some("$1,234.50")),
+            (1234.5, "\"$\"#,##0", Some("$1,235")),
+            (-1234.5, "#,##0.00", Some("-1,234.50")),
+            (-1234.5, "$#,##0.00;($#,##0.00)", Some("($1,234.50)")),
+            (0.5, "0.0%", Some("50.0%")),
+            (1234567.0, "#,##0", Some("1,234,567")),
+            (5.0, "00000", Some("00005")),
+            (3.14159, "0.000", Some("3.142")),
+            (1234.5, "[$\u{20ac}-407] #,##0.00", Some("\u{20ac} 1,234.50")),
+            (1234.5, "#,##0.00 \"USD\"", Some("1,234.50 USD")),
+            (12.0, "0 \"items\"", Some("12 items")),
+            (0.0, "0.00;-0.00;\"zero\"", Some("zero")),
+            (1234.5, "@", None),
+            (0.000123, "0.00E+00", Some("1.23E-04")),
+            (1234.5, "#,##0.00_);(#,##0.00)", Some("1,234.50 ")),
+            (2.5, "0.0", Some("2.5")),
+            // not in the workbook above: optional decimals, a number without its leading zero, the built-in accounting-like code, a fraction (not understood), a scaling comma
+            (2.25, "0.0#", Some("2.25")),
+            (3.0, "0.0#", Some("3.0")),
+            (0.5, "#.##", Some(".5")),
+            (-5.0, "#,##0 ;(#,##0)", Some("(5)")),
+            (0.5, "# ?/?", None),
+            (1234567.0, "#,##0,", None),
+            (-0.5, "0%", Some("-50%")),
+            (1e21, "0", Some("1000000000000000000000")),
+        ];
+        for (x, code, want) in cases {
+            assert_eq!(format_number(x, code).as_deref(), want, "{x} in {code:?}");
+        }
+        // a cell uses the code of its style; a date style wins; unknown styles show the number as stored
+        let mut styles = CellStyles::default();
+        styles.numbers.insert(1, "0.0%".to_string());
+        styles.numbers.insert(2, "# ?/?".to_string());
+        styles.dates.insert(3);
+        assert_eq!((number_text("0.256", 1, &styles), number_text("0.5", 2, &styles), number_text("45000", 3, &styles), number_text("0.30000000000000004", 9, &styles)), ("25.6%".to_string(), "0.5".to_string(), "2023-03-15".to_string(), "0.3".to_string()));
+        // the built-in codes and a custom one through a workbook's styles
+        let xml = r##"<styleSheet><numFmts count="1"><numFmt numFmtId="170" formatCode="&quot;$&quot;#,##0.00"/></numFmts><cellXfs count="4"><xf numFmtId="0"/><xf numFmtId="9"/><xf numFmtId="4"/><xf numFmtId="170"/></cellXfs></styleSheet>"##;
+        let s = cell_styles(xml);
+        assert_eq!((s.numbers.get(&0), s.numbers.get(&1).map(String::as_str), s.numbers.get(&2).map(String::as_str), s.numbers.get(&3).map(String::as_str)), (None, Some("0%"), Some("#,##0.00"), Some("\"$\"#,##0.00")));
     }
 
     #[test]
@@ -1466,9 +1730,9 @@ Second\tab line\line broken \{braces\} \\ end.\par
                 let _ = odf_text(&s, kind);
             }
             let _ = rtf_text(s.as_bytes());
-            let _ = sheet_rows(&s, &["a".to_string()], &HashSet::from([3usize]));
+            let _ = sheet_rows(&s, &["a".to_string()], &CellStyles { dates: HashSet::from([3usize]), numbers: HashMap::from([(2usize, "0.00%".to_string())]) });
             let _ = shared_strings(&s);
-            let _ = date_styles(&s);
+            let _ = cell_styles(&s);
             let _ = html_text(&s);
             let _ = xml_text(&s, "w:t", "w:p");
         }
