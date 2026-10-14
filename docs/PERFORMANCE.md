@@ -173,6 +173,19 @@ How it stays safe:
 
 A smaller finding from the same session: the fused dequantizing prefill GEMM used the `m16n8k8` tensor-core instruction on every GPU; on sm_80 and newer it now uses `m16n8k16`, which is worth about 2 % of prefill on the RTX 4060. The kernel was already at roughly 85 % of the card's fp16 tensor-core peak (24 to 27 TFLOPs on the Q4_K shapes), so the remaining prefill gap to llama.cpp is the int8 path described in the [roadmap](ROADMAP.md).
 
+## Speculation at a long context
+
+A verification sweep of a chain of drafts (Qwen3.5's prediction head, depth 3: four rows) reads the keys and values of the whole context once per row, because the attention kernel gives every row of a step its own block (the rows of a sweep differ in their queries and in their last few keys, not in the thousands of positions before). A plain step reads them once. The rest of a cycle (the weights, the head's own steps, the recurrent layers) costs about the same at any context, so the speculation that wins at a short context loses at a long one. Qwen3.5-4B Q4_K_M on the RTX 2060 SUPER (`tools/spec_depth_bench.py`: a prompt of N tokens of filler, then a 256-token story, greedy, 8-bit keys and 4-bit values; tokens/s from the server's own timings):
+
+| context | plain decoding | chain, depth 1 | chain, depth 3 | with the governor (depth 3) |
+|---|---|---|---|---|
+| 4,096 | 98.4 | 113.9 (x1.16) | 124.9 (x1.27) | 124.6 (x1.26) |
+| 16,384 | 97.4 | 98.9 (x1.02) | 95.3 (x0.98) | 97.8 (x1.00) |
+| 32,768 | 82.1 | 78.8 (x0.96) | 68.8 (x0.84) | 78.8 (x0.96) |
+| 65,536 | 62.7 | 55.6 (x0.89) | 47.8 (x0.76) | 59.4 (x0.95) |
+
+The cycle at 65,536 positions: the verification sweep 44 ms against a plain step's 16 ms, 1.05 drafts accepted per cycle on a story (2.05 tokens per cycle). The governor (`crates/forge-engine/src/govern.rs`) times every iteration of the decoding loop from 6,000 positions on and keeps the tokens per millisecond of each way of taking the next tokens (a plain step, a cycle of the chain, a cycle of drafts looked up in the text); it takes the best, tries the others now and then (every 24 iterations for an arm within 10 percent of the best, every 192 for one far behind), and gives the chain up for the rest of the request when it stays below 78 percent of the plain rate after six measurements. A plain step keeps the head's cache in step with one KV-only head step (about 0.5 ms) so that drafting can start again. What is left of the loss at 65,536 positions is the measurement itself (six chain cycles and the lookups' three, about 0.2 s per request) and, while the chain is not given up, the upkeep step. The way to make drafting pay at a long context is a kernel that reads the keys and values once for all rows of a sweep (the dense models' multi-row kernel does it for four rows; the hybrid models' head width of 256 needs 16 query vectors per block and more shared memory than Turing has), not yet written. A repetitive answer keeps its drafts: the governor measures, it does not assume. `FORGE_GOVERN=0` turns it off, `FORGE_GOVERN_FROM=N` sets the position from which it decides (default 6,000), `FORGE_SPEC_STATS=1` prints the iterations of every way.
+
 ## Long contexts
 
 Qwen3.5 is a hybrid: only one layer in four attends over the whole context, the others keep a fixed-size recurrent state, so a long prompt costs little. Qwen3.5-4B Q4_K_M on the RTX 4060 (`forge prefill-bench MODEL --native --tokens N`, prompt of N tokens, then 128 tokens of greedy decoding at that depth; before the prompt work of 2026-10-13 the three prefill rates were 2,598, 2,329 and 1,969). Prefill rates of the table are with the changes below (the pass before them was 31 percent attention at 16,000 tokens and read 3,015, 2,667 and 2,193 tokens/s at these contexts; decode rates move by 5 to 10 percent with the state of the card from one hour to the next, the same binary gave 71.7 and 75.9 at 4,096):
@@ -199,7 +212,7 @@ With a compressed cache the decode attention reads the compressed store directly
 | 32,768 | 79.9 to 90.1 (+13 %) | 63.7 to 81.9 (+29 %) | 62.9 to 81.4 (+29 %) |
 | 65,536 | 60.4 to 72.5 (+20 %) | 44.0 to 62.5 (+42 %) | 43.3 to 62.2 (+44 %) |
 
-The compressed cache now decodes as fast as the fp16 cache did before (int8 at 32,768 positions: 81.9 against 79.9), and the fp16 cache gains 13 to 20 percent from 32,768 positions on.
+The compressed cache now decodes as fast as the fp16 cache did before (int8 at 32,768 positions: 81.9 against 79.9), and the fp16 cache gains 13 to 20 percent from 32,768 positions on. At the depth where the card runs out (190,000 positions, `--kv int4`, the 4B on the 2060 SUPER) the one-head kernels decode 20.0 tokens/s and the shared-head kernels 33.7 (+68 percent), and the first four greedy tokens are the same.
 
 The dense Qwen3-4B Q6_K has 8 key-value heads and 36 attention layers, so its attention is heavier and the gain larger (the fp16 cache of this model fits up to about 23,000 positions on the card, hence no fp16 figure at 32,768):
 

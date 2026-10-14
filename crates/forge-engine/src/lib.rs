@@ -5,6 +5,7 @@
 //! for long prompts), then tokens are sampled one by one; the text goes through a UTF-8 safe detokenizer, a stop-string matcher and the reasoning / tool-call parser, and comes out as `Event`s.
 
 pub mod constrain;
+pub mod govern;
 mod pcache;
 pub mod pld;
 pub mod text;
@@ -1305,7 +1306,7 @@ fn run_job(
     let reason = generate(sess, slot, &mut sampler, &mut out, speculate, lookup, &mut constraint, &mut spec)?;
     if std::env::var("FORGE_SPEC_STATS").is_ok() && spec.cycles > 0 {
         eprintln!(
-            "[spec] {} cycles ({} by lookup, {} of their drafts right), {} drafts accepted ({:.2} per cycle), by position in the chain {:?}; ms per cycle: draft {:.1}, verify sweep {:.1}, sampling {:.1}, cache update {:.1}",
+            "[spec] {} cycles ({} by lookup, {} of their drafts right), {} drafts accepted ({:.2} per cycle), by position in the chain {:?}; ms per cycle: draft {:.1}, verify sweep {:.1}, sampling {:.1}, cache update {:.1}; governor iterations (plain, head, lookup) {:?}",
             spec.cycles,
             spec.pld_cycles,
             spec.pld_accepted,
@@ -1315,7 +1316,8 @@ fn run_job(
             spec.t_phase[0] / spec.cycles as f64 * 1e3,
             spec.t_phase[1] / spec.cycles as f64 * 1e3,
             spec.t_phase[2] / spec.cycles as f64 * 1e3,
-            spec.t_phase[3] / spec.cycles as f64 * 1e3
+            spec.t_phase[3] / spec.cycles as f64 * 1e3,
+            spec.gov_used
         );
         if let Some(r) = forge_gpu::kernel_profile_report() {
             eprintln!("[kprof]
@@ -1376,6 +1378,8 @@ struct SpecStats {
     /// cycles whose drafts came from the text itself (prompt lookup), and the drafts of them that were right
     pld_cycles: usize,
     pld_accepted: usize,
+    /// iterations of the decoding loop by way of taking the next tokens (plain step, the head's chain, lookup): see `govern`
+    gov_used: [u64; 3],
 }
 
 /// What happens to every token the generation loop accepts: the stop checks, the repetition-penalty history, detokenization, stop strings, the reasoning / tool-call parser and the events.
@@ -1606,7 +1610,9 @@ fn generate_deep(
         // (after the first token: the free memory is what is left of the request's own buffers)
         reserve_lookup_rows(sess, &mut pld, if speculate { depth + 1 } else { 0 });
     }
+    let mut gov = govern::Governor::from_env();
     loop {
+        let it_start = std::time::Instant::now();
         if job.cancel.load(Ordering::SeqCst) {
             return Ok(FinishReason::Cancelled);
         }
@@ -1633,11 +1639,26 @@ fn generate_deep(
             }
             slot.pop();
         }
-        let from_lookup = !drafts.is_empty();
-        if !from_lookup && !(head_ok && room >= 1) {
+        let mut from_lookup = !drafts.is_empty();
+        let head_usable = head_ok && room >= 1;
+        // the governor (from a long context on): the way of taking the next tokens that has been the fastest, see `govern`
+        let arm = gov.pick(sess.pos, [true, head_usable, from_lookup]);
+        if arm != govern::Arm::Lookup {
+            drafts.clear();
+            from_lookup = false;
+        }
+        if arm == govern::Arm::Plain || (!from_lookup && !head_usable) {
+            if head_usable && !gov.head_dropped() {
+                // (the head's cache stays in step, so that drafting can start again)
+                let hidden = sess.hidden();
+                let p = sess.pos;
+                sess.mtp_step(token, hidden, p - 1, false)?;
+            }
             sess.advance(token)?;
             slot.push(token);
             token = next_token(sess, LogitsSrc::Main, sampler, &out.history, &mut delta, out.tok, constraint.as_mut())?;
+            gov.record(govern::Arm::Plain, 1, it_start.elapsed());
+            spec.gov_used = gov.used;
             continue;
         }
         let pos = sess.pos;
@@ -1704,6 +1725,8 @@ fn generate_deep(
         spec.t_phase[1] += (t_c - t_b).as_secs_f64();
         spec.t_phase[2] += (t_d - t_c).as_secs_f64();
         spec.t_phase[3] += (t_e - t_d).as_secs_f64();
+        gov.record(arm, keep, it_start.elapsed());
+        spec.gov_used = gov.used;
         if let Some(r) = fin {
             return Ok(r);
         }
