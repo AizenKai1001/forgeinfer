@@ -5417,7 +5417,9 @@ impl<'m> GpuSession<'m> {
     /// `export_kv` into a buffer of an earlier blob (`KvBlob::into_buffer`) when it is big enough: page-locking 1 GB of host memory takes 0.3 s and unlocking it as long, which the swap of two
     /// conversations of the prompt cache does not need to pay every time.
     pub fn export_kv_with(&self, n: usize, reuse: Option<PinnedBuffer>) -> Result<KvBlob> {
-        assert!(n <= self.pos, "export of positions the session does not hold");
+        if n > self.pos {
+            return Err(Error::msg("export of positions the session does not hold"));
+        }
         let regions = self.kv_regions();
         let total: usize = regions.iter().map(|(_, row)| row * n).sum();
         let buf = match reuse {
@@ -5437,11 +5439,14 @@ impl<'m> GpuSession<'m> {
 
     /// Write the first `m` positions of a blob into the cache (m at most the blob's); the position of the session does not change (see `adopt`).
     pub fn import_kv(&mut self, blob: &KvBlob, m: usize) -> Result<()> {
-        assert!(m <= blob.n && m <= self.max_ctx, "import beyond the blob or the context");
+        if m > blob.n || m > self.max_ctx {
+            return Err(Error::msg("import beyond the blob or the context"));
+        }
         let regions = self.kv_regions();
-        assert_eq!(regions.len(), blob.layout.len(), "the blob is of another model or cache format");
-        for ((addr, row), (off, brow)) in regions.iter().zip(&blob.layout) {
-            assert_eq!(row, brow, "the blob is of another model or cache format");
+        if regions.len() != blob.layout.len() || regions.iter().zip(&blob.layout).any(|((_, row), (_, brow))| row != brow) {
+            return Err(Error::msg("the blob is of another model or cache format"));
+        }
+        for ((addr, row), (off, _)) in regions.iter().zip(&blob.layout) {
             self.stream.upload_from_async(*addr, &blob.buf, *off, row * m)?;
         }
         self.stream.synchronize()
@@ -5455,11 +5460,15 @@ impl<'m> GpuSession<'m> {
         self.state.upload(&[0u8; 16])?;
         match state {
             Some(s) => {
-                assert_eq!(s.pos, n, "the snapshot is of another position");
+                if s.pos != n {
+                    return Err(Error::msg("the snapshot is of another position"));
+                }
                 self.restore_state(s)
             }
             None => {
-                assert!(self.can_truncate(), "a hybrid model's recurrent state must come back with the cache");
+                if !self.can_truncate() {
+                    return Err(Error::msg("a hybrid model's recurrent state must come back with the cache"));
+                }
                 self.pos = n;
                 self.mtp_filled = 0;
                 self.generated = 0;

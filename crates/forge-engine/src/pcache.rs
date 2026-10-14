@@ -214,7 +214,8 @@ fn keep(sess: &mut GpuSession, slot: &[u32], snaps: &mut Vec<Snap>, cache: &mut 
         }
         let sn = snaps.pop().unwrap();
         (sn.tokens, Some(sn.state))
-    } else if have == slot.len() {
+    } else if have == slot.len() && sess.position() == have {
+        // (a snapshot of the state as it is: its position must be the length of the tokens it is stored with)
         (slot.to_vec(), Some(sess.snapshot_state()?))
     } else {
         return Ok(());

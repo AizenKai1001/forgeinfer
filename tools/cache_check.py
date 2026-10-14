@@ -1,11 +1,15 @@
-"""End-to-end check of the prompt cache of `forge serve`: two long documents are discussed in two conversations that take turns (A, B, A, B, A, B), once with the cache off (FORGE_PROMPT_CACHE_MB=0) and once with it on.
-Without the cache every return to a conversation reads its whole document again; with it the conversation comes back from host memory. The answers must be the same in both runs (greedy), the cached run must report most of
-the prompt as cached on the returns, and it should be faster. Works for dense and hybrid models.
+"""End-to-end check of the prompt cache of `forge serve`: two long documents are discussed in two conversations that take turns (A, B, A, B, A, B). Three runs of the engine:
+  cold    the cache off, the chats take turns: every return to a chat reads its whole document again (what the engine did before the cache),
+  in place the cache off, the chats one after the other (A, A, A, B, B, B): every turn continues the conversation that is on the GPU (the engine's ordinary reuse of the previous turn),
+  cached  the cache on, the chats take turns: a return brings the conversation back from host memory.
+The answers of `cached` must be exactly those of `in place` (greedy): a conversation that comes back from the cache is what the GPU held. The returns must report most of their prompt as cached, and should be
+faster than `cold`. The answers of `cold` are printed too; they may differ by a word at a near tie, because a read from scratch writes the entries of the previous answer with the prompt kernels where the
+decode kernels wrote them. Works for dense and hybrid models.
 
     python tools/cache_check.py MODEL.gguf [paragraphs] [port]
 
-paragraphs: about 64 tokens each (100 -> 6,500 tokens per document). Environment: FORGE_BIN (the engine program, default target/release/forge), FORGE_ARGS (extra arguments for `forge serve`), CACHE_CHECK_SPECULATE=1 (leave speculative decoding on), CACHE_CHECK_BOTH_OFF=1 (run twice with the cache off: shows how much two runs of the same engine differ by themselves). Exit code 1 when the answers
-differ or a return was not served from the cache."""
+paragraphs: about 64 tokens each (100 -> 6,500 tokens per document). Environment: FORGE_BIN (the engine program, default target/release/forge), FORGE_ARGS (extra arguments for `forge serve`),
+FORGE_CHECK_LOG (a file for the engine's messages), CACHE_CHECK_SPECULATE=1 (leave speculative decoding on). Exit code 1 when the answers differ from `in place` or a return was not served from the cache."""
 import json
 import os
 import subprocess
@@ -40,7 +44,7 @@ QUESTIONS = {
 }
 
 
-def run(cache_mb):
+def run(cache_mb, order="ABABAB"):
     env = dict(os.environ)
     env["FORGE_PROMPT_CACHE_MB"] = str(cache_mb)
     # (speculation is off unless CACHE_CHECK_SPECULATE is set: with a model's prediction head the cache holds the head's own KV entries too)
@@ -57,7 +61,7 @@ def run(cache_mb):
                 time.sleep(0.5)
         history = {"A": [], "B": []}
         asked = {"A": 0, "B": 0}
-        for who in "ABABAB":
+        for who in order:
             q = QUESTIONS[who][asked[who]]
             text = (DOCS[who] + "\n\nQuestion: " + q) if asked[who] == 0 else q
             history[who].append({"role": "user", "content": text})
@@ -83,23 +87,25 @@ def run(cache_mb):
     return out
 
 
-off = run(0)
-# (CACHE_CHECK_BOTH_OFF=1 runs the cache off twice: what differs between two runs of the same engine, with speculative decoding and its timing-based guards, is not the cache's doing)
-on = run(0 if os.environ.get("CACHE_CHECK_BOTH_OFF") else 2048)
-print("turn      prompt tokens | cache off: cached, seconds | cache on: cached, seconds | answers equal")
+cold = {(r[0], r[1]): r for r in run(0, "ABABAB")}
+inplace = {(r[0], r[1]): r for r in run(0, "AAABBB")}
+cached = [r for r in run(2048, "ABABAB")]
+print("turn      prompt tokens | cold: cached, seconds | cache on: cached, seconds | answers equal to in place / to cold")
 ok = True
-for a, b in zip(off, on):
-    same = a[5] == b[5]
-    ok &= same
-    print(f"{a[0]} turn {a[1]}   {a[2]:6d}          | {a[3]:6d} {a[4]:6.2f} s            | {b[3]:6d} {b[4]:6.2f} s           | {'yes' if same else 'NO: ' + repr(a[5]) + ' / ' + repr(b[5])}")
-    print(f"           (prompt {a[6][0]:.2f} s + generation {a[6][1]:.2f} s + other {a[4] - a[6][0] - a[6][1]:.2f} s)   |   (prompt {b[6][0]:.2f} s + generation {b[6][1]:.2f} s + other {b[4] - b[6][0] - b[6][1]:.2f} s)")
-# the returns (turn 2 and 3 of a conversation) must come back from the cache
-for a, b in zip(off, on):
-    if a[1] >= 2 and b[3] < 0.8 * b[2]:
+for r in cached:
+    key = (r[0], r[1])
+    c, ip = cold[key], inplace[key]
+    same_ip = r[5] == ip[5]
+    same_cold = r[5] == c[5]
+    ok &= same_ip
+    print(f"{r[0]} turn {r[1]}   {r[2]:6d}          | {c[3]:6d} {c[4]:6.2f} s       | {r[3]:6d} {r[4]:6.2f} s       | {'yes' if same_ip else 'NO: ' + repr(ip[5]) + ' / ' + repr(r[5])} / {'yes' if same_cold else 'no'}")
+    print(f"           (prompt {r[6][0]:.2f} s + generation {r[6][1]:.2f} s + other {r[4] - r[6][0] - r[6][1]:.2f} s)")
+    # the returns (turn 2 and 3 of a chat) must come back from the cache
+    if r[1] >= 2 and r[3] < 0.8 * r[2]:
         ok = False
-        print(f"{b[0]} turn {b[1]}: only {b[3]} of {b[2]} prompt tokens cached with the cache on")
-t_off = sum(x[4] for x in off[2:])
-t_on = sum(x[4] for x in on[2:])
-print(f"time of the four returns: {t_off:.1f} s without the cache, {t_on:.1f} s with it")
+        print(f"{r[0]} turn {r[1]}: only {r[3]} of {r[2]} prompt tokens cached with the cache on")
+t_cold = sum(c[4] for k, c in cold.items() if k[1] >= 2)
+t_on = sum(r[4] for r in cached if r[1] >= 2)
+print(f"time of the four returns: {t_cold:.1f} s read from scratch, {t_on:.1f} s from the cache")
 print("CACHE OK" if ok else "CACHE CHECK FAILED")
 sys.exit(0 if ok else 1)
