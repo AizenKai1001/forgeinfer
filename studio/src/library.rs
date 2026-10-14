@@ -78,6 +78,12 @@ impl ModelEntry {
     }
 }
 
+/// The embedding model LM Studio ships (nomic-embed-text-v1.5), used where it is when LM Studio is installed: `~/.lmstudio/.internal/bundled-models/nomic-ai/nomic-embed-text-v1.5-GGUF/*.gguf`.
+pub fn lmstudio_embedding_model() -> Option<PathBuf> {
+    let dir = home_dir().join(".lmstudio").join(".internal").join("bundled-models").join("nomic-ai").join("nomic-embed-text-v1.5-GGUF");
+    std::fs::read_dir(dir).ok()?.filter_map(|e| e.ok()).map(|e| e.path()).find(|p| crate::util::is_gguf_file(p))
+}
+
 fn ftype_name(n: u64) -> Option<&'static str> {
     Some(match n {
         0 => "F32",

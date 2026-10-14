@@ -169,6 +169,11 @@ pub fn serve(args: &[String]) -> i32 {
     if args.iter().any(|a| a == "--no-lookup") {
         std::env::set_var("FORGE_PLD", "0");
     }
+    // the GPU copy of an embedding model is loaded after the chat engine has taken what it plans for (an automatic context fills the card): leave room for it (275 MB of weights, about 120 MB of buffers)
+    if flag(args, "--embedding-model").is_some() && flag(args, "--embedding-device").unwrap_or("cpu") != "cpu" {
+        let have = std::env::var("FORGE_VRAM_RESERVE_MIB").ok().and_then(|v| v.parse::<usize>().ok()).unwrap_or(0);
+        std::env::set_var("FORGE_VRAM_RESERVE_MIB", (have + 450).to_string());
+    }
     if cfg.n_ctx == 0 && std::env::var_os("FORGE_CTX_HINT").is_none() {
         std::env::set_var("FORGE_CTX_HINT", "8192");
     }
@@ -192,10 +197,14 @@ pub fn serve(args: &[String]) -> i32 {
         if engine.info.speculative { ", speculative decoding with the MTP head" } else { "" }
     );
     let (embedder, embed_alias) = match flag(args, "--embedding-model").map(PathBuf::from) {
-        Some(p) => {
-            let Some(e) = load_embedder(&p, "cpu") else { return 1 };
-            (Some(e), flag(args, "--embedding-alias").map(|s| s.to_string()).unwrap_or_else(|| stem(&p)))
-        }
+        // an embedding model that cannot be loaded must not take the chat model down with it (Studio starts the engine with one whenever it finds one): say so and serve the chat model alone
+        Some(p) => match load_embedder(&p, "cpu") {
+            Some(e) => (Some(e), flag(args, "--embedding-alias").map(|s| s.to_string()).unwrap_or_else(|| stem(&p))),
+            None => {
+                eprintln!("[serve] continuing without /v1/embeddings: the chat model is served as usual");
+                (None, String::new())
+            }
+        },
         None => (None, String::new()),
     };
     let sc = ServerConfig { host, port, api_key, embedder, embed_alias };

@@ -624,8 +624,9 @@ fn open_session(gpu: &GpuModel, n_ctx: usize) -> std::result::Result<GpuSession<
     const FLOOR: usize = 2048;
     let cap = std::env::var("FORGE_CTX_MAX").ok().and_then(|v| v.parse::<usize>().ok()).unwrap_or(usize::MAX).min(gpu.max_positions()).max(FLOOR);
     let free = gpu.free_device_bytes().map_err(|e| format!("GPU: {e}"))?;
-    // what the card keeps free after the session: the driver's own needs and a little room for the host's other programs
-    let margin = 256usize << 20;
+    // what the card keeps free after the session: the driver's own needs and a little room for the host's other programs (`--vram-reserve` adds to it, as it does to the weight planner's)
+    let reserve = std::env::var("FORGE_VRAM_RESERVE_MIB").ok().and_then(|v| v.parse::<usize>().ok()).unwrap_or(0) << 20;
+    let margin = (256usize << 20) + reserve;
     let fits = |n: usize| gpu.session_bytes(n) + margin <= free;
     let mut n = if fits(cap) {
         cap

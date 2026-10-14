@@ -19,6 +19,7 @@ pub fn show(app: &mut StudioApp, ui: &mut Ui) {
                 .show(ui, |ui| {
                     engine(app, ui);
                     loading(app, ui);
+                    documents(app, ui);
                     files(app, ui);
                     interface(app, ui);
                     about(ui);
@@ -226,6 +227,44 @@ fn loading(app: &mut StudioApp, ui: &mut Ui) {
             }
             muted(ui, "idle: frees video memory for games and other programs; load again from the model bar");
         });
+    });
+}
+
+fn documents(app: &mut StudioApp, ui: &mut Ui) {
+    section(ui, "Documents");
+    card(ui, |ui| {
+        muted(
+            ui,
+            "Attach a text or code file to a message. When it is too long for the model's context, the chat searches it: the file is cut into passages, an embedding model turns them into vectors, and for each question the model is given only the passages that match it best (as in LM Studio's chat with documents). ForgeInfer engine only: the embedding model runs inside it, next to the chat model.",
+        );
+        ui.add_space(4.0);
+        ui.horizontal(|ui| {
+            ui.label("Embedding model");
+            ui.add(TextEdit::singleline(&mut app.settings.retrieval_model).desired_width(420.0).hint_text("automatic: an embedding model of My models, else LM Studio's own"));
+        });
+        match app.retrieval_model_path() {
+            Some(p) => {
+                ui.label(RichText::new(format!("In use: {}", p.display())).small().color(theme::GOOD));
+            }
+            None => {
+                ui.label(RichText::new("No embedding model found: long files can only be sent whole.").small().color(theme::WARN));
+                if primary_button(ui, "Get nomic-embed-text-v1.5 (84 MB)").on_hover_text("From huggingface.co/nomic-ai/nomic-embed-text-v1.5-GGUF into the download folder; load the chat model again afterwards").clicked() {
+                    app.actions.push(Action::Download {
+                        repo: "nomic-ai/nomic-embed-text-v1.5-GGUF".to_string(),
+                        file: crate::hf::RepoFile { path: "nomic-embed-text-v1.5.Q4_K_M.gguf".to_string(), size: 84_106_624 },
+                    });
+                }
+            }
+        }
+        muted(ui, "It loads together with the chat model (the next one you load): about 0.4 GB of video memory when there is room, else the computer's processor.");
+        ui.horizontal(|ui| {
+            ui.label("Passages per question");
+            ui.add(egui::DragValue::new(&mut app.settings.docs_limit).range(1..=10));
+            ui.add_space(12.0);
+            ui.label("Minimum score");
+            ui.add(egui::DragValue::new(&mut app.settings.docs_threshold).range(0.0..=1.0).speed(0.01).fixed_decimals(2));
+        });
+        muted(ui, "A passage counts when the cosine of its vector and the question's is above the minimum (LM Studio's defaults are 3 passages and 0.5, for texts embedded without the task prefixes that nomic-embed-text was trained with; with them related passages score 0.65 and up, unrelated ones stay below 0.56).");
     });
 }
 

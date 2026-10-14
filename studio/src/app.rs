@@ -1,5 +1,6 @@
 //! The application state and what happens to it: loading models, chatting, downloading, scanning. The screens in `ui` only draw this state and queue `Action`s.
 
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{channel, Receiver, Sender};
@@ -8,12 +9,13 @@ use std::time::{Duration, Instant};
 
 use eframe::egui;
 
-use crate::chats::{self, Chat, ChatMeta, Message, Role, Store};
+use crate::chats::{self, Chat, ChatMeta, Citation, Message, Role, Store};
 use crate::client::{self, ChatEvent, ChatParams, Endpoint, PromptProgress};
 use crate::engine::{EngineManager, EngineState, Launch};
 use crate::hardware::{self, HardwareInfo};
 use crate::hf::{self, Progress, Repo, RepoFile};
 use crate::library::{self, Inspect, ModelEntry};
+use crate::rag::{self, DocIndex, Strategy};
 use crate::settings::{self, data_dir, EngineKind, OverflowPolicy, Settings};
 use crate::util::{free_port, new_id};
 
@@ -123,6 +125,20 @@ pub enum Msg {
     Models(Result<Vec<String>, String>),
     Inspected(Result<Inspect, String>),
     Embedded(Result<EmbedOut, String>),
+    /// A search of the files of a chat is over: the index that now holds them and the passages found for the question.
+    Retrieved {
+        chat_id: String,
+        msg_id: String,
+        result: Result<(DocIndex, Vec<Citation>), String>,
+    },
+}
+
+/// The search of the attached files that is running (chat with documents).
+pub struct Retrieval {
+    pub chat_id: String,
+    pub msg_id: String,
+    pub started: Instant,
+    pub progress: rag::Progress,
 }
 
 /// What the embedding playground got back: the texts it sent, their vectors and what it cost.
@@ -180,7 +196,8 @@ pub struct StartupOpts {
     pub shot_delay: f32,
     pub demo: bool,
     pub load: Option<PathBuf>,
-    pub send: Option<String>,
+    /// Messages to send, one after the other as soon as a model is ready (each when the answer to the one before is complete).
+    pub send: Vec<String>,
     /// Take the screenshot (and close) once the reply to `send` is complete.
     pub shot_after_reply: bool,
     pub size: Option<(f32, f32)>,
@@ -201,6 +218,8 @@ pub struct StartupOpts {
     pub show_params: bool,
     /// Embed the sample lines as soon as an embedding model is ready (tests and screenshots).
     pub embed: bool,
+    /// Show the passages the model read open, under the questions about searched files (screenshots).
+    pub open_passages: bool,
 }
 
 pub struct ShotState {
@@ -265,6 +284,10 @@ pub struct StudioApp {
     pub embed_error: String,
     pending_embed: bool,
 
+    /// Chat with documents: the passages of the files of each chat with their vectors, and the search that is running.
+    pub doc_index: HashMap<String, DocIndex>,
+    pub retrieval: Option<Retrieval>,
+
     pub hf_query: String,
     pub hf_results: Vec<Repo>,
     pub hf_busy: bool,
@@ -278,7 +301,7 @@ pub struct StudioApp {
     pub toasts: Vec<Toast>,
     pub shot: Option<ShotState>,
     pub opts: StartupOpts,
-    pending_send: Option<String>,
+    pending_send: std::collections::VecDeque<String>,
     pending_load: Option<PathBuf>,
     no_head: std::collections::HashSet<PathBuf>,
     live_at: Instant,
@@ -347,6 +370,8 @@ impl StudioApp {
             embed_out: None,
             embed_error: String::new(),
             pending_embed: opts.embed,
+            doc_index: HashMap::new(),
+            retrieval: None,
             hf_query: opts.hf_query.clone().unwrap_or_default(),
             hf_results: Vec::new(),
             hf_busy: false,
@@ -363,7 +388,7 @@ impl StudioApp {
                 requested: false,
                 wait_reply: opts.shot_after_reply,
             }),
-            pending_send: opts.send.clone(),
+            pending_send: opts.send.iter().cloned().collect(),
             pending_load: opts.load.clone(),
             no_head: Default::default(),
             live_at: Instant::now(),
@@ -667,6 +692,8 @@ impl StudioApp {
             mtp,
             lookup: self.settings.lookup,
             prompt_cache_mb: self.settings.prompt_cache_mb,
+            // chats search long attached files with an embedding model that runs inside the chat engine (an embedding model itself is served alone)
+            embedding: if self.settings.engine == EngineKind::Forge && !self.library.iter().any(|e| e.path == path && e.is_embedding()) { self.retrieval_model_path() } else { None },
             api_key: self.settings.api_key.clone(),
             extra: self
                 .settings
@@ -761,6 +788,7 @@ impl StudioApp {
     }
 
     fn generation_cancel(&mut self) {
+        self.cancel_retrieval(false);
         if let Some(g) = self.generation.take() {
             g.cancel.store(true, Ordering::Relaxed);
             if let Some(m) = self.chat.messages.last_mut() {
@@ -788,13 +816,53 @@ impl StudioApp {
         }
     }
 
+    /// An answer is streaming, or the files are being searched for the question that comes before it.
     pub fn is_generating(&self) -> bool {
-        self.generation.is_some()
+        self.generation.is_some() || self.retrieval.is_some()
+    }
+
+    /// The embedding model chats search their files with: the one in Settings, else an embedding model of the library, else the one LM Studio ships.
+    pub fn retrieval_model_path(&self) -> Option<PathBuf> {
+        let given = self.settings.retrieval_model.trim();
+        if !given.is_empty() {
+            let p = PathBuf::from(given);
+            return p.is_file().then_some(p);
+        }
+        self.library.iter().find(|e| e.is_embedding()).map(|e| e.path.clone()).or_else(library::lmstudio_embedding_model)
+    }
+
+    /// Will a message with these files and this text have the files of the chat searched, instead of sent whole? Only where an embedding model is running; then LM Studio's rule: the files that do not fit
+    /// 70 percent of what is left of the context are searched, and a chat that searches its files searches for every question.
+    pub fn would_search(&self, attachments: &[crate::chats::Attachment], text: &str) -> bool {
+        if self.embedding_endpoint().is_none() {
+            return false;
+        }
+        if self.chat.messages.iter().any(|m| m.by_retrieval) {
+            return true;
+        }
+        if attachments.is_empty() {
+            return false;
+        }
+        let tokens = |chars: usize| crate::chats::estimate_tokens(chars);
+        let file_tokens: usize = attachments.iter().map(|a| tokens(a.text.chars().count())).sum();
+        let occupied = tokens(self.chat.api_messages(&self.settings.system_prompt).iter().map(|(_, t)| t.chars().count()).sum());
+        rag::choose(file_tokens, tokens(text.chars().count()), self.effective_ctx() as usize, occupied) == Strategy::Retrieve
+    }
+
+    /// Where a chat can have its files searched: the chat engine, when it was started with an embedding model (ForgeInfer only).
+    pub fn embedding_endpoint(&self) -> Option<(Endpoint, String)> {
+        if self.settings.engine != EngineKind::Forge {
+            return None;
+        }
+        match self.engine.state() {
+            EngineState::Ready { port, .. } if self.engine.current().is_some_and(|l| l.embedding.is_some()) => Some((Endpoint::local(port, &self.settings.api_key), "embedding".to_string())),
+            _ => None,
+        }
     }
 
     pub fn send(&mut self) {
         let text = self.input.trim().to_string();
-        if text.is_empty() || self.generation.is_some() {
+        if text.is_empty() || self.is_generating() {
             return;
         }
         let Some((ep, model)) = self.active_endpoint() else {
@@ -813,8 +881,22 @@ impl StudioApp {
             .sum();
         let tokens = crate::chats::estimate_tokens(chars);
         let ctx = self.effective_ctx() as usize;
+        // Chat with documents: files that do not fit the context are searched instead of sent whole, and once a chat searches its files every question does (as in LM Studio)
+        let embed = self.embedding_endpoint();
+        if self.would_search(&msg.attachments, &msg.content) {
+            msg.by_retrieval = true;
+            msg.retrieving = true;
+            let id = msg.id.clone();
+            self.attachments.clear();
+            self.chat.messages.push(msg);
+            self.input.clear();
+            self.chat.retitle();
+            self.begin_retrieval(id);
+            return;
+        }
         if !self.attachments.is_empty() && tokens + 300 > ctx {
-            self.toast(format!("The conversation with the attached files is about {tokens} tokens and the context is {ctx}: raise the context length in Settings (it applies when a model loads) or attach less."));
+            let hint = if self.settings.engine == EngineKind::Forge && embed.is_none() { ", or let the chat search the files: Settings > Documents (an embedding model such as nomic-embed-text)" } else { "" };
+            self.toast(format!("The conversation with the attached files is about {tokens} tokens and the context is {ctx}: raise the context length in Settings (it applies when a model loads) or attach less{hint}."));
             return;
         }
         self.attachments.clear();
@@ -822,6 +904,50 @@ impl StudioApp {
         self.input.clear();
         self.chat.retitle();
         self.begin_answer(ep, model);
+    }
+
+    /// Look for the passages of the files of this chat that answer the question of message `msg_id` (embedding the files first when the chat's index does not hold them), then answer.
+    fn begin_retrieval(&mut self, msg_id: String) {
+        let Some((ep, name)) = self.embedding_endpoint() else {
+            if let Some(m) = self.chat.messages.iter_mut().find(|m| m.id == msg_id) {
+                m.retrieving = false;
+                m.error = Some("No embedding model is loaded to search the files with.".to_string());
+            }
+            return;
+        };
+        let Some(question) = self.chat.messages.iter().find(|m| m.id == msg_id).map(|m| m.content.clone()) else {
+            return;
+        };
+        // every file of this chat that is searched: the index keeps what it already holds
+        let docs: Vec<(String, String)> = self.chat.messages.iter().filter(|m| m.by_retrieval).flat_map(|m| m.attachments.iter().map(|a| (a.name.clone(), a.text.clone()))).collect();
+        let chat_id = self.chat.id.clone();
+        let index = self.doc_index.remove(&chat_id).unwrap_or_default();
+        let (limit, threshold) = (self.settings.docs_limit.max(1) as usize, self.settings.docs_threshold);
+        let file = self.engine.current().and_then(|l| l.embedding.clone()).map(|p| p.file_name().map(|s| s.to_string_lossy().to_string()).unwrap_or_default()).unwrap_or_default();
+        let (doc_prefix, query_prefix) = rag::prefixes_for(&file);
+        let progress = rag::Progress::default();
+        self.retrieval = Some(Retrieval { chat_id: chat_id.clone(), msg_id: msg_id.clone(), started: Instant::now(), progress: progress.clone() });
+        self.spawn(move |tx, wake| {
+            let mut embed = |texts: &[String]| client::embed(&ep, &name, texts).map(|r| r.0);
+            let result = rag::search(index, &docs, &question, limit, threshold, (doc_prefix, query_prefix), &progress, &mut embed);
+            let _ = tx.send(Msg::Retrieved { chat_id, msg_id, result });
+            wake();
+        });
+    }
+
+    /// Stop looking for passages. The message that asked for the search is taken back out of the chat (its text and files return to the input box when `restore` is set).
+    fn cancel_retrieval(&mut self, restore: bool) {
+        let Some(r) = self.retrieval.take() else {
+            return;
+        };
+        r.progress.cancel.store(true, Ordering::Relaxed);
+        if let Some(i) = self.chat.messages.iter().position(|m| m.id == r.msg_id) {
+            let m = self.chat.messages.remove(i);
+            if restore {
+                self.input = m.content;
+                self.attachments = m.attachments;
+            }
+        }
     }
 
     pub fn regenerate(&mut self) {
@@ -888,6 +1014,8 @@ impl StudioApp {
     }
 
     pub fn stop_generation(&mut self) {
+        // Stop during the search of the files: the question goes back to the input box
+        self.cancel_retrieval(true);
         self.generation_cancel();
         self.save_chat();
     }
@@ -964,7 +1092,7 @@ impl StudioApp {
     }
 
     pub fn edit_and_resend(&mut self, i: usize, text: &str) {
-        if self.generation.is_some() {
+        if self.is_generating() {
             return;
         }
         let Some((ep, model)) = self.active_endpoint() else {
@@ -972,6 +1100,15 @@ impl StudioApp {
             return;
         };
         if self.chat.replace_from(i, text) {
+            // a question about searched files finds its passages again for the new wording
+            if self.chat.messages.last().is_some_and(|m| m.by_retrieval) && self.embedding_endpoint().is_some() {
+                if let Some(m) = self.chat.messages.last_mut() {
+                    m.retrieving = true;
+                    let id = m.id.clone();
+                    self.begin_retrieval(id);
+                    return;
+                }
+            }
             self.begin_answer(ep, model);
         }
     }
@@ -1064,6 +1201,39 @@ impl StudioApp {
                     self.external_models.clear();
                 }
             },
+            Msg::Retrieved { chat_id, msg_id, result } => {
+                // a search that was stopped or left behind (another chat, a reloaded model) finds its message gone: the index it built is still kept
+                let current = self.retrieval.as_ref().is_some_and(|r| r.msg_id == msg_id);
+                let waiting = self.chat.id == chat_id && current && self.chat.messages.iter().any(|m| m.id == msg_id && m.retrieving);
+                match result {
+                    Ok((index, citations)) => {
+                        self.doc_index.insert(chat_id, index);
+                        if !waiting {
+                            return;
+                        }
+                        self.retrieval = None;
+                        if let Some(m) = self.chat.messages.iter_mut().find(|m| m.id == msg_id) {
+                            m.citations = citations;
+                            m.retrieving = false;
+                        }
+                        match self.active_endpoint() {
+                            Some((ep, model)) => self.begin_answer(ep, model),
+                            None => self.toast("The model was ejected while the files were searched."),
+                        }
+                    }
+                    Err(e) => {
+                        if !waiting {
+                            return;
+                        }
+                        self.retrieval = None;
+                        if let Some(m) = self.chat.messages.iter_mut().find(|m| m.id == msg_id) {
+                            m.retrieving = false;
+                            m.error = Some(format!("Could not search the files: {e}"));
+                        }
+                        self.save_chat();
+                    }
+                }
+            }
             Msg::Embedded(r) => {
                 self.embed_busy = false;
                 match r {
@@ -1186,7 +1356,9 @@ impl StudioApp {
                     .and_then(|e| e.to_str())
                     .is_some_and(|e| e.eq_ignore_ascii_case("gguf"));
             if !is_model {
-                match crate::util::read_text_file(&p, 2 << 20) {
+                // a chat that can search its files takes much longer ones than one that has to send them whole
+                let limit = if self.embedding_endpoint().is_some() { 24 << 20 } else { 2 << 20 };
+                match crate::util::read_text_file(&p, limit) {
                     Ok(text) => {
                         let name = p
                             .file_name()
@@ -1283,11 +1455,8 @@ impl StudioApp {
             }
         }
         // test hooks: send a message once the model is ready
-        if self.pending_send.is_some()
-            && self.active_endpoint().is_some()
-            && self.generation.is_none()
-        {
-            self.input = self.pending_send.take().unwrap_or_default();
+        if !self.pending_send.is_empty() && self.active_endpoint().is_some() && !self.is_generating() {
+            self.input = self.pending_send.pop_front().unwrap_or_default();
             self.send();
         }
         // test hook: embed the sample lines once an embedding model is ready
@@ -1298,6 +1467,7 @@ impl StudioApp {
         if self.engine.state().is_busy()
             || self.generation.is_some()
             || self.embed_busy
+            || self.retrieval.is_some()
             || self.downloads.iter().any(|d| d.state == DlState::Running)
         {
             self.ctx.request_repaint_after(Duration::from_millis(250));
@@ -1367,12 +1537,10 @@ impl StudioApp {
             let waiting = self.shot.as_ref().is_some_and(|s| s.wait_reply);
             !waiting
                 || (self.opts.embed && !self.pending_embed && !self.embed_busy && (self.embed_out.is_some() || !self.embed_error.is_empty()))
-                || (self.opts.send.is_some()
-                    && self.pending_send.is_none()
-                    && self.generation.is_none()
-                    && self.chat.messages.iter().any(|m| {
-                        m.role == Role::Assistant && m.stats.is_some() || m.error.is_some()
-                    }))
+                || (!self.opts.send.is_empty()
+                    && self.pending_send.is_empty()
+                    && !self.is_generating()
+                    && self.chat.messages.last().is_some_and(|m| m.role == Role::Assistant && m.stats.is_some() || m.error.is_some()))
         };
         let Some(shot) = self.shot.as_mut() else {
             return;

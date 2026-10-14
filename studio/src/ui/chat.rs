@@ -319,7 +319,8 @@ fn model_picker(app: &mut StudioApp, ui: &mut Ui) {
         EngineState::Ready { .. } if narrow => {}
         EngineState::Ready { load_secs, .. } => {
             let spec = app.engine.current().is_some_and(|l| l.mtp.is_some());
-            ui.label(RichText::new(format!("ready \u{00B7} {load_secs:.1} s{}", if spec { " \u{00B7} speculative" } else { "" })).small().color(theme::GOOD)).on_hover_text("Time to load. Speculative: the model's prediction head drafts tokens ahead for faster answers.");
+            let docs = app.engine.current().is_some_and(|l| l.embedding.is_some());
+            ui.label(RichText::new(format!("ready \u{00B7} {load_secs:.1} s{}{}", if spec { " \u{00B7} speculative" } else { "" }, if docs { " \u{00B7} documents" } else { "" })).small().color(theme::GOOD)).on_hover_text("Time to load. Speculative: the model's prediction head drafts tokens ahead for faster answers. Documents: an embedding model runs next to this one, so a file that is too long for the context is searched instead of sent whole.");
             if ui.small_button("Eject").clicked() {
                 app.actions.push(Action::Eject);
             }
@@ -451,6 +452,48 @@ fn empty_state(app: &mut StudioApp, ui: &mut Ui) {
     });
 }
 
+/// Under a question about searched files: how the search is going, then the passages the model was given.
+fn passages(app: &StudioApp, ui: &mut Ui, m: &crate::chats::Message) {
+    if m.retrieving {
+        ui.horizontal(|ui| {
+            ui.spinner();
+            let text = match &app.retrieval {
+                Some(r) => {
+                    let total = r.progress.total.load(std::sync::atomic::Ordering::Relaxed);
+                    let done = r.progress.done.load(std::sync::atomic::Ordering::Relaxed);
+                    if total > done || (total > 0 && done == 0) {
+                        format!("reading your files: {} of {} passages ({} s)", human_count(done as u64), human_count(total as u64), r.started.elapsed().as_secs())
+                    } else {
+                        "looking for the passages that answer this ...".to_string()
+                    }
+                }
+                None => "searching your files ...".to_string(),
+            };
+            ui.label(RichText::new(text).small().color(theme::ACCENT));
+        });
+        return;
+    }
+    if !m.by_retrieval {
+        return;
+    }
+    let n = m.citations.len();
+    let weak = m.citations.first().is_some_and(|c| c.weak);
+    let title = if n == 0 {
+        format!("no passage of your files matched (minimum score {:.2})", app.settings.docs_threshold)
+    } else if weak {
+        format!("no close match: the model read the {n} nearest passage{} of your files", if n == 1 { "" } else { "s" })
+    } else {
+        format!("{n} passage{} of your files read by the model", if n == 1 { "" } else { "s" })
+    };
+    egui::CollapsingHeader::new(RichText::new(title).small().color(theme::MUTED)).id_salt(("passages", &m.id)).default_open(app.opts.open_passages).show(ui, |ui| {
+        for c in &m.citations {
+            ui.label(RichText::new(format!("{} \u{00B7} score {:.2}", c.file, c.score)).small().color(theme::ACCENT));
+            ui.add(egui::Label::new(RichText::new(truncate(&c.text, 900)).small().color(theme::TEXT)).wrap());
+            ui.add_space(4.0);
+        }
+    });
+}
+
 fn id_hash(s: &str) -> u64 {
     let mut h = std::collections::hash_map::DefaultHasher::new();
     s.hash(&mut h);
@@ -532,9 +575,10 @@ fn message_view(app: &mut StudioApp, ui: &mut Ui, i: usize, last: bool) {
                             for a in &m.attachments {
                                 ui.label(
                                     RichText::new(format!(
-                                        "attached: {} \u{00B7} {}",
+                                        "attached: {} \u{00B7} {}{}",
                                         a.name,
-                                        human_bytes(a.text.len() as u64)
+                                        human_bytes(a.text.len() as u64),
+                                        if m.by_retrieval { " \u{00B7} searched, not sent whole" } else { "" }
                                     ))
                                     .small()
                                     .color(theme::MUTED),
@@ -546,6 +590,7 @@ fn message_view(app: &mut StudioApp, ui: &mut Ui, i: usize, last: bool) {
                                 )
                                 .wrap(),
                             );
+                            passages(app, ui, &m);
                         });
                     });
             });
@@ -755,7 +800,12 @@ fn input_box(app: &mut StudioApp, ui: &mut Ui) {
                     let tokens = crate::chats::estimate_tokens(chars);
                     let ctx = app.effective_ctx() as usize;
                     let over = tokens + 300 > ctx;
-                    ui.label(RichText::new(format!("about {} of {} tokens{}", human_count(tokens as u64), human_count(ctx as u64), if over { ": too long, raise the context length in Settings or attach less" } else { "" })).small().color(if over { theme::BAD } else { theme::MUTED }));
+                    if app.would_search(&app.attachments, &app.input) {
+                        ui.label(RichText::new(format!("about {} tokens: too much to send whole, the chat searches the files and the model reads the best passages for each question", human_count(tokens as u64))).small().color(theme::ACCENT));
+                    } else {
+                        let hint = if over && app.settings.engine == EngineKind::Forge && app.embedding_endpoint().is_none() { ", or let the chat search the files (Settings > Documents)" } else { "" };
+                        ui.label(RichText::new(format!("about {} of {} tokens{}", human_count(tokens as u64), human_count(ctx as u64), if over { format!(": too long, raise the context length in Settings or attach less{hint}") } else { String::new() })).small().color(if over { theme::BAD } else { theme::MUTED }));
+                    }
                 });
                 ui.add_space(4.0);
             }

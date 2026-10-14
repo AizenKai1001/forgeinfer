@@ -58,6 +58,8 @@ pub struct Launch {
     pub lookup: bool,
     /// Host memory for the chats the engine is not working on (`forge serve` only; 0 = off).
     pub prompt_cache_mb: u32,
+    /// An embedding model served next to the chat model (`forge serve --embedding-model`): chats search long attached files with it.
+    pub embedding: Option<PathBuf>,
     pub api_key: String,
     pub extra: Vec<String>,
 }
@@ -117,6 +119,10 @@ pub fn command_args(l: &Launch) -> Vec<String> {
             }
             if l.prompt_cache_mb != DEFAULT_PROMPT_CACHE_MB {
                 a.extend([s("--prompt-cache-mb"), l.prompt_cache_mb.to_string()]);
+            }
+            if let Some(e) = &l.embedding {
+                // on the GPU when there is room for it next to the chat model (about 0.4 GB), else on the CPU
+                a.extend([s("--embedding-model"), e.display().to_string(), s("--embedding-device"), s("auto"), s("--embedding-alias"), s("embedding")]);
             }
             if !l.api_key.is_empty() {
                 a.extend([s("--api-key"), l.api_key.clone()]);
@@ -398,9 +404,22 @@ mod tests {
             mtp: Some(PathBuf::from("head.safetensors")),
             lookup: true,
             prompt_cache_mb: DEFAULT_PROMPT_CACHE_MB,
+            embedding: None,
             api_key: "k".into(),
             extra: vec!["--threads".into(), "6".into()],
         }
+    }
+
+    #[test]
+    fn an_embedding_model_is_served_next_to_the_chat_model() {
+        let mut l = launch(EngineKind::Forge);
+        l.embedding = Some(PathBuf::from("nomic.gguf"));
+        let a = command_args(&l).join(" ");
+        assert!(a.contains("--embedding-model nomic.gguf --embedding-device auto --embedding-alias embedding --api-key k"), "{a}");
+        // llama.cpp does not know the flag
+        let mut other = launch(EngineKind::LlamaCpp);
+        other.embedding = Some(PathBuf::from("nomic.gguf"));
+        assert!(!command_args(&other).join(" ").contains("embedding"));
     }
 
     #[test]

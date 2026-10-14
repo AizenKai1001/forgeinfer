@@ -44,6 +44,18 @@ pub struct Attachment {
     pub text: String,
 }
 
+/// A passage of an attached file that was found for a question (chat with documents).
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+pub struct Citation {
+    pub file: String,
+    pub text: String,
+    /// Cosine of the question's vector and the passage's.
+    pub score: f32,
+    /// Below the minimum score: one of the nearest passages of a question that matched nothing well.
+    #[serde(default)]
+    pub weak: bool,
+}
+
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct Message {
     pub id: String,
@@ -65,6 +77,14 @@ pub struct Message {
     /// Files attached to a user message.
     #[serde(default)]
     pub attachments: Vec<Attachment>,
+    /// A user message whose files are searched instead of sent whole: the model reads the `citations` found for it (and for every later question of the chat).
+    #[serde(default)]
+    pub by_retrieval: bool,
+    #[serde(default)]
+    pub citations: Vec<Citation>,
+    /// True while the passages are being looked for.
+    #[serde(skip)]
+    pub retrieving: bool,
 }
 
 impl Message {
@@ -79,11 +99,18 @@ impl Message {
             streaming: false,
             thought_secs: 0.0,
             attachments: Vec::new(),
+            by_retrieval: false,
+            citations: Vec::new(),
+            retrieving: false,
         }
     }
 
-    /// What the model reads: the attached files (each between `<file name=...>` tags), then the text.
+    /// What the model reads: the attached files (each between `<file name=...>` tags), then the text; for a question about files that are searched, the passages found and the question.
     pub fn prompt_text(&self) -> String {
+        if self.by_retrieval {
+            let passages: Vec<(String, String)> = self.citations.iter().map(|c| (c.file.clone(), c.text.clone())).collect();
+            return crate::rag::citations_prompt(&passages, self.citations.first().is_some_and(|c| c.weak), &self.content);
+        }
         if self.attachments.is_empty() {
             return self.content.clone();
         }
@@ -180,10 +207,13 @@ impl Chat {
             self.title = NEW_TITLE.to_string();
         }
         let attachments = std::mem::take(&mut self.messages[i].attachments);
+        let by_retrieval = self.messages[i].by_retrieval;
         self.messages.truncate(i);
         self.skip = self.skip.min(i);
         let mut msg = Message::new(Role::User, text);
         msg.attachments = attachments;
+        // the passages of the old wording are stale: the question is searched again
+        msg.by_retrieval = by_retrieval;
         self.messages.push(msg);
         self.retitle();
         true
@@ -205,11 +235,15 @@ impl Chat {
         if !system.trim().is_empty() {
             out.push((Role::System, system.to_string()));
         }
-        for m in self.messages.iter().skip(skip) {
+        // the passages found for a question are read for that question only: once a newer question has been asked, the older ones keep just their words (the answer to them is in the conversation)
+        // and the context is not filled with the passages of every earlier turn
+        let last_user = self.messages.iter().rposition(|m| m.role == Role::User);
+        for (i, m) in self.messages.iter().enumerate().skip(skip) {
             if m.error.is_some() || (m.role == Role::Assistant && m.content.trim().is_empty()) {
                 continue;
             }
-            out.push((m.role, m.prompt_text()));
+            let text = if m.by_retrieval && Some(i) != last_user { m.content.clone() } else { m.prompt_text() };
+            out.push((m.role, text));
         }
         out
     }
@@ -441,6 +475,39 @@ mod tests {
         let old = r#"{"id":"x","title":"t","created":1,"updated":1,"messages":[{"id":"m","role":"user","content":"hi"}]}"#;
         let back: Chat = serde_json::from_str(old).unwrap();
         assert!(back.messages[0].attachments.is_empty());
+        assert!(!back.messages[0].by_retrieval && back.messages[0].citations.is_empty());
+    }
+
+    #[test]
+    fn a_question_about_searched_files_reads_the_passages_not_the_files() {
+        let mut c = Chat::new();
+        let mut m = Message::new(Role::User, "When does the ship dock?");
+        m.attachments.push(Attachment { name: "log.txt".into(), text: "x".repeat(100_000) });
+        m.by_retrieval = true;
+        m.citations.push(Citation { file: "log.txt".into(), text: "The ship docks at six.".into(), score: 0.8, weak: false });
+        c.messages.push(m);
+        c.messages.push(Message::new(Role::Assistant, "At six."));
+        // a later question has no files of its own and is searched too
+        let mut q = Message::new(Role::User, "And the cargo?");
+        q.by_retrieval = true;
+        c.messages.push(q);
+        let p = c.api_messages("");
+        // the last question reads its passages (here: none matched), the earlier one keeps its words only
+        assert_eq!(p[0].1, "When does the ship dock?");
+        assert!(p[2].1.contains("No passage") && p[2].1.ends_with("And the cargo?"), "{}", p[2].1);
+        // while it is the last question, the passages are read, and the file itself is never sent
+        let mut only = Chat::new();
+        only.messages.push(c.messages[0].clone());
+        let q = only.api_messages("");
+        assert!(q[0].1.contains("Citation 1 (from log.txt): \"The ship docks at six.\"") && q[0].1.ends_with("When does the ship dock?"), "{}", q[0].1);
+        assert!(!q[0].1.contains("xxxxxxxx"), "the file itself is not sent");
+        // the citations survive the chat file; editing keeps the mode but drops the stale passages
+        let back: Chat = serde_json::from_str(&serde_json::to_string(&c).unwrap()).unwrap();
+        assert_eq!(back.messages[0].citations.len(), 1);
+        assert!(back.messages[0].by_retrieval);
+        assert!(c.replace_from(0, "When does it leave?"));
+        assert!(c.messages[0].by_retrieval && c.messages[0].citations.is_empty());
+        assert_eq!(c.messages[0].attachments.len(), 1);
     }
 
     /// A chat of `turns` user / assistant pairs, every message of `chars` characters.

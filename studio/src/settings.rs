@@ -218,6 +218,11 @@ pub struct Settings {
     pub prompt_cache_mb: u32,
     /// What to do when the conversation outgrows the context.
     pub context_overflow: OverflowPolicy,
+    /// The embedding model (a GGUF file) that lets a chat search long attached files; empty = the first embedding model found, else LM Studio's bundled one (ForgeInfer engine only).
+    pub retrieval_model: String,
+    /// How many passages of the files a question gets, and the lowest cosine a passage may have to count (nomic-embed-text with its task prefixes: related passages score 0.65 to 0.9, unrelated ones 0.35 to 0.56).
+    pub docs_limit: u32,
+    pub docs_threshold: f32,
     /// Port of the local server (the default is the one LM Studio uses, so tools that know it just work).
     pub port: u16,
     /// Listen on every network interface instead of this computer only.
@@ -264,6 +269,9 @@ impl Default for Settings {
             lookup: true,
             prompt_cache_mb: DEFAULT_PROMPT_CACHE_MB,
             context_overflow: OverflowPolicy::Drop,
+            retrieval_model: String::new(),
+            docs_limit: 3,
+            docs_threshold: 0.6,
             port: 1234,
             serve_on_lan: false,
             api_key: String::new(),

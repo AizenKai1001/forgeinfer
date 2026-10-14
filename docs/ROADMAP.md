@@ -18,7 +18,7 @@ What is missing, roughly in the order that would help the most people. Nothing h
 
 ## Forge Studio
 
-- Image input for vision models (the `mmproj` files are already listed), speech, document chat (retrieval).
+- Image input for vision models (the `mmproj` files are already listed), speech; document chat for PDF and Word files (text and code files are searched already: [STUDIO.md](STUDIO.md#chat-with-documents)), citations that name the line or page.
 - Presets for system prompts and sampler settings, per-model default parameters, a prompt-template editor.
 - Several models loaded at once; a benchmark screen (tokens per second on your machine at several context lengths); a request log for the local server.
 - Gated Hugging Face repositories (login), split-file downloads in one step, a "recommended for your hardware" list.

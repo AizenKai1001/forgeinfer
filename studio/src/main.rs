@@ -4,11 +4,12 @@
 //!   --screen NAME      open on a screen: chat, library, discover, server, hardware, logs, settings
 //!   --demo             start with a sample conversation        --open-last  open the newest saved chat
 //!   --load PATH        load this GGUF file at start          --select NAME   load the library model whose name contains NAME
-//!   --send TEXT        send a message as soon as a model is ready
+//!   --send TEXT        send a message as soon as a model is ready (repeatable: the next one goes when the answer to the one before is complete)
 //!   --search TEXT      run a Hugging Face search at start     --inspect PATH  open the inspector on a GGUF file
 //!   --shot PATH        save a screenshot as PNG and quit       --shot-delay S  wait S seconds first       --shot-after-reply
 //!   --stop-after S     press Stop S seconds after a reply starts (tests)
 //!   --params           open the parameters panel (screenshots)
+//!   --open-passages    show the passages the model read open under questions about searched files (screenshots)
 //!   --embed            with an embedding model: embed the sample lines of the playground once it is ready (tests and screenshots)
 //!   --attach FILE      attach a text file to the first message (repeatable)
 //!   --edit-msg N       open the editor on message N        --rename-first  start renaming the newest chat of the list (screenshots)
@@ -74,10 +75,11 @@ fn parse_args() -> Result<StartupOpts, String> {
             "--rename-first" => o.rename_first = true,
             "--params" => o.show_params = true,
             "--embed" => o.embed = true,
+            "--open-passages" => o.open_passages = true,
             "--attach" => o.attach.push(value("--attach")?.into()),
             "--load" => o.load = Some(value("--load")?.into()),
             "--select" => o.select_model = Some(value("--select")?),
-            "--send" => o.send = Some(value("--send")?),
+            "--send" => o.send.push(value("--send")?),
             "--search" => o.hf_query = Some(value("--search")?),
             "--inspect" => o.inspect = Some(value("--inspect")?.into()),
             "--stop-after" => {
