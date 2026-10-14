@@ -5,6 +5,9 @@
 //! Texts go through the encoder in packs: the tokens of many texts are laid one after the other in the rows of one matrix (no padding), so that the GEMMs see thousands of rows even when every text is
 //! 20 tokens long; attention, the rotary position and the pooling are told where each text starts (`starts`, `seq_of` of encoder.cu).
 
+mod lazy;
+pub use lazy::{load_encoder, LazyEncoder, Place};
+
 use forge_core::half::f32_to_f16;
 use forge_core::{Error, Result};
 use forge_cuda::{Args, Device, DeviceBuffer, Function, Module, Stream};

@@ -256,7 +256,7 @@ fn documents(app: &mut StudioApp, ui: &mut Ui) {
                 }
             }
         }
-        muted(ui, "It loads together with the chat model (the next one you load): about 0.4 GB of video memory when there is room, else the computer's processor.");
+        muted(ui, "It is announced to the engine when the chat model loads (the next one you load) but its weights are read only when the first long file is searched: then onto the graphics card if 700 MB are free, else onto the processor (slower). A chat that never attaches a long file never loads it.");
         ui.horizontal(|ui| {
             ui.label("Passages per question");
             ui.add(egui::DragValue::new(&mut app.settings.docs_limit).range(1..=10));

@@ -84,10 +84,8 @@ fn pdf_text(path: &Path) -> Result<String, String> {
 }
 
 fn pdf_text_from_bytes(bytes: &[u8]) -> Result<String, String> {
-    let prev = std::panic::take_hook();
-    std::panic::set_hook(Box::new(|_| {}));
+    // (the panic message of the parser goes to the standard error as usual: the panic hook is process-wide, and two files read at once must not fight over it)
     let r = std::panic::catch_unwind(|| pdf_extract::extract_text_from_mem(bytes));
-    std::panic::set_hook(prev);
     match r {
         Ok(Ok(t)) => Ok(t),
         Ok(Err(e)) => Err(format!("not a PDF that can be read ({e})")),
@@ -101,9 +99,10 @@ fn open_zip(path: &Path) -> Result<zip::ZipArchive<std::fs::File>, String> {
 }
 
 fn zip_entry(z: &mut zip::ZipArchive<std::fs::File>, name: &str) -> Result<String, String> {
-    let mut f = z.by_name(name).map_err(|_| format!("{name} is missing: not a complete Office file"))?;
+    let f = z.by_name(name).map_err(|_| format!("{name} is missing: not a complete Office file"))?;
+    // a part that unpacks to more than 200 MB is not a document (a zip bomb would otherwise fill the memory)
     let mut s = String::new();
-    f.read_to_string(&mut s).map_err(|e| format!("{name}: {e}"))?;
+    f.take(200 << 20).read_to_string(&mut s).map_err(|e| format!("{name}: {e}"))?;
     Ok(s)
 }
 

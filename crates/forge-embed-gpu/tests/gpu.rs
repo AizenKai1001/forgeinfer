@@ -86,6 +86,30 @@ fn texts_that_need_several_passes_keep_their_order() {
 }
 
 #[test]
+fn the_lazy_encoder_loads_on_the_first_request_and_falls_back_to_the_cpu_without_room() {
+    use forge_embed_gpu::{LazyEncoder, Place};
+    let Ok(p) = std::env::var("FORGE_EMBED_GGUF") else {
+        eprintln!("skipped: FORGE_EMBED_GGUF is not set");
+        return;
+    };
+    // nothing is loaded at first: the configuration comes from the metadata
+    let lazy = LazyEncoder::new(&p, Place::Auto, 0).expect("the metadata reads");
+    assert_eq!(lazy.dim(), 768);
+    assert!(lazy.backend().contains("first use"), "{}", lazy.backend());
+    let want = golden();
+    let first = lazy.embed_many(&[want[0].0.as_str()]).expect("the first request loads the model and embeds");
+    assert!(!lazy.backend().contains("first use"), "{}", lazy.backend());
+    assert!(cosine(&first[0].vector, &want[0].1) > 0.999, "the lazily loaded model gives the reference vector");
+    // a card without room (the threshold is raised above any card): the CPU copy, the same vectors
+    std::env::set_var("FORGE_EMBED_MIN_FREE_MB", "10000000");
+    let cpu = LazyEncoder::new(&p, Place::Auto, 0).unwrap();
+    let r = cpu.embed_many(&[want[0].0.as_str()]).unwrap();
+    std::env::remove_var("FORGE_EMBED_MIN_FREE_MB");
+    assert!(cpu.backend().starts_with("CPU"), "{}", cpu.backend());
+    assert!(cosine(&r[0].vector, &want[0].1) > 0.99999);
+}
+
+#[test]
 fn an_empty_text_and_a_text_beyond_the_context_work() {
     let Some(g) = model() else { return };
     let beyond: String = (0..g.config().ctx * 2).map(|i| format!("w{i} ")).collect();

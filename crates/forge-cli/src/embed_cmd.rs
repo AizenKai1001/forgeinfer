@@ -9,23 +9,10 @@ use std::path::Path;
 use std::sync::Arc;
 use std::time::Instant;
 
-/// Load an embedding model where `device` says: "cpu", "gpu" (an error when the card cannot be used) or "auto" (the GPU when it works, else the CPU, with a note).
+/// Load an embedding model where `device` says: "cpu", "gpu" (an error when the card cannot be used) or "auto" (the GPU when it works and has room, else the CPU, with a note).
 pub fn load_encoder(path: &Path, device: &str, ordinal: usize) -> Result<Arc<dyn Encode>, String> {
-    if !matches!(device, "cpu" | "gpu" | "auto") {
-        return Err(format!("the embedding device {device:?} is not cpu, gpu or auto"));
-    }
-    let model = Embedder::load(path).map_err(|e| e.to_string())?;
-    if device == "cpu" {
-        return Ok(Arc::new(model));
-    }
-    match forge_embed_gpu::GpuEmbedder::new(model.into_parts(), ordinal) {
-        Ok(g) => Ok(Arc::new(g)),
-        Err(e) if device == "gpu" => Err(format!("the embedding model does not run on GPU {ordinal}: {e}")),
-        Err(e) => {
-            eprintln!("[embed] no GPU for the embedding model ({e}): using the CPU");
-            Embedder::load(path).map(|m| Arc::new(m) as Arc<dyn Encode>).map_err(|e| e.to_string())
-        }
-    }
+    let place = forge_embed_gpu::Place::parse(device).ok_or_else(|| format!("the embedding device {device:?} is not cpu, gpu or auto"))?;
+    forge_embed_gpu::load_encoder(path, place, ordinal)
 }
 
 pub fn embed(args: &[String]) -> i32 {

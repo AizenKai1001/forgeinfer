@@ -10,7 +10,10 @@ forge serve nomic-embed-text-v1.5.Q4_K_M.gguf --port 8081
 
 # next to a chat model: one server, two models (the embedder stays on the CPU so that the chat engine keeps the card to itself)
 forge serve chat-model.gguf --embedding-model nomic-embed-text-v1.5.Q4_K_M.gguf
-forge serve chat-model.gguf --embedding-model nomic-embed-text-v1.5.Q4_K_M.gguf --embedding-device gpu   # or on the GPU too (+0.4 GB)
+# loaded by the first request, on the GPU when it has 700 MB free then, else on the CPU (Forge Studio starts its engine like this): a chat that never asks for an embedding pays nothing
+forge serve chat-model.gguf --embedding-model nomic-embed-text-v1.5.Q4_K_M.gguf --embedding-device auto
+# on the GPU for sure (+0.4 GB, and an automatic context leaves room for it)
+forge serve chat-model.gguf --embedding-model nomic-embed-text-v1.5.Q4_K_M.gguf --embedding-device gpu
 
 curl http://127.0.0.1:8081/v1/embeddings -H 'Content-Type: application/json' \
   -d '{"model": "nomic-embed-text-v1.5.Q4_K_M", "input": ["search_query: what is TCP?", "search_document: TCP is a transport protocol."]}'

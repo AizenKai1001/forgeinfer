@@ -169,8 +169,9 @@ pub fn serve(args: &[String]) -> i32 {
     if args.iter().any(|a| a == "--no-lookup") {
         std::env::set_var("FORGE_PLD", "0");
     }
-    // the GPU copy of an embedding model is loaded after the chat engine has taken what it plans for (an automatic context fills the card): leave room for it (275 MB of weights, about 120 MB of buffers)
-    if flag(args, "--embedding-model").is_some() && flag(args, "--embedding-device").unwrap_or("cpu") != "cpu" {
+    // an embedding model that must run on the GPU (`--embedding-device gpu`) is loaded after the chat engine has taken what it plans for (an automatic context fills the card): leave room for it (275 MB of weights,
+    // about 120 MB of buffers). `auto` loads on the first request instead and takes the GPU only if it has room then
+    if flag(args, "--embedding-model").is_some() && flag(args, "--embedding-device") == Some("gpu") {
         let have = std::env::var("FORGE_VRAM_RESERVE_MIB").ok().and_then(|v| v.parse::<usize>().ok()).unwrap_or(0);
         std::env::set_var("FORGE_VRAM_RESERVE_MIB", (have + 450).to_string());
     }
@@ -197,14 +198,37 @@ pub fn serve(args: &[String]) -> i32 {
         if engine.info.speculative { ", speculative decoding with the MTP head" } else { "" }
     );
     let (embedder, embed_alias) = match flag(args, "--embedding-model").map(PathBuf::from) {
-        // an embedding model that cannot be loaded must not take the chat model down with it (Studio starts the engine with one whenever it finds one): say so and serve the chat model alone
-        Some(p) => match load_embedder(&p, "cpu") {
-            Some(e) => (Some(e), flag(args, "--embedding-alias").map(|s| s.to_string()).unwrap_or_else(|| stem(&p))),
-            None => {
-                eprintln!("[serve] continuing without /v1/embeddings: the chat model is served as usual");
-                (None, String::new())
+        // an embedding model that cannot be loaded must not take the chat model down with it (Studio starts the engine with one whenever it finds one): say so and serve the chat model alone.
+        // On the GPU (`gpu`, `auto`) it is loaded by the first request, so that a chat that never needs it pays nothing for it; on the CPU (the default next to a chat model) it is loaded now
+        Some(p) => {
+            let alias = flag(args, "--embedding-alias").map(|s| s.to_string()).unwrap_or_else(|| stem(&p));
+            let device = flag(args, "--embedding-device").unwrap_or("cpu");
+            let ordinal: usize = flag(args, "--device").and_then(|v| v.parse().ok()).unwrap_or(0);
+            let encoder: Option<Arc<dyn forge_embed::Encode>> = match forge_embed_gpu::Place::parse(device) {
+                Some(forge_embed_gpu::Place::Cpu) => load_embedder(&p, "cpu"),
+                Some(place) => match forge_embed_gpu::LazyEncoder::new(&p, place, ordinal) {
+                    Ok(l) => {
+                        eprintln!("[serve] embedding model {} ready to load on the first request ({})", forge_embed::Encode::name(&l), forge_embed::Encode::backend(&l));
+                        Some(Arc::new(l))
+                    }
+                    Err(e) => {
+                        eprintln!("cannot read the embedding model {}: {e}", p.display());
+                        None
+                    }
+                },
+                None => {
+                    eprintln!("the embedding device {device:?} is not cpu, gpu or auto");
+                    None
+                }
+            };
+            match encoder {
+                Some(e) => (Some(e), alias),
+                None => {
+                    eprintln!("[serve] continuing without /v1/embeddings: the chat model is served as usual");
+                    (None, String::new())
+                }
             }
-        },
+        }
         None => (None, String::new()),
     };
     let sc = ServerConfig { host, port, api_key, embedder, embed_alias };

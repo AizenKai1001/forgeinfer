@@ -129,31 +129,51 @@ fn layer_norm_rows(x: &mut [f32], n: usize, e: usize, norm: &Norm, eps: f32) {
     }
 }
 
+/// What a `nomic-bert` GGUF file says about the model, without its weights.
+#[derive(Clone, Debug)]
+pub struct Info {
+    pub cfg: Config,
+    pub name: String,
+}
+
+/// Read the metadata of a `nomic-bert` GGUF file (a few milliseconds: no tensor is read): for a server that loads the weights only when the first text arrives.
+pub fn read_info(path: impl AsRef<Path>) -> Result<Info> {
+    let g = Gguf::open(path.as_ref())?;
+    info_of(&g).map(|(info, _)| info)
+}
+
+fn info_of(g: &Gguf) -> Result<(Info, WordPiece)> {
+    let arch = g.architecture().ok_or_else(|| Error::msg("the GGUF file has no architecture"))?.to_string();
+    if arch != "nomic-bert" {
+        return Err(Error::msg(format!("the embedding architecture {arch:?} is not supported (nomic-bert is)")));
+    }
+    let key = |k: &str| format!("{arch}.{k}");
+    let uint = |k: &str| -> Result<usize> { g.get_u64(&key(k)).map(|v| v as usize).ok_or_else(|| Error::msg(format!("{} is missing", key(k)))) };
+    let tok = WordPiece::from_gguf(g)?;
+    let cfg = Config {
+        n_layer: uint("block_count")?,
+        n_embd: uint("embedding_length")?,
+        n_head: uint("attention.head_count")?,
+        n_ff: uint("feed_forward_length")?,
+        rope_base: g.get_f64(&key("rope.freq_base")).unwrap_or(1000.0) as f32,
+        eps: g.get_f64(&key("attention.layer_norm_epsilon")).unwrap_or(1e-12) as f32,
+        ctx: uint("context_length").unwrap_or(2048),
+        mean_pool: g.get_u64(&key("pooling_type")).unwrap_or(1) != 2,
+        vocab: tok.vocab_size(),
+    };
+    if cfg.n_embd % cfg.n_head != 0 || (cfg.n_embd / cfg.n_head) % 2 != 0 {
+        return Err(Error::msg("the head width must be even"));
+    }
+    let name = g.get_str("general.name").unwrap_or("embedding model").to_string();
+    Ok((Info { cfg, name }, tok))
+}
+
 impl Embedder {
     /// Load a `nomic-bert` GGUF file (every tensor is dequantized to f32: about 550 MB for nomic-embed-text-v1.5).
     pub fn load(path: impl AsRef<Path>) -> Result<Embedder> {
         let g = Gguf::open(path.as_ref())?;
-        let arch = g.architecture().ok_or_else(|| Error::msg("the GGUF file has no architecture"))?.to_string();
-        if arch != "nomic-bert" {
-            return Err(Error::msg(format!("the embedding architecture {arch:?} is not supported (nomic-bert is)")));
-        }
-        let key = |k: &str| format!("{arch}.{k}");
-        let uint = |k: &str| -> Result<usize> { g.get_u64(&key(k)).map(|v| v as usize).ok_or_else(|| Error::msg(format!("{} is missing", key(k)))) };
-        let tok = WordPiece::from_gguf(&g)?;
-        let cfg = Config {
-            n_layer: uint("block_count")?,
-            n_embd: uint("embedding_length")?,
-            n_head: uint("attention.head_count")?,
-            n_ff: uint("feed_forward_length")?,
-            rope_base: g.get_f64(&key("rope.freq_base")).unwrap_or(1000.0) as f32,
-            eps: g.get_f64(&key("attention.layer_norm_epsilon")).unwrap_or(1e-12) as f32,
-            ctx: uint("context_length").unwrap_or(2048),
-            mean_pool: g.get_u64(&key("pooling_type")).unwrap_or(1) != 2,
-            vocab: tok.vocab_size(),
-        };
-        if cfg.n_embd % cfg.n_head != 0 || (cfg.n_embd / cfg.n_head) % 2 != 0 {
-            return Err(Error::msg("the head width must be even"));
-        }
+        let (info, tok) = info_of(&g)?;
+        let cfg = info.cfg;
         let t = |name: &str| -> Result<Vec<f32>> { g.tensor_f32(name) };
         let tok_emb = t("token_embd.weight")?;
         if tok_emb.len() != cfg.vocab * cfg.n_embd {
