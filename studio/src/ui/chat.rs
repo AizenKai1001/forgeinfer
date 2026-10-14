@@ -910,7 +910,7 @@ fn input_box(app: &mut StudioApp, ui: &mut Ui) {
             ui.add_space(2.0);
             ui.label(
                 RichText::new(
-                    "Tip: drop a PDF, Word, Excel, PowerPoint, OpenDocument, RTF, EPUB, web page, text or code file on the window to ask about it (a long one is searched, not sent whole).",
+                    "Tip: drop a PDF (a scan too, on Windows), Word, Excel, PowerPoint, OpenDocument, RTF, EPUB, web page, screenshot, text or code file on the window to ask about it (a long one is searched, not sent whole).",
                 )
                 .small()
                 .color(theme::MUTED),

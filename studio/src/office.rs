@@ -12,7 +12,12 @@ const MAX_FILE: u64 = 256 << 20;
 
 /// Is this a file `read_document` reads with a parser of its own (slow enough to be done off the window's thread)?
 pub fn is_office(path: &Path) -> bool {
-    matches!(extension(path).as_str(), "pdf" | "docx" | "pptx" | "xlsx" | "xlsm" | "odt" | "ods" | "odp" | "rtf" | "epub" | "html" | "htm" | "xhtml")
+    matches!(extension(path).as_str(), "pdf" | "docx" | "pptx" | "xlsx" | "xlsm" | "odt" | "ods" | "odp" | "rtf" | "epub" | "html" | "htm" | "xhtml") || is_picture(path)
+}
+
+/// A picture file (a screenshot, a photo of a page): its text is read by the text recognition of the system where there is one.
+fn is_picture(path: &Path) -> bool {
+    matches!(extension(path).as_str(), "png" | "jpg" | "jpeg" | "bmp" | "gif" | "tif" | "tiff" | "webp")
 }
 
 fn extension(path: &Path) -> String {
@@ -60,6 +65,7 @@ pub fn read_document(path: &Path, limit: u64) -> Result<String, String> {
             "ods" => odf_file_text(path, Odf::Sheet)?,
             "odp" => odf_file_text(path, Odf::Slides)?,
             "rtf" => rtf_text(&std::fs::read(path).map_err(|e| e.to_string())?),
+            _ if is_picture(path) => crate::ocr::recognize(&std::fs::read(path).map_err(|e| e.to_string())?)?,
             "epub" => epub_text(path)?,
             _ => html_text(&String::from_utf8_lossy(&std::fs::read(path).map_err(|e| e.to_string())?)),
         })
@@ -1286,6 +1292,21 @@ Second\tab line\line broken \{braces\} \\ end.\par
             let _ = html_text(&s);
             let _ = xml_text(&s, "w:t", "w:p");
         }
+    }
+
+    #[test]
+    fn a_picture_is_a_document_whose_text_the_system_reads() {
+        let dir = temp_dir("picture");
+        for name in ["shot.png", "photo.JPG", "scan.tiff"] {
+            let f = dir.join(name);
+            std::fs::write(&f, b"not really a picture").unwrap();
+            assert!(is_office(&f), "{name}");
+            // a file that is not a picture, or a system with no text recognition: an error that says why, never a panic
+            let e = read_document(&f, 1 << 20).unwrap_err();
+            assert!(e.starts_with(name), "{e}");
+        }
+        assert!(!is_office(&dir.join("notes.txt")));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

@@ -235,7 +235,7 @@ fn documents(app: &mut StudioApp, ui: &mut Ui) {
     card(ui, |ui| {
         muted(
             ui,
-            "Drop a text, code, PDF, Word, Excel, PowerPoint, OpenDocument, RTF, EPUB or HTML file on the window to ask about it. When it is too long for the model's context, the chat searches it: the file is cut into passages, an embedding model turns them into vectors, and for each question the model is given only the passages that match it best, plus those that have a name or code of the question (as in LM Studio's chat with documents). ForgeInfer engine only: the embedding model runs inside it, next to the chat model.",
+            "Drop a text, code, PDF, Word, Excel, PowerPoint, OpenDocument, RTF, EPUB or HTML file, or a picture of text (Windows), on the window to ask about it. When it is too long for the model's context, the chat searches it: the file is cut into passages, an embedding model turns them into vectors, and for each question the model is given only the passages that match it best, plus those that have a name or code of the question (as in LM Studio's chat with documents). ForgeInfer engine only: the embedding model runs inside it, next to the chat model.",
         );
         ui.add_space(4.0);
         ui.horizontal(|ui| {
