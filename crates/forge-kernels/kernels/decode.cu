@@ -470,6 +470,131 @@ extern "C" __global__ void __launch_bounds__(128) attn_split_kernel(const float*
     }
 }
 
+// Several query rows per block, for the multi-row steps (a few tokens of a prompt, the verification of drafted tokens): attn_split_kernel gives every row its own pass over the keys and values, so the cache is
+// read once per row, and at a long context that is what a chunk of tokens costs (5 ms per row after 6,400 positions of a 4B model on a 2060 SUPER). Here a block takes RB consecutive rows (blockIdx.z = group
+// of rows) and reads every key and value once for all of them. The arithmetic of every row is the one of attn_split_kernel in the same order (the same scores, the same sums, the same partial outputs bit for
+// bit): only the loads are shared. Partial results are stored where attn_split_kernel stores them, ((tt * n_head + hh) * ns_max + split), so attn_merge_*_kernel follows unchanged.
+// Static shared memory: scores[RB][AS_CH] (reused for the partial outputs of the position groups: NGRP * hd = 1024 <= AS_CH floats per row), qs[RB][256], red[32].
+template <int RB>
+__device__ __forceinline__ void attn_split_rows_impl(const float* __restrict__ q, const half* __restrict__ k_cache, const half* __restrict__ v_cache, float* __restrict__ pm, float* __restrict__ pl,
+                                                     float* __restrict__ po, const StepState* __restrict__ st, int n_head, int n_kv, int hd, int ns_max, int ntok) {
+    __shared__ float scores[RB * AS_CH];
+    __shared__ float qs[RB * 256];
+    __shared__ float red[32];
+    const int hh = blockIdx.x, split = blockIdx.y, tt0 = blockIdx.z * RB, tid = threadIdx.x;
+    const int rows = min(RB, ntok - tt0);
+    const int base = (int)st->pos + 1 + tt0;   // keys visible to row r of the block: base + r
+    const int t0 = split * AS_CH;
+    if (t0 >= base + rows - 1) {               // not even the last row sees this split: the sentinels of the one-row kernel
+        if (tid < rows) {
+            const size_t pidx = ((size_t)(tt0 + tid) * n_head + hh) * ns_max + split;
+            pm[pidx] = -INFINITY;
+            pl[pidx] = 0.f;
+        }
+        return;
+    }
+    int tnr[RB];                               // keys of this split that row r sees (<= 0: none; the padding rows of a last group see none)
+#pragma unroll
+    for (int r = 0; r < RB; r++) tnr[r] = r < rows ? min(AS_CH, base + r - t0) : 0;
+    const int tn_max = min(AS_CH, base + rows - 1 - t0);
+    const int LPP = hd / 8, NGRP = 128 / LPP;
+    const int kvh = hh / (n_head / n_kv);
+    const size_t kv_dim = (size_t)n_kv * hd;
+    const int sub = tid % LPP, grp = tid / LPP;
+    for (int e = tid; e < rows * hd; e += 128) qs[(e / hd) * 256 + e % hd] = q[((size_t)(tt0 + e / hd) * n_head + hh) * hd + e % hd];
+    __syncthreads();
+    const float scale = rsqrtf((float)hd);
+    float qv[RB][8];
+#pragma unroll
+    for (int r = 0; r < RB; r++) {
+#pragma unroll
+        for (int j = 0; j < 8; j++) qv[r][j] = r < rows ? qs[r * 256 + sub * 8 + j] : 0.f;
+    }
+    const int tn_up = (tn_max + NGRP - 1) / NGRP * NGRP;      // every thread runs the same number of rounds: the shuffles involve whole warps
+#pragma unroll 4
+    for (int i0 = 0; i0 < tn_up; i0 += NGRP) {
+        const int i = i0 + grp;
+        uint4 kraw = make_uint4(0u, 0u, 0u, 0u);
+        if (i < tn_max) kraw = __ldg(reinterpret_cast<const uint4*>(k_cache + (size_t)(t0 + i) * kv_dim + kvh * hd) + sub);
+        float kf[8];
+        unpack8(kraw, kf);
+#pragma unroll
+        for (int r = 0; r < RB; r++) {
+            float acc = 0.f;
+#pragma unroll
+            for (int j = 0; j < 8; j++) acc += qv[r][j] * kf[j];
+            for (int o = LPP >> 1; o > 0; o >>= 1) acc += __shfl_xor_sync(0xffffffffu, acc, o);
+            if (i < tnr[r] && sub == 0) scores[r * AS_CH + i] = acc * scale;
+        }
+    }
+    __syncthreads();
+    float mxs[RB], sums[RB];
+#pragma unroll
+    for (int r = 0; r < RB; r++) {
+        float mx = -INFINITY;
+        for (int i = tid; i < tnr[r]; i += 128) mx = fmaxf(mx, scores[r * AS_CH + i]);
+        mx = block_max(mx, red);
+        float sum = 0.f;
+        for (int i = tid; i < tnr[r]; i += 128) {
+            const float e = __expf(scores[r * AS_CH + i] - mx);
+            scores[r * AS_CH + i] = e;
+            sum += e;
+        }
+        sum = block_sum(sum, red);
+        mxs[r] = mx;
+        sums[r] = sum;
+    }
+    float o[RB][8];
+#pragma unroll
+    for (int r = 0; r < RB; r++) {
+#pragma unroll
+        for (int j = 0; j < 8; j++) o[r][j] = 0.f;
+    }
+#pragma unroll 4
+    for (int i = grp; i < tn_max; i += NGRP) {
+        const uint4 vraw = __ldg(reinterpret_cast<const uint4*>(v_cache + (size_t)(t0 + i) * kv_dim + kvh * hd) + sub);
+        float vf[8];
+        unpack8(vraw, vf);
+#pragma unroll
+        for (int r = 0; r < RB; r++) {
+            if (i < tnr[r]) {
+                const float p = scores[r * AS_CH + i];
+#pragma unroll
+                for (int j = 0; j < 8; j++) o[r][j] += p * vf[j];
+            }
+        }
+    }
+    __syncthreads();                           // the scores are done with: their memory takes the partial outputs of the position groups
+#pragma unroll
+    for (int r = 0; r < RB; r++) {
+#pragma unroll
+        for (int j = 0; j < 8; j++) scores[r * AS_CH + grp * hd + sub * 8 + j] = o[r][j];
+    }
+    __syncthreads();
+    if (tid < hd) {
+        for (int r = 0; r < rows; r++) {
+            if (tnr[r] > 0) {
+                float s = 0.f;
+                for (int g = 0; g < NGRP; g++) s += scores[r * AS_CH + g * hd + tid];
+                po[(((size_t)(tt0 + r) * n_head + hh) * ns_max + split) * 256 + tid] = s;
+            }
+        }
+    }
+    if (tid == 0) {
+        for (int r = 0; r < rows; r++) {
+            const size_t pidx = ((size_t)(tt0 + r) * n_head + hh) * ns_max + split;
+            pm[pidx] = tnr[r] > 0 ? mxs[r] : -INFINITY;
+            pl[pidx] = tnr[r] > 0 ? sums[r] : 0.f;
+        }
+    }
+}
+
+extern "C" __global__ void __launch_bounds__(128) attn_split_rows4_kernel(const float* __restrict__ q, const half* __restrict__ k_cache, const half* __restrict__ v_cache, float* __restrict__ pm,
+                                                                          float* __restrict__ pl, float* __restrict__ po, const StepState* __restrict__ st, int n_head, int n_kv, int hd,
+                                                                          int ns_max, int ntok) {
+    attn_split_rows_impl<4>(q, k_cache, v_cache, pm, pl, po, st, n_head, n_kv, hd, ns_max, ntok);
+}
+
 // grid (n_head, tokens), 128 threads (one per output dimension, hd <= 128): the exact combination of the splits; QOUT writes the quantized activation as attention_impl does
 template <bool QOUT>
 __device__ __forceinline__ void attn_merge_impl(const float* __restrict__ pm, const float* __restrict__ pl, const float* __restrict__ po, float* __restrict__ out, int8_t* __restrict__ oq, float* __restrict__ od,

@@ -18,6 +18,13 @@ const MM_SMEM_BIG: usize = 62000;
 /// Rows per lane of the kernels (R of decode_m.cu): the rows of a matrix must be a multiple of it.
 const MM_R: usize = 2;
 
+/// The rows of a multi-row step of a dense model take the split attention kernel that shares the loads of keys and values between four rows (`attn_split_rows4_kernel`, bit-identical to the one-row kernel);
+/// FORGE_ATTN_ROWS=0 keeps the one-row kernel (for comparisons).
+fn attn_rows_kernel() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var("FORGE_ATTN_ROWS").map(|v| v != "0").unwrap_or(true))
+}
+
 /// Scratch of the multi-row path (16 rows at most per group).
 pub(crate) struct MrowBufs {
     xq_e: DeviceBuffer,
@@ -164,11 +171,11 @@ impl<'m> GpuSession<'m> {
     }
 
     /// The longest chunk starting at position `pos0` that still takes the multi-row path (a dense model; hybrid ones and models with their FFN in host memory keep `mrow_max`). Every row of that path
-    /// reads the keys and values of the whole context on its own (a group of 16 rows streams the weights once, not the cache), so the cost of a chunk grows with its length and with the context, while the GEMM
-    /// path's attention reads each tile of keys once per 64 rows and costs about the same for any chunk of 16 to 56 tokens. Qwen3-4B Q6_K on a 2060 SUPER, multi-row against GEMM: 2.4, 3.5 and 5.6 ms per new
-    /// token against 86, 91 and 102 ms per chunk after 1,600, 3,200 and 6,400 positions, so the chunk length at which the GEMM path wins falls from `mrow_max` (56, an empty cache) to 35, 26 and 18. The limit
-    /// follows (1 + 0.041 s t) / (1 + 0.5 s t) of `mrow_max`, t the context in thousands of positions and s the model's bytes of keys and values per position (fp16, all attention layers) relative to that
-    /// model's 147,456; never below 16, the smallest chunk the GEMM path is used for. FORGE_MROW_CTX=0 keeps `mrow_max` at every context.
+    /// reads the keys and values of the whole context for every four rows (the kernel of `attn_split_rows4_kernel`; one row at a time with FORGE_ATTN_ROWS=0), so the cost of a chunk grows with its length and
+    /// with the context, while the GEMM path's attention reads each tile of keys once per 64 rows and costs about the same for any chunk of 16 to 56 tokens. Qwen3-4B Q6_K on a 2060 SUPER, multi-row against
+    /// GEMM: 2.3, 3.0 and 4.6 ms per new token against 86, 91 and 102 ms per chunk after 1,600, 3,200 and 6,400 positions, so the chunk length at which the GEMM path wins falls from `mrow_max` (56, an empty
+    /// cache) to 37, 30 and 22. The limit follows (1 + 0.041 s t) / (1 + 0.33 s t) of `mrow_max`, t the context in thousands of positions and s the model's bytes of keys and values per position (fp16, all
+    /// attention layers) relative to that model's 147,456; never below 16, the smallest chunk the GEMM path is used for. FORGE_MROW_CTX=0 keeps `mrow_max` at every context.
     pub(crate) fn mrow_limit(&self, pos0: usize) -> usize {
         static RULE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
         let c = &self.m.cfg;
@@ -177,7 +184,7 @@ impl<'m> GpuSession<'m> {
         }
         let s = (c.n_layer * c.kv_dim() * 4) as f64 / 147_456.0;
         let st = s * pos0 as f64 / 1024.0;
-        let n = self.mrow_max as f64 * (1.0 + 0.041 * st) / (1.0 + 0.5 * st);
+        let n = self.mrow_max as f64 * (1.0 + 0.041 * st) / (1.0 + 0.33 * st);
         (n.round() as usize).clamp(16.min(self.mrow_max), self.mrow_max)
     }
 
@@ -867,24 +874,47 @@ impl<'m> GpuSession<'m> {
                     )?;
                     if self.attn_split {
                         let ns_max = (self.max_ctx + AS_CH - 1) / AS_CH;
-                        k.attn_split.launch(
-                            (nh as u32, ns_max as u32, n as u32),
-                            (128, 1, 1),
-                            0,
-                            st,
-                            &Args::new()
-                                .buf(&mb.qout)
-                                .ptr(kc)
-                                .ptr(vc)
-                                .buf(&mb.as_m)
-                                .buf(&mb.as_l)
-                                .buf(&mb.as_o)
-                                .ptr(st_ptr)
-                                .i32(nh as i32)
-                                .i32(nkv as i32)
-                                .i32(hd as i32)
-                                .i32(ns_max as i32),
-                        )?;
+                        if n >= 2 && (hd == 64 || hd == 128) && attn_rows_kernel() {
+                            // several rows share the loads of keys and values (the one-row kernel below reads the whole cache once per row)
+                            k.attn_split_rows.launch(
+                                (nh as u32, ns_max as u32, ((n + 3) / 4) as u32),
+                                (128, 1, 1),
+                                0,
+                                st,
+                                &Args::new()
+                                    .buf(&mb.qout)
+                                    .ptr(kc)
+                                    .ptr(vc)
+                                    .buf(&mb.as_m)
+                                    .buf(&mb.as_l)
+                                    .buf(&mb.as_o)
+                                    .ptr(st_ptr)
+                                    .i32(nh as i32)
+                                    .i32(nkv as i32)
+                                    .i32(hd as i32)
+                                    .i32(ns_max as i32)
+                                    .i32(n as i32),
+                            )?;
+                        } else {
+                            k.attn_split.launch(
+                                (nh as u32, ns_max as u32, n as u32),
+                                (128, 1, 1),
+                                0,
+                                st,
+                                &Args::new()
+                                    .buf(&mb.qout)
+                                    .ptr(kc)
+                                    .ptr(vc)
+                                    .buf(&mb.as_m)
+                                    .buf(&mb.as_l)
+                                    .buf(&mb.as_o)
+                                    .ptr(st_ptr)
+                                    .i32(nh as i32)
+                                    .i32(nkv as i32)
+                                    .i32(hd as i32)
+                                    .i32(ns_max as i32),
+                            )?;
+                        }
                         k.attn_merge_q.launch(
                             (nh as u32, n as u32, 1),
                             (128, 1, 1),

@@ -197,3 +197,79 @@ fn split_kernels_match_the_one_block_kernel_on_random_caches() {
         assert!(dscale < 1e-4);
     }
 }
+
+/// `attn_split_rows4_kernel` (four rows per block, the loads of keys and values shared: what the multi-row path of a dense model runs) against `attn_split_kernel` (one row per block): the partial results (maximum,
+/// sum and unnormalised output of every split) must be equal bit for bit, for groups of rows that are not a multiple of four, around the boundaries of the splits (the rows of a block then see different numbers
+/// of keys of the last split, and the early splits of the first rows of a group may see nothing) and for the head widths 64 and 128.
+#[test]
+fn the_multi_row_split_kernel_is_bit_identical_to_the_one_row_one() {
+    use forge_core::half::f32_to_f16;
+    use forge_cuda::{Args, DeviceBuffer, Function, Module, Stream};
+    use forge_model::sample::Rng;
+    let _gpu = common::gpu_lock();
+    if Device::count().unwrap_or(0) == 0 {
+        eprintln!("skipped: no CUDA device");
+        return;
+    }
+    let dev = Device::open(0).unwrap();
+    let (image, _) = forge_kernels::image_for(dev.info.cc_major, dev.info.cc_minor).unwrap();
+    let module = Module::load(image).unwrap();
+    let stream = Stream::new().unwrap();
+    let one = module.function("attn_split_kernel").unwrap();
+    let rows = module.function("attn_split_rows4_kernel").unwrap();
+    let mut compared = 0usize;
+    for &(n_head, n_kv, hd) in &[(14usize, 2usize, 64usize), (8, 2, 128), (32, 8, 128)] {
+        let max_ctx = 3300usize;
+        let ns_max = (max_ctx + 1023) / 1024;
+        let kv_dim = n_kv * hd;
+        let mut rng = Rng::new(11 + hd as u64);
+        let kh: Vec<u8> = (0..max_ctx * kv_dim).flat_map(|_| f32_to_f16(rng.next_f32() * 2.0 - 1.0).to_le_bytes()).collect();
+        let vh: Vec<u8> = (0..max_ctx * kv_dim).flat_map(|_| f32_to_f16(rng.next_f32() * 2.0 - 1.0).to_le_bytes()).collect();
+        let dk = DeviceBuffer::from_bytes(&kh).unwrap();
+        let dv = DeviceBuffer::from_bytes(&vh).unwrap();
+        for &(pos0, ntok) in &[(0usize, 1usize), (0, 2), (5, 3), (1020, 5), (1023, 4), (1024, 16), (2040, 7), (2500, 16), (3000, 9)] {
+            assert!(pos0 + ntok <= max_ctx);
+            let q: Vec<f32> = (0..ntok * n_head * hd).map(|_| (rng.next_f32() * 2.0 - 1.0) * 3.0).collect();
+            let dq = DeviceBuffer::alloc(q.len() * 4).unwrap();
+            dq.upload_f32(&q).unwrap();
+            let mut st = vec![0u8; 16];
+            st[4..8].copy_from_slice(&(pos0 as u32).to_le_bytes());
+            let dst = DeviceBuffer::from_bytes(&st).unwrap();
+            let n_part = ntok * n_head * ns_max;
+            let run = |f: &Function, grid_z: usize, with_rows: bool| -> (Vec<f32>, Vec<f32>, Vec<f32>) {
+                // (a pattern that is not a number in the buffers: what a kernel does not write cannot pass for a result)
+                let pm = DeviceBuffer::from_bytes(&vec![0xFFu8; n_part * 4]).unwrap();
+                let pl = DeviceBuffer::from_bytes(&vec![0xFFu8; n_part * 4]).unwrap();
+                let po = DeviceBuffer::from_bytes(&vec![0xFFu8; n_part * 256 * 4]).unwrap();
+                let mut a = Args::new().buf(&dq).buf(&dk).buf(&dv).buf(&pm).buf(&pl).buf(&po).buf(&dst).i32(n_head as i32).i32(n_kv as i32).i32(hd as i32).i32(ns_max as i32);
+                if with_rows {
+                    a = a.i32(ntok as i32);
+                }
+                f.launch((n_head as u32, ns_max as u32, grid_z as u32), (128, 1, 1), 0, &stream, &a).unwrap();
+                stream.synchronize().unwrap();
+                (pm.download_f32(n_part).unwrap(), pl.download_f32(n_part).unwrap(), po.download_f32(n_part * 256).unwrap())
+            };
+            let a = run(&one, ntok, false);
+            let b = run(&rows, (ntok + 3) / 4, true);
+            for tt in 0..ntok {
+                for hh in 0..n_head {
+                    for s in 0..ns_max {
+                        let pidx = (tt * n_head + hh) * ns_max + s;
+                        let sees = s * 1024 < pos0 + 1 + tt;
+                        if !sees {
+                            assert!(a.0[pidx] == f32::NEG_INFINITY && b.0[pidx] == f32::NEG_INFINITY && a.1[pidx] == 0.0 && b.1[pidx] == 0.0, "hd {hd} pos {pos0} row {tt} head {hh} split {s}: sentinels differ");
+                            continue;
+                        }
+                        assert_eq!((a.0[pidx].to_bits(), a.1[pidx].to_bits()), (b.0[pidx].to_bits(), b.1[pidx].to_bits()), "hd {hd} pos {pos0} row {tt} head {hh} split {s}: maximum or sum differ");
+                        for d in 0..hd {
+                            assert_eq!(a.2[pidx * 256 + d].to_bits(), b.2[pidx * 256 + d].to_bits(), "hd {hd} pos {pos0} row {tt} head {hh} split {s} dim {d}: partial output differs");
+                        }
+                        compared += 1;
+                    }
+                }
+            }
+        }
+    }
+    eprintln!("{compared} partial results equal bit for bit");
+    assert!(compared > 5_000);
+}

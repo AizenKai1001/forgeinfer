@@ -4,7 +4,7 @@ the prompt as cached on the returns, and it should be faster. Works for dense an
 
     python tools/cache_check.py MODEL.gguf [paragraphs] [port]
 
-paragraphs: about 64 tokens each (100 -> 6,500 tokens per document). Environment: FORGE_BIN (the engine program, default target/release/forge), FORGE_ARGS (extra arguments for `forge serve`), CACHE_CHECK_SPECULATE=1 (leave speculative decoding on). Exit code 1 when the answers
+paragraphs: about 64 tokens each (100 -> 6,500 tokens per document). Environment: FORGE_BIN (the engine program, default target/release/forge), FORGE_ARGS (extra arguments for `forge serve`), CACHE_CHECK_SPECULATE=1 (leave speculative decoding on), CACHE_CHECK_BOTH_OFF=1 (run twice with the cache off: shows how much two runs of the same engine differ by themselves). Exit code 1 when the answers
 differ or a return was not served from the cache."""
 import json
 import os
@@ -84,7 +84,8 @@ def run(cache_mb):
 
 
 off = run(0)
-on = run(2048)
+# (CACHE_CHECK_BOTH_OFF=1 runs the cache off twice: what differs between two runs of the same engine, with speculative decoding and its timing-based guards, is not the cache's doing)
+on = run(0 if os.environ.get("CACHE_CHECK_BOTH_OFF") else 2048)
 print("turn      prompt tokens | cache off: cached, seconds | cache on: cached, seconds | answers equal")
 ok = True
 for a, b in zip(off, on):

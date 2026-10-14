@@ -92,7 +92,7 @@ impl<P> Store<P> {
         self.bytes = self.bytes.saturating_sub(bytes);
     }
 
-    /// Make room for `bytes` more by dropping the entries stored longest ago; false when the budget could not hold them even when empty.
+    /// Make room for `bytes` more by dropping the entries stored longest ago; false when they would not fit even then (more than the budget, or next to the memory reserved for idle buffers).
     pub fn make_room(&mut self, bytes: usize) -> bool {
         if bytes > self.budget {
             return false;
@@ -103,11 +103,14 @@ impl<P> Store<P> {
             };
             self.take(oldest);
         }
-        true
+        self.bytes + bytes <= self.budget
     }
 
     /// Keep a conversation (its first tokens and what the payload carries). The entries whose tokens are a prefix of the new one are the same conversation, shorter: they go. False when it does not fit.
     pub fn put(&mut self, tokens: Vec<u32>, payload: P, bytes: usize) -> bool {
+        if bytes > self.budget {
+            return false; // (nothing is dropped for what cannot fit: not even the shorter version of the same conversation)
+        }
         let mut i = 0;
         while i < self.entries.len() {
             if tokens.starts_with(&self.entries[i].tokens) {
@@ -174,7 +177,7 @@ fn swap_inner(sess: &mut GpuSession, slot: &mut Vec<u32>, snaps: &mut Vec<Snap>,
     // (taken first: storing the conversation of the GPU must not make room by dropping it)
     let entry = found.map(|(i, n)| (cache.store.take(i), n));
     if have >= MIN_STORE && usable_now * 2 < have {
-        if let Err(e) = keep(sess, slot, snaps, cache, have) {
+        if let Err(e) = keep(sess, slot, snaps, cache, have, usable_now) {
             eprintln!("[cache] the conversation of {have} tokens could not be kept ({e})");
         }
     }
@@ -198,12 +201,18 @@ fn swap_inner(sess: &mut GpuSession, slot: &mut Vec<u32>, snaps: &mut Vec<Snap>,
     Ok(())
 }
 
-/// Copy the conversation of the GPU to the cache: a dense model's first `have` positions; a hybrid model's up to its last snapshot (where the next turn resumes), or, with no snapshot, all of them.
-fn keep(sess: &mut GpuSession, slot: &[u32], snaps: &mut Vec<Snap>, cache: &mut Cache, have: usize) -> Result<()> {
+/// Copy the conversation of the GPU to the cache: a dense model's first `have` positions; a hybrid model's up to its last snapshot (where the next turn resumes), or, with no snapshot, all of them. `usable_now`
+/// is what the request about to run takes from the GPU as it is: a hybrid model's last snapshot stays where it is when that is the one (it also stays when it is too short to be worth keeping), because
+/// the engine restores it from `snaps` to continue the conversation and a snapshot that moved into the cache is gone from there.
+fn keep(sess: &mut GpuSession, slot: &[u32], snaps: &mut Vec<Snap>, cache: &mut Cache, have: usize, usable_now: usize) -> Result<()> {
     let t0 = Instant::now();
     let (tokens, state) = if sess.can_truncate() {
         (slot[..have].to_vec(), None)
-    } else if let Some(sn) = snaps.pop() {
+    } else if let Some(last) = snaps.last().map(|s| s.tokens.len()) {
+        if last < MIN_STORE || last == usable_now {
+            return Ok(());
+        }
+        let sn = snaps.pop().unwrap();
         (sn.tokens, Some(sn.state))
     } else if have == slot.len() {
         (slot.to_vec(), Some(sess.snapshot_state()?))
@@ -350,6 +359,60 @@ mod tests {
         assert!(!spare_fits(first, 1100 << 20));
         assert!(!spare_fits(first, 400 << 20));
         assert!(spare_fits(first, first / 2 + 1));
+    }
+
+    /// A random sequence of stores, takes, reservations and releases: the bytes the store counts are always the entries' plus the reserved ones, and never more than the budget.
+    #[test]
+    fn the_accounting_of_the_store_survives_random_use() {
+        let mut seed = 0x9E37_79B9_7F4A_7C15u64;
+        let mut next = move |n: u64| {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            seed % n
+        };
+        for budget in [300usize, 1000, 5000] {
+            let mut s: Store<u32> = Store::new(budget);
+            let mut reserved = 0usize;
+            for step in 0..3000u32 {
+                match next(5) {
+                    0 | 1 => {
+                        let bytes = 20 + next(400) as usize;
+                        let tokens = toks(1100 + next(5) as usize, next(6) as u32);
+                        let fits = s.put(tokens, step, bytes);
+                        if fits {
+                            assert!(s.entries.iter().any(|e| e.payload == step && e.bytes == bytes));
+                        }
+                    }
+                    2 => {
+                        if s.len() > 0 {
+                            let i = next(s.len() as u64) as usize;
+                            let e = s.take(i);
+                            assert!(e.bytes > 0);
+                        }
+                    }
+                    3 => {
+                        let b = 10 + next(300) as usize;
+                        if s.reserve(b) {
+                            reserved += b;
+                        }
+                    }
+                    _ => {
+                        let b = next(200) as usize;
+                        let freed = b.min(reserved);
+                        s.unreserve(freed);
+                        reserved -= freed;
+                        let room = 1 + next(400) as usize;
+                        if s.make_room(room) {
+                            assert!(s.bytes() + room <= budget, "make_room said yes without room");
+                        }
+                    }
+                }
+                let held: usize = s.entries.iter().map(|e| e.bytes).sum();
+                assert_eq!(s.bytes(), held + reserved, "step {step}, budget {budget}");
+                assert!(s.bytes() <= budget, "step {step}: {} bytes counted against a budget of {budget}", s.bytes());
+            }
+        }
     }
 
     #[test]

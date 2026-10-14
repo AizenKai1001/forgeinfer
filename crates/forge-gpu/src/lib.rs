@@ -201,6 +201,8 @@ struct Kernels {
     attn_split_g: Function,
     /// split-KV decode attention of dense models (decode.cu): partial softmax per block of AS_CH positions, exact merge to fp32 / to the quantized activation
     attn_split: Function,
+    /// the same for the rows of a multi-row step, four rows per block (they share the loads of keys and values; bit-identical partial results)
+    attn_split_rows: Function,
     attn_merge: Function,
     attn_merge_q: Function,
     attn_merge_g: Function,
@@ -929,6 +931,7 @@ impl GpuModel {
             attention_g: module.function("attention_g_kernel")?,
             attn_split_g: module.function("attn_split_g_kernel")?,
             attn_split: module.function("attn_split_kernel")?,
+            attn_split_rows: module.function("attn_split_rows4_kernel")?,
             attn_merge: module.function("attn_merge_kernel")?,
             attn_merge_q: module.function("attn_merge_q_kernel")?,
             attn_merge_g: module.function("attn_merge_g_kernel")?,
