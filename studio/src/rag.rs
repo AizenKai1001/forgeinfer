@@ -149,6 +149,28 @@ fn words(text: &str) -> impl Iterator<Item = String> + '_ {
     text.split(|c: char| !c.is_alphanumeric()).filter(|w| !w.is_empty()).map(|w| w.to_lowercase())
 }
 
+/// The words of a question that name something: a name or a title (a capital letter inside the sentence), an acronym or a mixed-case word (NF4, QLoRA, MMLU), a number or a code (a digit: INV-7731-QX,
+/// route R-58), split into the words that `words` makes of them. The words of everyday language that happen to be rare in a file ("limitation", "authors") are not among them: a passage with such a word
+/// is not the one the question is about.
+fn names_in(question: &str) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for (i, raw) in question.split_whitespace().enumerate() {
+        let w = raw.trim_matches(|c: char| !c.is_alphanumeric());
+        let letters: Vec<char> = w.chars().filter(|c| c.is_alphabetic()).collect();
+        let has_digit = w.chars().any(|c| c.is_ascii_digit());
+        let acronym = letters.len() >= 2 && letters.iter().all(|c| c.is_uppercase());
+        let mixed = letters.iter().skip(1).any(|c| c.is_uppercase());
+        // (the first word of a question is capitalized whatever it is)
+        let capitalized = i > 0 && letters.first().is_some_and(|c| c.is_uppercase());
+        if has_digit || acronym || mixed || capitalized {
+            out.extend(words(w).filter(|t| (t.chars().count() >= 2 || t.chars().all(|c| c.is_ascii_digit())) && !LITTLE_WORDS.contains(&t.as_str())));
+        }
+    }
+    out.sort();
+    out.dedup();
+    out
+}
+
 /// The little words of questions: they say nothing about which passage is meant.
 const LITTLE_WORDS: &[&str] = &[
     "the", "a", "an", "of", "to", "in", "on", "at", "for", "and", "or", "is", "are", "was", "were", "be", "been", "what", "who", "whom", "which", "where", "when", "why", "how", "did", "does", "do", "with", "by", "from", "it",
@@ -156,8 +178,8 @@ const LITTLE_WORDS: &[&str] = &[
     "has", "have", "had", "not", "no", "any", "all", "some", "tell", "give", "show", "please", "say", "says", "said", "mean", "means",
 ];
 
-/// A word is rare when it is in at most this many passages (and at most a thirtieth of them).
-const RARE_MAX: usize = 12;
+/// A word is rare when it is in at most this many passages (and at most a twelfth of them).
+const RARE_MAX: usize = 20;
 
 /// A vector scaled to length one (a server that returns vectors of another length, as some do, still gives cosines).
 fn unit(v: &[f32]) -> Vec<f32> {
@@ -228,17 +250,15 @@ impl DocIndex {
         out
     }
 
-    /// The passages that have a word of the question that few passages have (a name, an identifier, a number), best first, at most `limit`: BM25 over the rare words of the question only. Embeddings
-    /// are weak exactly there (a question that names "invoice INV-7731-QX" or "Marguerite Okafor" scores 0.5 to 0.6 against the right passage, and sometimes far below the rest), a keyword match is not.
+    /// The passages that have a name, an identifier or a number of the question (`names_in`) that few passages have, best first, at most `limit`: BM25 over those words only. Embeddings are weak exactly
+    /// there (a question that names "invoice INV-7731-QX" or "Marguerite Okafor" scores 0.5 to 0.6 against the right passage, and sometimes far below the rest), a keyword match is not.
     pub fn lexical(&self, question: &str, limit: usize) -> Vec<usize> {
         let n = self.passages.len();
         // in a short file every word is rare
         if n < 8 || limit == 0 {
             return Vec::new();
         }
-        let mut terms: Vec<String> = words(question).filter(|w| (w.chars().count() >= 2 || w.chars().all(|c| c.is_ascii_digit())) && !LITTLE_WORDS.contains(&w.as_str())).collect();
-        terms.sort();
-        terms.dedup();
+        let terms = names_in(question);
         if terms.is_empty() {
             return Vec::new();
         }
@@ -260,8 +280,8 @@ impl DocIndex {
         }
         let avg = (lens.iter().sum::<usize>() as f32 / n as f32).max(1.0);
         let df: Vec<usize> = (0..terms.len()).map(|t| counts.iter().filter(|c| c[t] > 0).count()).collect();
-        // rare: in at most a thirtieth of the passages (and in no more than twelve)
-        let cap = (n / 30).clamp(2, RARE_MAX);
+        // rare: in at most a twelfth of the passages (and in no more than twenty)
+        let cap = (n / 12).clamp(2, RARE_MAX);
         let (k1, b) = (1.2f32, 0.75f32);
         let mut scored: Vec<(f32, usize)> = (0..n)
             .filter_map(|i| {
@@ -926,6 +946,29 @@ mod tests {
         println!("=== answer in {:.1} s:\n{answer}", t1.elapsed().as_secs_f32());
     }
 
+    /// What the keyword search finds in real files: FORGE_TEST_DOCS=file;file FORGE_TEST_QUESTIONS="q one|q two" cargo test --lib live_keywords -- --ignored --nocapture
+    #[test]
+    #[ignore]
+    fn live_keywords() {
+        let mut idx = DocIndex::default();
+        for p in std::env::var("FORGE_TEST_DOCS").unwrap_or_default().split(';').filter(|p| !p.is_empty()) {
+            let path = std::path::Path::new(p);
+            let text = crate::office::read_document(path, 24 << 20).unwrap();
+            let parts = split_pages(&text, CHUNK_CHARS, OVERLAP_CHARS);
+            let vectors = vec![vec![1.0f32]; parts.len()];
+            idx.add(fingerprint(&text), &path.file_name().unwrap().to_string_lossy(), parts, vectors);
+        }
+        println!("{} passages", idx.passages.len());
+        for q in std::env::var("FORGE_TEST_QUESTIONS").unwrap_or_default().split('|').filter(|q| !q.is_empty()) {
+            let hits = idx.lexical(q, 2);
+            println!("\n? {q}\n   keyword hits: {}", if hits.is_empty() { "none".to_string() } else { hits.iter().map(|&i| format!("#{i} (page {:?})", idx.passages[i].page)).collect::<Vec<_>>().join(", ") });
+            for &i in &hits {
+                let t: String = idx.passages[i].text.split_whitespace().collect::<Vec<_>>().join(" ");
+                println!("   #{i}: {}", t.chars().take(160).collect::<String>());
+            }
+        }
+    }
+
     fn ledger() -> DocIndex {
         let mut idx = DocIndex::default();
         let passages: Vec<(String, Option<u32>)> = (0..40)
@@ -937,6 +980,19 @@ mod tests {
             .collect();
         idx.add(1, "ledger.txt", passages, vec![vec![1.0, 0.0]; 40]);
         idx
+    }
+
+    #[test]
+    fn the_names_of_a_question_are_its_capitalized_words_acronyms_and_codes() {
+        assert_eq!(names_in("What did Marguerite Okafor pay for?"), ["marguerite", "okafor"]);
+        assert_eq!(names_in("What happened with invoice INV-7731-QX?"), ["7731", "inv", "qx"]);
+        assert_eq!(names_in("Where is route R-58 and PO 440182?"), ["440182", "58", "po"]);
+        assert_eq!(names_in("how does the NF4 type work in QLoRA?"), ["nf4", "qlora"]);
+        assert_eq!(names_in("I think Fleiss kappa matters"), ["fleiss"]);
+        // everyday words, however rare in a file, and the capital of the first word are not names
+        assert!(names_in("What is the main limitation of the authors' work?").is_empty());
+        assert!(names_in("Summarize the paper").is_empty());
+        assert!(names_in("").is_empty());
     }
 
     #[test]
