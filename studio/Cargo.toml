@@ -1,6 +1,6 @@
 [package]
 name = "forge-studio"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
 description = "Forge Studio: a desktop app (egui) to chat with local models, manage GGUF files and run the ForgeInfer engine"
 license = "Apache-2.0"

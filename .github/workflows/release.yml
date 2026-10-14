@@ -96,14 +96,27 @@ jobs:
         with:
           name: release-archives
           path: out/*
+      - name: release notes
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          set -e
+          f="docs/releases/${GITHUB_REF_NAME}.md"
+          if [ -f "$f" ]; then
+            cp "$f" release_body.md
+          else
+            cat > release_body.md <<EOF
+          Forge Studio ${GITHUB_REF_NAME} (pre-release): the desktop app for Windows, Linux and macOS, and the ForgeInfer engine (CUDA) for Windows and Linux, built by GitHub Actions from the tagged source.
+
+          Unsigned binaries. The window has been run on Windows 11 with an RTX 4060 and on Ubuntu 24.04 (X11) with an RTX 2060 SUPER; the macOS build is compiled and unit-tested by CI but nobody has run its window yet: bug reports are welcome.
+
+          Developed with Claude Code (Anthropic).
+          EOF
+          fi
+          echo "" >> release_body.md
+          echo "Documentation: docs/GETTING_STARTED.md; measured speeds against LM Studio, llama.cpp and Ollama: docs/PERFORMANCE.md." >> release_body.md
       - uses: softprops/action-gh-release@v2
         if: startsWith(github.ref, 'refs/tags/v')
         with:
           files: out/*
           prerelease: true
-          body: |
-            Forge Studio ${{ github.ref_name }} (pre-release): the desktop app for Windows, Linux and macOS, and the ForgeInfer engine (CUDA) for Windows and Linux, built by GitHub Actions from the tagged source.
-
-            Unsigned binaries. The window has been run on Windows 11 with an RTX 4060 and on Ubuntu 24.04 (X11) with an RTX 2060 SUPER; the macOS build is compiled and unit-tested by CI but nobody has run its window yet: bug reports are welcome. Documentation: docs/GETTING_STARTED.md; measured speeds against LM Studio's engine, llama.cpp and Ollama: docs/PERFORMANCE.md.
-
-            Developed with Claude Code (Anthropic).
+          body_path: release_body.md
