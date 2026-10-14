@@ -125,6 +125,8 @@ pub enum Msg {
     Models(Result<Vec<String>, String>),
     Inspected(Result<Inspect, String>),
     Embedded(Result<EmbedOut, String>),
+    /// A PDF, Word or PowerPoint file has been read for the next message (or could not be).
+    Attached(Result<chats::Attachment, String>),
     /// A search of the files of a chat is over: the index that now holds them and the passages found for the question.
     Retrieved {
         chat_id: String,
@@ -407,7 +409,7 @@ impl StudioApp {
             }
         }
         for p in &opts.attach {
-            match crate::util::read_text_file(p, 2 << 20) {
+            match crate::office::read_document(p, 24 << 20) {
                 Ok(text) => app.attachments.push(crate::chats::Attachment {
                     name: p
                         .file_name()
@@ -1201,6 +1203,16 @@ impl StudioApp {
                     self.external_models.clear();
                 }
             },
+            Msg::Attached(r) => match r {
+                Ok(a) => {
+                    if self.attachments.iter().all(|x| x.name != a.name) {
+                        self.attachments.push(a);
+                    }
+                    self.screen = Screen::Chat;
+                    self.focus_input = true;
+                }
+                Err(e) => self.toast(e),
+            },
             Msg::Retrieved { chat_id, msg_id, result } => {
                 // a search that was stopped or left behind (another chat, a reloaded model) finds its message gone: the index it built is still kept
                 let current = self.retrieval.as_ref().is_some_and(|r| r.msg_id == msg_id);
@@ -1358,6 +1370,17 @@ impl StudioApp {
             if !is_model {
                 // a chat that can search its files takes much longer ones than one that has to send them whole
                 let limit = if self.embedding_endpoint().is_some() { 24 << 20 } else { 2 << 20 };
+                // a PDF, Word or PowerPoint file is read on a thread of its own (a long PDF takes a moment)
+                if crate::office::is_office(&p) {
+                    let name = p.file_name().map(|s| s.to_string_lossy().to_string()).unwrap_or_else(|| "file".into());
+                    self.toast(format!("Reading {name} ..."));
+                    self.spawn(move |tx, wake| {
+                        let r = crate::office::read_document(&p, limit).map(|text| crate::chats::Attachment { name, text });
+                        let _ = tx.send(Msg::Attached(r));
+                        wake();
+                    });
+                    continue;
+                }
                 match crate::util::read_text_file(&p, limit) {
                     Ok(text) => {
                         let name = p

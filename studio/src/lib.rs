@@ -9,6 +9,7 @@ pub mod hf;
 pub mod library;
 pub mod markdown;
 pub mod mtp;
+pub mod office;
 pub mod rag;
 pub mod settings;
 pub mod theme;
