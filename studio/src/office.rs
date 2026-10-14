@@ -1,5 +1,5 @@
 //! The text of the documents people attach to a chat: PDF (its text layer), Word (.docx), Excel (.xlsx), PowerPoint (.pptx), OpenDocument (.odt, .ods, .odp), RTF, EPUB books and web pages (.html), and plain
-//! text and code (`util::read_text_file`). A scan without a text layer has nothing to read and says so.
+//! text and code (`util::read_text_file`). A page of a PDF that is only a picture (a scan) is read by the text recognition of the system where there is one (`ocr`: Windows), else it says so.
 
 use std::collections::{HashMap, HashSet};
 use std::io::Read;
@@ -40,9 +40,19 @@ pub fn read_document(path: &Path, limit: u64) -> Result<String, String> {
     if meta.len() > MAX_FILE {
         return Err(format!("{name} is {}: too large to open (the limit is {}).", human_bytes(meta.len()), human_bytes(MAX_FILE)));
     }
+    // why a scan could not be read as pictures either, when it had no text layer
+    let scan_failure: std::cell::RefCell<Option<String>> = std::cell::RefCell::new(None);
     let parse = || -> Result<String, String> {
         Ok(match kind.as_str() {
-            "pdf" => pdf_text(path)?,
+            "pdf" => {
+                let bytes = std::fs::read(path).map_err(|e| e.to_string())?;
+                let mut pages = pdf_pages(&bytes)?;
+                // pages without a text layer (a scan is all of them, a report with a scanned appendix some) are pictures: read by the text recognition that comes with the system where there is one
+                if let Err(why) = crate::ocr::read_blank_pages(&bytes, &mut pages) {
+                    *scan_failure.borrow_mut() = Some(why);
+                }
+                pages.join("\u{c}")
+            }
             "docx" => docx_text(path)?,
             "pptx" => pptx_text(path)?,
             "xlsx" | "xlsm" => xlsx_text(path)?,
@@ -61,7 +71,14 @@ pub fn read_document(path: &Path, limit: u64) -> Result<String, String> {
     // prose is tidied (hyphens at line ends rejoined ...); the rows of a sheet are not prose: a row that ends with a hyphen must not swallow the next one
     let text = if matches!(kind.as_str(), "xlsx" | "xlsm" | "ods") { text.trim_matches(['\n', '\r', ' ']).to_string() } else { tidy(&text) };
     if text.chars().all(|c| c.is_whitespace()) {
-        return Err(if kind == "pdf" { format!("{name} has no text layer (a scan?): it would need character recognition (OCR) first.") } else { format!("{name} holds no text.") });
+        return Err(if kind == "pdf" {
+            match scan_failure.borrow().as_deref() {
+                Some(why) => format!("{name} has no text layer (a scan?) and reading its pages as pictures failed: {why}."),
+                None => format!("{name} has no text layer (a scan?) and no text could be read from its pictures."),
+            }
+        } else {
+            format!("{name} holds no text.")
+        });
     }
     if text.len() as u64 > limit {
         return Err(format!("the text of {name} is {} and the limit is {}: attach a smaller file.", human_bytes(text.len() as u64), human_bytes(limit)));
@@ -117,11 +134,16 @@ fn pdf_text(path: &Path) -> Result<String, String> {
 }
 
 fn pdf_text_from_bytes(bytes: &[u8]) -> Result<String, String> {
+    // the pages one after the other, a form feed between two of them (the chat reads them back as page numbers)
+    pdf_pages(bytes).map(|pages| pages.join("\u{c}"))
+}
+
+/// The text layer of each page of a PDF.
+fn pdf_pages(bytes: &[u8]) -> Result<Vec<String>, String> {
     // (the panic message of the parser goes to the standard error as usual: the panic hook is process-wide, and two files read at once must not fight over it)
     let r = std::panic::catch_unwind(|| pdf_extract::extract_text_from_mem_by_pages(bytes));
     match r {
-        // the pages one after the other, a form feed between two of them (the chat reads them back as page numbers)
-        Ok(Ok(pages)) => Ok(pages.join("\u{c}")),
+        Ok(Ok(pages)) => Ok(pages),
         Ok(Err(e)) => Err(format!("not a PDF that can be read ({e})")),
         Err(_) => Err("this PDF could not be read (its structure is not one the reader understands)".to_string()),
     }
@@ -1230,6 +1252,40 @@ Second\tab line\line broken \{braces\} \\ end.\par
         std::fs::write(&cut, r"{\rtf1\ansi Some text \u82").unwrap();
         assert!(read_document(&cut, 1 << 20).unwrap().contains("Some text"));
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Pieces of markup and escapes in random order: no reader may panic or hang on them.
+    #[test]
+    fn random_markup_never_panics_a_reader() {
+        let pieces = [
+            "<", ">", "/", "/>", "text:p", "text:h", "text:s text:c=\"5\"", "text:tab", "table:table", "table:table-row", "table:table-cell", " table:number-columns-repeated=\"9\"", " table:name=\"S\"", "draw:page", "office:annotation",
+            "</office:annotation>", "text:tracked-changes", "c", " r=\"B7\"", " r=\"ZZZZ1\"", " t=\"s\"", " t=\"inlineStr\"", " s=\"3\"", "v", "is", "t", "rPh", "row", "si", "xf ", "numFmt ", " numFmtId=\"14\"", " formatCode=\"yy\"", "cellXfs",
+            "&amp;", "&#x41;", "&#99999999;", "&", ";", "\\", "{", "}", "'", "u", "-", "9", "bin", "par", "*", "fonttbl", "uc", " ", "\u{e9}", "\u{1f600}", "\n", "a", "\"",
+        ];
+        let mut seed = 0x9E37_79B9_7F4A_7C15u64;
+        let mut next = move || {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            seed
+        };
+        // (FORGE_FUZZ=400000 runs it much longer)
+        let rounds = std::env::var("FORGE_FUZZ").ok().and_then(|v| v.parse::<usize>().ok()).unwrap_or(6000);
+        for _ in 0..rounds {
+            let mut s = String::new();
+            for _ in 0..(next() % 40) {
+                s.push_str(pieces[(next() as usize) % pieces.len()]);
+            }
+            for kind in [Odf::Text, Odf::Sheet, Odf::Slides] {
+                let _ = odf_text(&s, kind);
+            }
+            let _ = rtf_text(s.as_bytes());
+            let _ = sheet_rows(&s, &["a".to_string()], &HashSet::from([3usize]));
+            let _ = shared_strings(&s);
+            let _ = date_styles(&s);
+            let _ = html_text(&s);
+            let _ = xml_text(&s, "w:t", "w:p");
+        }
     }
 
     #[test]

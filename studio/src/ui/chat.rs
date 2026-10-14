@@ -618,16 +618,17 @@ fn message_view(app: &mut StudioApp, ui: &mut Ui, i: usize, last: bool) {
                         ui.set_max_width(width * 0.82);
                         ui.vertical(|ui| {
                             for a in &m.attachments {
-                                ui.label(
-                                    RichText::new(format!(
-                                        "attached: {} \u{00B7} {}{}",
-                                        a.name,
-                                        human_bytes(a.text.len() as u64),
-                                        if m.by_retrieval { " \u{00B7} searched, not sent whole" } else { "" }
-                                    ))
-                                    .small()
-                                    .color(theme::MUTED),
+                                let head = format!(
+                                    "attached: {} \u{00B7} {}{}",
+                                    a.name,
+                                    human_bytes(a.text.len() as u64),
+                                    if m.by_retrieval { " \u{00B7} searched, not sent whole" } else { "" }
                                 );
+                                // click to see the text that was taken out of the file (a PDF or a spreadsheet can come out differently from how it looks)
+                                egui::CollapsingHeader::new(RichText::new(head).small().color(theme::MUTED)).id_salt(("attachment", &m.id, &a.name)).default_open(app.opts.open_passages).show(ui, |ui| {
+                                    ui.add(egui::Label::new(RichText::new(truncate(&a.text.replace('\u{c}', "\n\n"), 3000)).small().color(theme::TEXT)).wrap());
+                                    ui.label(RichText::new("the text of the file as the model gets it (its start)").small().color(theme::MUTED));
+                                });
                             }
                             ui.add(
                                 egui::Label::new(

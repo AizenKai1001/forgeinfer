@@ -1,6 +1,6 @@
 [package]
 name = "forge-studio"
-version = "0.1.13"
+version = "0.1.14"
 edition = "2021"
 description = "Forge Studio: a desktop app (egui) to chat with local models, manage GGUF files and run the ForgeInfer engine"
 license = "Apache-2.0"
@@ -15,6 +15,8 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 ureq = { version = "3", features = ["json"] }
 png = "0.17"
+# the pictures of a scanned PDF (pdf-extract brings the same crate)
+lopdf = { version = "0.42", default-features = false }
 # the text of attached PDF, Office, OpenDocument and EPUB files
 pdf-extract = "0.12"
 zip = { version = "9", default-features = false, features = ["deflate-flate2-zlib-rs"] }
@@ -28,3 +30,7 @@ strip = "debuginfo"
 
 [profile.dev]
 opt-level = 1
+
+# text recognition of the pictures of a scanned PDF: the one that comes with Windows
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.62", features = ["Foundation", "Graphics_Imaging", "Media_Ocr", "Storage_Streams"] }

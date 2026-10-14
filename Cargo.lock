@@ -4,14 +4,14 @@ version = 4
 
 [[package]]
 name = "forge-chat"
-version = "0.1.13"
+version = "0.1.14"
 dependencies = [
  "forge-core",
 ]
 
 [[package]]
 name = "forge-cli"
-version = "0.1.13"
+version = "0.1.14"
 dependencies = [
  "forge-chat",
  "forge-core",
@@ -31,18 +31,18 @@ dependencies = [
 
 [[package]]
 name = "forge-core"
-version = "0.1.13"
+version = "0.1.14"
 
 [[package]]
 name = "forge-cuda"
-version = "0.1.13"
+version = "0.1.14"
 dependencies = [
  "forge-core",
 ]
 
 [[package]]
 name = "forge-embed"
-version = "0.1.13"
+version = "0.1.14"
 dependencies = [
  "forge-core",
  "forge-gguf",
@@ -51,7 +51,7 @@ dependencies = [
 
 [[package]]
 name = "forge-embed-gpu"
-version = "0.1.13"
+version = "0.1.14"
 dependencies = [
  "forge-core",
  "forge-cuda",
@@ -62,7 +62,7 @@ dependencies = [
 
 [[package]]
 name = "forge-engine"
-version = "0.1.13"
+version = "0.1.14"
 dependencies = [
  "forge-chat",
  "forge-core",
@@ -76,14 +76,14 @@ dependencies = [
 
 [[package]]
 name = "forge-gguf"
-version = "0.1.13"
+version = "0.1.14"
 dependencies = [
  "forge-core",
 ]
 
 [[package]]
 name = "forge-gpu"
-version = "0.1.13"
+version = "0.1.14"
 dependencies = [
  "forge-core",
  "forge-cuda",
@@ -94,11 +94,11 @@ dependencies = [
 
 [[package]]
 name = "forge-kernels"
-version = "0.1.13"
+version = "0.1.14"
 
 [[package]]
 name = "forge-model"
-version = "0.1.13"
+version = "0.1.14"
 dependencies = [
  "forge-core",
  "forge-gguf",
@@ -107,7 +107,7 @@ dependencies = [
 
 [[package]]
 name = "forge-quant"
-version = "0.1.13"
+version = "0.1.14"
 dependencies = [
  "forge-core",
  "forge-gguf",
@@ -115,7 +115,7 @@ dependencies = [
 
 [[package]]
 name = "forge-serve"
-version = "0.1.13"
+version = "0.1.14"
 dependencies = [
  "forge-chat",
  "forge-core",
@@ -125,7 +125,7 @@ dependencies = [
 
 [[package]]
 name = "forge-tok"
-version = "0.1.13"
+version = "0.1.14"
 dependencies = [
  "forge-core",
  "forge-gguf",
@@ -133,7 +133,7 @@ dependencies = [
 
 [[package]]
 name = "forge-train"
-version = "0.1.13"
+version = "0.1.14"
 dependencies = [
  "forge-core",
  "forge-cuda",
