@@ -1,5 +1,5 @@
-//! The text of the documents people attach to a chat: PDF (its text layer), Word (.docx) and PowerPoint (.pptx) files, and plain text and code (`util::read_text_file`). A scan without a text layer
-//! has nothing to read and says so.
+//! The text of the documents people attach to a chat: PDF (its text layer), Word (.docx), PowerPoint (.pptx), EPUB books and web pages (.html), and plain text and code (`util::read_text_file`). A scan
+//! without a text layer has nothing to read and says so.
 
 use std::io::Read;
 use std::path::Path;
@@ -11,7 +11,7 @@ const MAX_FILE: u64 = 256 << 20;
 
 /// Is this a file `read_document` reads with a parser of its own (slow enough to be done off the window's thread)?
 pub fn is_office(path: &Path) -> bool {
-    matches!(extension(path).as_str(), "pdf" | "docx" | "pptx")
+    matches!(extension(path).as_str(), "pdf" | "docx" | "pptx" | "epub" | "html" | "htm" | "xhtml")
 }
 
 fn extension(path: &Path) -> String {
@@ -22,7 +22,11 @@ fn extension(path: &Path) -> String {
 pub fn read_document(path: &Path, limit: u64) -> Result<String, String> {
     let name = path.file_name().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
     let kind = extension(path);
-    if !matches!(kind.as_str(), "pdf" | "docx" | "pptx") {
+    // formats that are not plain text and that no reader here understands (yet): say what to do instead of "not a text file"
+    if matches!(kind.as_str(), "doc" | "xls" | "xlsx" | "ppt" | "odt" | "ods" | "odp" | "rtf" | "pages" | "key" | "numbers") {
+        return Err(format!("{name}: .{kind} files are not read yet: export or save it as a PDF or a .docx file (or as plain text) and attach that."));
+    }
+    if !is_office(path) {
         return read_text_file(path, limit);
     }
     let meta = std::fs::metadata(path).map_err(|e| format!("{name}: {e}"))?;
@@ -32,7 +36,9 @@ pub fn read_document(path: &Path, limit: u64) -> Result<String, String> {
     let text = match kind.as_str() {
         "pdf" => pdf_text(path).map_err(|e| format!("{name}: {e}"))?,
         "docx" => docx_text(path).map_err(|e| format!("{name}: {e}"))?,
-        _ => pptx_text(path).map_err(|e| format!("{name}: {e}"))?,
+        "pptx" => pptx_text(path).map_err(|e| format!("{name}: {e}"))?,
+        "epub" => epub_text(path).map_err(|e| format!("{name}: {e}"))?,
+        _ => html_text(&String::from_utf8_lossy(&std::fs::read(path).map_err(|e| format!("{name}: {e}"))?)),
     };
     let text = tidy(&text);
     if text.chars().all(|c| c.is_whitespace()) {
@@ -143,6 +149,131 @@ fn pptx_text(path: &Path) -> Result<String, String> {
     Ok(out)
 }
 
+/// The text of a web page: what is between the tags, without scripts, styles and comments, with a line break where a block ends (paragraph, heading, list item, row) and the entities decoded.
+pub fn html_text(html: &str) -> String {
+    fn push_text(out: &mut String, s: &str) {
+        for c in decode_entities(s).chars() {
+            if c.is_whitespace() {
+                if !out.is_empty() && !out.ends_with(char::is_whitespace) {
+                    out.push(' ');
+                }
+            } else {
+                out.push(c);
+            }
+        }
+    }
+    // the position of `needle` in `hay`, upper and lower case alike (needle in lower case)
+    fn find_ci(hay: &str, needle: &str) -> Option<usize> {
+        let (h, n) = (hay.as_bytes(), needle.as_bytes());
+        (0..=h.len().checked_sub(n.len())?).find(|&i| h[i..i + n.len()].eq_ignore_ascii_case(n))
+    }
+    let mut out = String::new();
+    let mut rest = html;
+    while let Some(lt) = rest.find('<') {
+        push_text(&mut out, &rest[..lt]);
+        rest = &rest[lt + 1..];
+        if let Some(r) = rest.strip_prefix("!--") {
+            rest = r.find("-->").map_or("", |i| &r[i + 3..]);
+            continue;
+        }
+        let Some(gt) = rest.find('>') else { break };
+        let tag = &rest[..gt];
+        rest = &rest[gt + 1..];
+        let closing = tag.starts_with('/');
+        let name = tag.trim_start_matches('/').chars().take_while(|c| c.is_ascii_alphanumeric()).collect::<String>().to_lowercase();
+        match name.as_str() {
+            "script" | "style" if !closing => {
+                rest = find_ci(rest, &format!("</{name}")).map_or("", |i| &rest[i..]);
+            }
+            "td" | "th" => {
+                if closing {
+                    out.push('\t');
+                }
+            }
+            "br" | "hr" | "p" | "div" | "li" | "tr" | "h1" | "h2" | "h3" | "h4" | "h5" | "h6" | "section" | "article" | "header" | "footer" | "blockquote" | "pre" | "table" | "ul" | "ol" | "dd" | "dt" | "title" => {
+                if !out.is_empty() && !out.ends_with('\n') {
+                    out.push('\n');
+                }
+            }
+            _ => {}
+        }
+    }
+    push_text(&mut out, rest);
+    out
+}
+
+/// The attribute `name` of a tag (`id="x"` or `id='x'`).
+fn attr<'a>(tag: &'a str, name: &str) -> Option<&'a str> {
+    for q in ['"', '\''] {
+        let key = format!("{name}={q}");
+        let mut from = 0;
+        while let Some(i) = tag[from..].find(&key) {
+            let at = from + i;
+            // the attribute starts the tag text or follows a space
+            if at == 0 || tag.as_bytes()[at - 1].is_ascii_whitespace() {
+                let v = &tag[at + key.len()..];
+                return v.find(q).map(|e| &v[..e]);
+            }
+            from = at + key.len();
+        }
+    }
+    None
+}
+
+/// The text of an EPUB book: its chapters (XHTML files) in the order of the book's spine, or in the order of their names when the spine cannot be read.
+fn epub_text(path: &Path) -> Result<String, String> {
+    let mut z = open_zip(path)?;
+    let names: Vec<String> = z.file_names().filter_map(|n| n.ok().map(|n| n.to_string())).collect();
+    let is_page = |n: &str| {
+        let l = n.to_lowercase();
+        l.ends_with(".xhtml") || l.ends_with(".html") || l.ends_with(".htm")
+    };
+    // META-INF/container.xml names the package file, whose manifest maps ids to files and whose spine gives the order
+    let mut order: Vec<String> = Vec::new();
+    if let Ok(container) = zip_entry(&mut z, "META-INF/container.xml") {
+        if let Some(opf_path) = container.split('<').find(|t| t.starts_with("rootfile ")).and_then(|t| attr(t, "full-path")).map(str::to_string) {
+            if let Ok(opf) = zip_entry(&mut z, &opf_path) {
+                let dir = opf_path.rsplit_once('/').map(|d| format!("{}/", d.0)).unwrap_or_default();
+                let tags: Vec<&str> = opf.split('<').collect();
+                let href_of = |id: &str| tags.iter().filter(|t| t.starts_with("item ")).find(|t| attr(t, "id") == Some(id)).and_then(|t| attr(t, "href"));
+                for t in tags.iter().filter(|t| t.starts_with("itemref")) {
+                    if let Some(href) = attr(t, "idref").and_then(href_of) {
+                        order.push(format!("{dir}{}", href.replace("%20", " ")));
+                    }
+                }
+            }
+        }
+    }
+    order.retain(|n| names.contains(n) && is_page(n));
+    if order.is_empty() {
+        order = names.iter().filter(|n| is_page(n)).cloned().collect();
+        // chapter2 before chapter10: compare the digit runs as numbers
+        let key = |n: &String| -> Vec<(bool, u64, String)> {
+            let mut parts: Vec<(bool, u64, String)> = Vec::new();
+            let mut cur = String::new();
+            for c in n.chars().chain(std::iter::once('\0')) {
+                let digit = c.is_ascii_digit();
+                if !cur.is_empty() && cur.chars().next().is_some_and(|f| f.is_ascii_digit()) != digit {
+                    parts.push((cur.chars().next().is_some_and(|f| f.is_ascii_digit()), cur.parse().unwrap_or(0), std::mem::take(&mut cur)));
+                }
+                cur.push(c);
+            }
+            parts
+        };
+        order.sort_by_key(key);
+    }
+    if order.is_empty() {
+        return Err("no chapters found: not an EPUB book".to_string());
+    }
+    let mut out = String::new();
+    for n in order {
+        let page = zip_entry(&mut z, &n)?;
+        out.push_str(&html_text(&page));
+        out.push_str("\n\n");
+    }
+    Ok(out)
+}
+
 /// The text of an Office XML part: what sits between `<text_tag>` and `</text_tag>`, a line break at the end of every `<para_tag>` paragraph, tabs and line breaks where the file has them, the XML
 /// entities decoded. Everything else (formatting, drawings, field codes) is skipped.
 fn xml_text(xml: &str, text_tag: &str, para_tag: &str) -> String {
@@ -190,6 +321,22 @@ fn decode_entities(s: &str) -> String {
             "gt" => Some('>'),
             "quot" => Some('"'),
             "apos" => Some('\''),
+            // the few named characters that web pages and books use most
+            "nbsp" => Some(' '),
+            "mdash" => Some('\u{2014}'),
+            "ndash" => Some('\u{2013}'),
+            "hellip" => Some('\u{2026}'),
+            "lsquo" => Some('\u{2018}'),
+            "rsquo" => Some('\u{2019}'),
+            "ldquo" => Some('\u{201c}'),
+            "rdquo" => Some('\u{201d}'),
+            "laquo" => Some('\u{ab}'),
+            "raquo" => Some('\u{bb}'),
+            "copy" => Some('\u{a9}'),
+            "reg" => Some('\u{ae}'),
+            "trade" => Some('\u{2122}'),
+            "middot" => Some('\u{b7}'),
+            "bull" => Some('\u{2022}'),
             _ => ent
                 .strip_prefix("#x")
                 .and_then(|h| u32::from_str_radix(h, 16).ok())
@@ -347,6 +494,46 @@ mod tests {
                 Err(e) => println!("{p}: ERROR {e}"),
             }
         }
+    }
+
+    #[test]
+    fn a_web_page_gives_its_text() {
+        let html = "<!doctype html><html><head><title>Harbour</title><style>p { color: red }</style><script>var x = '<p>no</p>';</script></head><body><!-- a comment --><h1>The Harbour</h1><p>Ships dock at <b>six</b> &amp; leave\n   at nine&nbsp;o&rsquo;clock.</p><ul><li>tea</li><li>rope</li></ul><table><tr><td>a</td><td>b</td></tr></table><SCRIPT>alert(1)</SCRIPT><p>End.</p></body></html>";
+        let t = tidy(&html_text(html));
+        assert_eq!(t, "Harbour\nThe Harbour\nShips dock at six & leave at nine o\u{2019}clock.\ntea\nrope\na\tb\nEnd.", "{t:?}");
+        assert!(!t.contains("color") && !t.contains("alert") && !t.contains("comment"));
+        assert_eq!(html_text("no tags at all"), "no tags at all");
+        assert_eq!(html_text("broken <p>tag"), "broken 
+tag");
+    }
+
+    #[test]
+    fn an_epub_gives_its_chapters_in_the_order_of_the_spine() {
+        let dir = temp_dir("epub");
+        let f = dir.join("book.epub");
+        let container = r#"<?xml version="1.0"?><container><rootfiles><rootfile full-path="OEBPS/content.opf" media-type="application/oebps-package+xml"/></rootfiles></container>"#;
+        let opf = r#"<package><manifest><item id="c1" href="ch1.xhtml" media-type="application/xhtml+xml"/><item id="c2" href="ch%202.xhtml" media-type="application/xhtml+xml"/><item id="css" href="style.css" media-type="text/css"/></manifest><spine><itemref idref="c2"/><itemref idref="c1"/></spine></package>"#;
+        write_zip(&f, &[("META-INF/container.xml", container), ("OEBPS/content.opf", opf), ("OEBPS/ch1.xhtml", "<html><body><p>First chapter.</p></body></html>"), ("OEBPS/ch 2.xhtml", "<html><body><p>Second chapter.</p></body></html>")]);
+        assert!(is_office(&f));
+        assert_eq!(read_document(&f, 1 << 20).unwrap(), "Second chapter.\n\nFirst chapter.");
+        // no readable spine: the pages in the order of their names, numbers compared as numbers
+        let g = dir.join("loose.epub");
+        write_zip(&g, &[("ch10.xhtml", "<p>Ten.</p>"), ("ch2.xhtml", "<p>Two.</p>"), ("ch1.xhtml", "<p>One.</p>")]);
+        assert_eq!(read_document(&g, 1 << 20).unwrap(), "One.\n\nTwo.\n\nTen.");
+        let none = dir.join("none.epub");
+        write_zip(&none, &[("mimetype", "application/epub+zip")]);
+        assert!(read_document(&none, 1 << 20).unwrap_err().contains("not an EPUB"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn formats_that_are_not_read_say_what_to_do() {
+        let dir = temp_dir("unsupported");
+        let f = dir.join("sheet.xlsx");
+        std::fs::write(&f, b"PK\x03\x04 not really").unwrap();
+        let e = read_document(&f, 1 << 20).unwrap_err();
+        assert!(e.contains(".xlsx files are not read yet") && e.contains("PDF"), "{e}");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

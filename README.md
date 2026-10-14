@@ -18,7 +18,9 @@ Forge Studio is not tied to the engine. It also drives llama.cpp's `llama-server
 
 ![Chat](docs/images/studio-chat.png)
 
-- **Chat**: streaming answers, Markdown with code blocks, tables and lists, a folded "Thought for N s" block for thinking models with a Think auto/off/on switch beside Send, tokens per second and time to first token under every answer, regenerate, edit and resend, copy, **attach text, code, PDF, Word and PowerPoint files** by dropping them on the window (a file too long for the context is searched instead: **chat with documents**, with an embedding model that runs inside the engine), rename and search chats, chat history on disk (one JSON file per chat).
+- **Chat**: streaming answers, Markdown with code blocks, tables and lists, a folded "Thought for N s" block for thinking models with a Think auto/off/on switch beside Send, tokens per second and time to first token under every answer, regenerate, edit and resend, copy, **attach text, code, PDF, Word, PowerPoint, EPUB and HTML files** by dropping them on the window (a file too long for the context is searched instead: **chat with documents**, with an embedding model that runs inside the engine), rename and search chats, chat history on disk (one JSON file per chat).
+- **Chat with documents**: drop a PDF, Word, PowerPoint, EPUB, web page, text or code file on the window and ask about it. A file that fits the context goes in whole; a longer one is cut into passages, the engine's own embedding model (nomic-embed-text, read from disk only when a long file is first searched) finds the best ones for each question, and the answer cites the file and the PDF page: a 500 KB file is read in 3 seconds on an RTX 4060. A question about the document as a whole (summary, abstract) gets its opening too.
+- **Embedding models**: load nomic-embed-text and the chat screen becomes a playground (type lines, see how close each is to the first one); the same model serves `/v1/embeddings` to other programs.
 - **My models**: finds `.gguf` files in your folders, LM Studio's folder and Ollama's store (used in place, nothing is copied). Every card says what is inside (architecture, parameters, quantization, context) and whether it fits your video memory.
 - **Model inspector**: take any GGUF apart: layer map (the hybrid pattern of Qwen3.5 shows up as 3 recurrent layers per attention layer), where the bytes are (feed-forward, attention, embeddings), the quantization mix, every metadata key and tensor.
 - **Discover**: search Hugging Face for GGUF repositories, see every file with its quantization, size and a "fits in video memory" badge, download with progress, speed and resume.
@@ -26,6 +28,8 @@ Forge Studio is not tied to the engine. It also drives llama.cpp's `llama-server
 - **Hardware**, **Logs**, **Settings**: what the computer offers, everything the engine prints, engine choice, context length, KV-cache compression, extra engine arguments.
 
 ![Model inspector](docs/images/studio-inspector.png)
+
+![Chat with a PDF](docs/images/studio-documents.png)
 
 See [docs/STUDIO.md](docs/STUDIO.md) for the full guide.
 

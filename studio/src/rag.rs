@@ -1,7 +1,6 @@
 //! Chat with documents: split attached files into passages, rank the passages against a question by the vectors an embedding model made of them, and write the prompt the way LM Studio does
 //! (the citations in front of the question). Nothing here touches the network or the window: `app.rs` embeds and calls these.
 
-use std::collections::HashSet;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
 
@@ -144,10 +143,21 @@ pub struct Passage {
     pub page: Option<u32>,
 }
 
+/// A vector scaled to length one (a server that returns vectors of another length, as some do, still gives cosines).
+fn unit(v: &[f32]) -> Vec<f32> {
+    let n = v.iter().map(|x| x * x).sum::<f32>().sqrt();
+    if n > 0.0 {
+        v.iter().map(|x| x / n).collect()
+    } else {
+        v.to_vec()
+    }
+}
+
 /// The passages of the files of one chat with their vectors (all of length one: the dot product is the cosine).
 #[derive(Clone, Debug, Default)]
 pub struct DocIndex {
-    docs: HashSet<u64>,
+    /// The files the index holds: the fingerprint of the text and the name.
+    docs: Vec<(u64, String)>,
     pub passages: Vec<Passage>,
     pub vectors: Vec<Vec<f32>>,
 }
@@ -161,7 +171,15 @@ pub struct Hit {
 
 impl DocIndex {
     pub fn has(&self, fingerprint: u64) -> bool {
-        self.docs.contains(&fingerprint)
+        self.docs.iter().any(|d| d.0 == fingerprint)
+    }
+
+    /// Forget the files that are not in `names` any more (a message with a file was deleted): their passages must not be found.
+    pub fn retain_files(&mut self, names: &[&str]) {
+        self.docs.retain(|d| names.contains(&d.1.as_str()));
+        let (passages, vectors): (Vec<Passage>, Vec<Vec<f32>>) = std::mem::take(&mut self.passages).into_iter().zip(std::mem::take(&mut self.vectors)).filter(|(p, _)| names.contains(&p.file.as_str())).unzip();
+        self.passages = passages;
+        self.vectors = vectors;
     }
 
     pub fn is_empty(&self) -> bool {
@@ -171,10 +189,10 @@ impl DocIndex {
     /// Add the passages of a file with their vectors (one per passage).
     pub fn add(&mut self, fingerprint: u64, file: &str, passages: Vec<(String, Option<u32>)>, vectors: Vec<Vec<f32>>) {
         debug_assert_eq!(passages.len(), vectors.len());
-        self.docs.insert(fingerprint);
+        self.docs.push((fingerprint, file.to_string()));
         for ((text, page), v) in passages.into_iter().zip(vectors) {
             self.passages.push(Passage { file: file.to_string(), text, page });
-            self.vectors.push(v);
+            self.vectors.push(unit(&v));
         }
     }
 
@@ -196,11 +214,12 @@ impl DocIndex {
 
     /// The best `limit` passages for a question vector whose score is above `threshold`, best first.
     pub fn search(&self, query: &[f32], limit: usize, threshold: f32) -> Vec<Hit> {
+        let query = unit(query);
         let mut hits: Vec<Hit> = self
             .vectors
             .iter()
             .enumerate()
-            .map(|(i, v)| Hit { passage: i, score: v.iter().zip(query).map(|(a, b)| a * b).sum() })
+            .map(|(i, v)| Hit { passage: i, score: v.iter().zip(&query).map(|(a, b)| a * b).sum() })
             .filter(|h| h.score > threshold)
             .collect();
         hits.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
@@ -244,6 +263,7 @@ pub fn search(
     embed: &mut dyn FnMut(&[String]) -> Result<Vec<Vec<f32>>, String>,
 ) -> Result<(DocIndex, Vec<Citation>), String> {
     let stop = || progress.cancel.load(Ordering::Relaxed);
+    index.retain_files(&docs.iter().map(|d| d.0.as_str()).collect::<Vec<_>>());
     // what has to be embedded: the passages of the files the index has not seen
     let mut todo: Vec<(u64, &str, Vec<(String, Option<u32>)>)> = Vec::new();
     for (name, text) in docs {
@@ -275,7 +295,8 @@ pub fn search(
         return Err("stopped".to_string());
     }
     let q = embed(&[format!("{}{question}", prefixes.1)])?;
-    let q = q.first().ok_or("the embedding model returned no vector for the question")?;
+    let q = unit(q.first().ok_or("the embedding model returned no vector for the question")?);
+    let q = &q;
     let mut hits = index.search(q, limit, threshold);
     let mut weak = hits.is_empty() && threshold > WEAK_FLOOR;
     if weak {
@@ -407,6 +428,26 @@ mod tests {
         let long = "word ".repeat(100) + "\u{c}short";
         let p = split_pages(&long, 100, 20);
         assert!(p.iter().filter(|x| x.1 == Some(1)).count() >= 4 && p.last().unwrap() == &("short".to_string(), Some(2)));
+    }
+
+    #[test]
+    fn a_file_that_left_the_chat_is_not_searched_any_more() {
+        let docs = vec![("alpha.txt".to_string(), "aaaa aaaa".to_string()), ("gamma.txt".to_string(), "cccc cccc".to_string())];
+        let (index, _) = search(DocIndex::default(), &docs, "cc", 3, 0.0, ("", ""), &Progress::default(), &mut |t| toy(t)).unwrap();
+        assert_eq!(index.passages.len(), 2);
+        // the message with gamma.txt was deleted: only alpha.txt is asked about, and a later gamma.txt would be read again
+        let (index, cites) = search(index, &docs[..1], "cc", 3, 0.0, ("", ""), &Progress::default(), &mut |t| toy(t)).unwrap();
+        assert!(index.passages.iter().all(|p| p.file == "alpha.txt") && cites.iter().all(|c| c.file == "alpha.txt"), "{cites:?}");
+        assert!(!index.has(fingerprint("cccc cccc")) && index.has(fingerprint("aaaa aaaa")));
+    }
+
+    #[test]
+    fn vectors_that_are_not_of_length_one_still_give_cosines() {
+        let mut idx = DocIndex::default();
+        idx.add(1, "a.txt", vec![("x".into(), None), ("y".into(), None)], vec![vec![0.0, 5.0], vec![3.0, 0.0]]);
+        let hits = idx.search(&[0.0, 2.0], 2, -1.0);
+        assert_eq!(hits[0].passage, 0);
+        assert!((hits[0].score - 1.0).abs() < 1e-6 && hits[1].score.abs() < 1e-6, "{hits:?}");
     }
 
     #[test]

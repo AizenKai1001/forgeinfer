@@ -21,6 +21,63 @@ const SUGGESTIONS: [&str; 8] = [
     "DeepSeek",
 ];
 
+/// A download to offer before anything has been searched: the exact repository and file (names and sizes checked against Hugging Face), what the model is good for.
+struct Pick {
+    repo: &'static str,
+    file: &'static str,
+    size: u64,
+    name: &'static str,
+    note: &'static str,
+}
+
+const PICKS: [Pick; 5] = [
+    Pick { repo: "unsloth/Qwen3.5-4B-GGUF", file: "Qwen3.5-4B-Q4_K_M.gguf", size: 2_740_937_888, name: "Qwen3.5 4B", note: "A fast all-round chat model with a long context and an optional prediction head for faster answers. A good first model." },
+    Pick { repo: "unsloth/Qwen3.5-9B-GGUF", file: "Qwen3.5-9B-Q4_K_M.gguf", size: 5_680_522_464, name: "Qwen3.5 9B", note: "The best quality that still fits an 8 GB card (with a medium context)." },
+    Pick { repo: "unsloth/Qwen3.5-0.8B-GGUF", file: "Qwen3.5-0.8B-Q4_K_M.gguf", size: 532_517_120, name: "Qwen3.5 0.8B", note: "Tiny and instant: for a first try and for computers without a big graphics card." },
+    Pick { repo: "unsloth/Qwen3-4B-Instruct-2507-GGUF", file: "Qwen3-4B-Instruct-2507-Q4_K_M.gguf", size: 2_497_281_120, name: "Qwen3 4B Instruct 2507", note: "Answers at once without a thinking phase." },
+    Pick { repo: "nomic-ai/nomic-embed-text-v1.5-GGUF", file: "nomic-embed-text-v1.5.Q4_K_M.gguf", size: 84_106_624, name: "nomic-embed-text v1.5", note: "An embedding model: lets a chat search long PDF, Word and text files instead of sending them whole, and serves /v1/embeddings." },
+];
+
+/// The suggestions, shown while nothing has been searched yet.
+fn suggestions(app: &mut StudioApp, ui: &mut Ui) {
+    section(ui, "Good first downloads");
+    for p in PICKS.iter() {
+        let have = app.library.iter().any(|e| e.path.file_name().is_some_and(|n| n == p.file));
+        let running = app.downloads.iter().any(|d| d.state == DlState::Running && d.file.path == p.file);
+        card(ui, |ui| {
+            ui.horizontal_wrapped(|ui| {
+                ui.label(RichText::new(p.name).color(theme::STRONG).family(theme::bold_family()));
+                neutral_badge(ui, &human_bytes(p.size));
+                match fit(&app.hw, p.size) {
+                    Fit::Gpu => {
+                        badge(ui, "fits in video memory", theme::GOOD, theme::CARD);
+                    }
+                    Fit::Split => {
+                        badge(ui, "runs split between GPU and CPU", theme::WARN, theme::CARD);
+                    }
+                    Fit::TooBig => {
+                        badge(ui, "too large for this computer", theme::BAD, theme::CARD);
+                    }
+                    Fit::Unknown => {}
+                }
+            });
+            ui.add(egui::Label::new(RichText::new(p.note).small().color(theme::MUTED)).wrap());
+            ui.add_space(2.0);
+            ui.horizontal(|ui| {
+                if have {
+                    ui.label(RichText::new("already in My models").small().color(theme::GOOD));
+                } else if running {
+                    ui.spinner();
+                    ui.label(RichText::new("downloading ...").small().color(theme::MUTED));
+                } else if ui.button("Download").on_hover_text(format!("{} from huggingface.co/{}", p.file, p.repo)).clicked() {
+                    app.actions.push(Action::Download { repo: p.repo.to_string(), file: hf::RepoFile { path: p.file.to_string(), size: p.size } });
+                }
+            });
+        });
+        ui.add_space(4.0);
+    }
+}
+
 pub fn show(app: &mut StudioApp, ui: &mut Ui) {
     egui::Frame::new().inner_margin(egui::Margin::symmetric(22, 16)).show(ui, |ui| {
         ui.set_width(ui.available_width());
@@ -79,6 +136,7 @@ fn results(app: &mut StudioApp, ui: &mut Ui, height: f32) {
                     ui,
                     "Search for a model family to see the GGUF repositories that offer it.",
                 );
+                suggestions(app, ui);
             }
             for r in app.hf_results.clone() {
                 let selected = app.hf_repo.as_deref() == Some(r.id.as_str());
