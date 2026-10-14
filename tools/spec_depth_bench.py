@@ -5,8 +5,9 @@
 The depths are thousands of tokens (about 64 tokens per paragraph of filler). For each mode one server is started with a context for the deepest prompt; the prompts share their beginning, so the prompt cache reads only
 what is new. After every prompt the model is asked for a story of about 250 words (greedy, 256 tokens at most) and the server's own `timings` give the decode speed. Environment: FORGE_BIN (default target/release/forge),
 FORGE_ARGS (extra `forge serve` arguments, for example "--kv k8v4"), FORGE_SPEC_DEPTH (default 3 for the speculative mode), FORGE_BENCH_TASK (`story`, the default, or `copy`: the model is asked to repeat the first
-three entries of the text, which prompt lookup and the head predict well), FORGE_BENCH_NOGOV=1 (a third mode: the speculative one with FORGE_GOVERN=0, without the speed governor), FORGE_SERVER_LOG (a file that
+three entries of the text, which prompt lookup and the head predict well), FORGE_BENCH_MODES (comma list, default plain,speculative), FORGE_BENCH_NOGOV=1 (a third mode: the speculative one with FORGE_GOVERN=0, without the speed governor), FORGE_SERVER_LOG (a file that
 keeps the server's speculation statistics)."""
+import hashlib
 import json
 import os
 import subprocess
@@ -70,7 +71,9 @@ def run(mode):
             tm = r.get("timings") or {}
             u = r.get("usage") or {}
             rows.append((k, u.get("prompt_tokens"), u.get("completion_tokens"), tm.get("predicted_per_second"), tm.get("prompt_per_second"), wall))
-            print(f"{mode:18s} depth {k:3d}K  prompt {u.get('prompt_tokens')}  generated {u.get('completion_tokens')}  decode {tm.get('predicted_per_second')} tok/s  (prompt {tm.get('prompt_per_second')} tok/s, wall {wall:.1f} s)", flush=True)
+            answer = (r.get("choices") or [{}])[0].get("message", {}).get("content") or ""
+            digest = hashlib.sha1(answer.encode("utf-8")).hexdigest()[:10]
+            print(f"{mode:18s} depth {k:3d}K  prompt {u.get('prompt_tokens')}  generated {u.get('completion_tokens')}  decode {tm.get('predicted_per_second')} tok/s  (prompt {tm.get('prompt_per_second')} tok/s, wall {wall:.1f} s)  answer {digest}", flush=True)
     finally:
         p.terminate()
         try:
@@ -80,11 +83,12 @@ def run(mode):
     return rows
 
 
-plain = run("plain")
-spec = run("speculative")
-nogov = run("speculative-nogov") if os.environ.get("FORGE_BENCH_NOGOV") == "1" else None
-print(chr(10) + f"task: {TASK}" + chr(10) + "depth  plain tok/s  speculative tok/s  gain" + ("  without the governor" if nogov else ""))
-for i, (a, b) in enumerate(zip(plain, spec)):
-    if a[3] and b[3]:
-        extra = f"  {nogov[i][3]:.1f} (x{nogov[i][3] / a[3]:.2f})" if nogov and nogov[i][3] else ""
-        print(f"{a[0]:4d}K  {a[3]:10.1f}  {b[3]:16.1f}  x{b[3] / a[3]:.2f}{extra}")
+modes = os.environ.get("FORGE_BENCH_MODES", "plain,speculative" + (",speculative-nogov" if os.environ.get("FORGE_BENCH_NOGOV") == "1" else "")).split(",")
+res = {m: run(m) for m in modes}
+plain, spec, nogov = res.get("plain"), res.get("speculative"), res.get("speculative-nogov")
+if plain and spec:
+    print(chr(10) + f"task: {TASK}" + chr(10) + "depth  plain tok/s  speculative tok/s  gain" + ("  without the governor" if nogov else ""))
+    for i, (a, b) in enumerate(zip(plain, spec)):
+        if a[3] and b[3]:
+            extra = f"  {nogov[i][3]:.1f} (x{nogov[i][3] / a[3]:.2f})" if nogov and nogov[i][3] else ""
+            print(f"{a[0]:4d}K  {a[3]:10.1f}  {b[3]:16.1f}  x{b[3] / a[3]:.2f}{extra}")

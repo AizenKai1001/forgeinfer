@@ -565,6 +565,8 @@ fn engine_main(
     let mut snaps: Vec<Snap> = Vec::new();
     // the conversations the GPU is not holding (FORGE_PROMPT_CACHE_MB of page-locked host memory, 0 = off)
     let mut cache = pcache::Cache::new(prompt_cache_bytes());
+    // the speed governor keeps what it measured from one request to the next (see `govern`)
+    let mut gov = govern::Governor::from_env();
     while let Ok(job) = rx.recv() {
         let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             run_job(
@@ -577,6 +579,7 @@ fn engine_main(
                 &cfg.defaults,
                 speculate,
                 lookup,
+                &mut gov,
                 &job,
                 &stats,
             )
@@ -1144,6 +1147,7 @@ fn run_job(
     defaults: &SamplingParams,
     speculate: bool,
     lookup: bool,
+    gov: &mut govern::Governor,
     job: &Job,
     stats: &Mutex<Stats>,
 ) -> Result<()> {
@@ -1303,7 +1307,7 @@ fn run_job(
         (None, true) => Some(constrain::Constraint::json_object()),
         (None, false) => None,
     };
-    let reason = generate(sess, slot, &mut sampler, &mut out, speculate, lookup, &mut constraint, &mut spec)?;
+    let reason = generate(sess, slot, &mut sampler, &mut out, speculate, lookup, &mut constraint, &mut spec, gov)?;
     if std::env::var("FORGE_SPEC_STATS").is_ok() && spec.cycles > 0 {
         eprintln!(
             "[spec] {} cycles ({} by lookup, {} of their drafts right), {} drafts accepted ({:.2} per cycle), by position in the chain {:?}; ms per cycle: draft {:.1}, verify sweep {:.1}, sampling {:.1}, cache update {:.1}; governor iterations (plain, head, lookup) {:?}",
@@ -1469,13 +1473,14 @@ fn generate(
     lookup: bool,
     constraint: &mut Option<constrain::Constraint>,
     spec: &mut SpecStats,
+    gov: &mut govern::Governor,
 ) -> Result<FinishReason> {
     // a chain of drafts needs the multi-row verification: as many rows as the model's weights allow (4 with weights in host memory), one of them the pending token
     let depth: usize = std::env::var("FORGE_SPEC_DEPTH").ok().and_then(|v| v.parse().ok()).unwrap_or(1).min(7).min(sess.max_verify_rows().saturating_sub(1));
     let mut pld = pld::Pld::from_env(speculate, sess.max_verify_rows());
     pld.on &= lookup;
     if (speculate && depth >= 2) || pld.on {
-        return generate_deep(sess, slot, sampler, out, depth, spec, speculate, pld, constraint);
+        return generate_deep(sess, slot, sampler, out, depth, spec, speculate, pld, constraint, gov);
     }
     let job = out.job;
     let mut delta = 10.0f32;
@@ -1602,6 +1607,7 @@ fn generate_deep(
     speculate: bool,
     mut pld: pld::Pld,
     constraint: &mut Option<constrain::Constraint>,
+    gov: &mut govern::Governor,
 ) -> Result<FinishReason> {
     let job = out.job;
     let mut delta = 10.0f32;
@@ -1610,7 +1616,8 @@ fn generate_deep(
         // (after the first token: the free memory is what is left of the request's own buffers)
         reserve_lookup_rows(sess, &mut pld, if speculate { depth + 1 } else { 0 });
     }
-    let mut gov = govern::Governor::from_env();
+    gov.new_request(speculate && sess.mtp_ready());
+    let used0 = gov.used;
     loop {
         let it_start = std::time::Instant::now();
         if job.cancel.load(Ordering::SeqCst) {
@@ -1658,7 +1665,7 @@ fn generate_deep(
             slot.push(token);
             token = next_token(sess, LogitsSrc::Main, sampler, &out.history, &mut delta, out.tok, constraint.as_mut())?;
             gov.record(govern::Arm::Plain, 1, it_start.elapsed());
-            spec.gov_used = gov.used;
+            spec.gov_used = std::array::from_fn(|i| gov.used[i] - used0[i]);
             continue;
         }
         let pos = sess.pos;
@@ -1726,7 +1733,7 @@ fn generate_deep(
         spec.t_phase[2] += (t_d - t_c).as_secs_f64();
         spec.t_phase[3] += (t_e - t_d).as_secs_f64();
         gov.record(arm, keep, it_start.elapsed());
-        spec.gov_used = gov.used;
+        spec.gov_used = std::array::from_fn(|i| gov.used[i] - used0[i]);
         if let Some(r) = fin {
             return Ok(r);
         }

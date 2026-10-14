@@ -177,6 +177,17 @@ impl Governor {
         }
     }
 
+    /// A new request on the same engine: what the arms measured before is kept as a starting point (a short answer must not pay for measuring again) but counts for no more than the minimum number
+    /// of measurements, so that the new text decides quickly; a chain that was given up is tried again when the head is usable (it is, after a new chat has been read).
+    pub fn new_request(&mut self, head_usable: bool) {
+        for a in 0..3 {
+            self.n[a] = self.n[a].min(min_tries(a));
+        }
+        if head_usable {
+            self.dropped = false;
+        }
+    }
+
     /// The chain has been given up: the head's cache need not be kept in step any more.
     pub fn head_dropped(&self) -> bool {
         self.dropped
@@ -293,6 +304,28 @@ mod tests {
         assert_eq!(t[1], 0, "{t:?}");
         // the lookup that gives 6 tokens in 40 ms beats a plain step (12 ms for 1)
         assert!(t[2] > t[0], "{t:?}");
+    }
+
+    #[test]
+    fn a_second_request_starts_from_what_the_first_measured() {
+        let mut g = Governor::new(true, 0);
+        let first = run(&mut g, 20_000, [true, true, false], [(1, 12.0), (3, 20.0), (0, 1.0)], 60);
+        assert!(first[0] >= 3 && first[1] >= 6, "the first request measures every arm: {first:?}");
+        g.new_request(true);
+        // no forced measuring any more: the next iterations all go to the best arm until the gap of another arm is over
+        let second = run(&mut g, 20_000, [true, true, false], [(1, 12.0), (3, 20.0), (0, 1.0)], 10);
+        assert_eq!(second[1], 10, "{second:?}");
+    }
+
+    #[test]
+    fn a_chain_that_was_given_up_comes_back_with_a_usable_head() {
+        let mut g = Governor::new(true, 0);
+        run(&mut g, 200_000, [true, true, false], [(1, 30.0), (2, 110.0), (0, 1.0)], 40);
+        assert!(g.head_dropped());
+        g.new_request(false);
+        assert!(g.head_dropped(), "the head is still not usable: the chain stays given up");
+        g.new_request(true);
+        assert!(!g.head_dropped());
     }
 
     #[test]
