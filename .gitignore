@@ -28,3 +28,4 @@ studio/home_ux/
 
 # chats written by running Studio from the source tree (tests, demos)
 studio/home_lib/chats/
+dist_backup/
