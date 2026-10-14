@@ -67,7 +67,7 @@ pub fn read_document(path: &Path, limit: u64) -> Result<String, String> {
             "rtf" => rtf_text(&std::fs::read(path).map_err(|e| e.to_string())?),
             _ if is_picture(path) => crate::ocr::recognize(&std::fs::read(path).map_err(|e| e.to_string())?)?,
             "epub" => epub_text(path)?,
-            _ => html_text(&String::from_utf8_lossy(&std::fs::read(path).map_err(|e| e.to_string())?)),
+            _ => html_text(&decode_html(&std::fs::read(path).map_err(|e| e.to_string())?)),
         })
     };
     // a file that no reader copes with is an error on screen, never a thread that dies and leaves "Reading ..." behind
@@ -168,10 +168,38 @@ fn zip_entry(z: &mut zip::ZipArchive<std::fs::File>, name: &str) -> Result<Strin
     Ok(s)
 }
 
-/// The text of a Word document: the paragraphs of `word/document.xml`.
+/// The text of a Word document: the paragraphs of `word/document.xml`, then its footnotes and endnotes (each in a part of its own).
 fn docx_text(path: &Path) -> Result<String, String> {
     let mut z = open_zip(path)?;
-    Ok(xml_text(&zip_entry(&mut z, "word/document.xml")?, "w:t", "w:p"))
+    let mut text = xml_text(&zip_entry(&mut z, "word/document.xml")?, "w:t", "w:p");
+    for (part, tag, title) in [("word/footnotes.xml", "w:footnote", "Footnotes"), ("word/endnotes.xml", "w:endnote", "Endnotes")] {
+        if let Ok(xml) = zip_entry(&mut z, part) {
+            let notes = notes_text(&xml, tag);
+            if !notes.is_empty() {
+                text.push_str(&format!("\n{title}:\n{notes}"));
+            }
+        }
+    }
+    Ok(text)
+}
+
+/// The notes of `word/footnotes.xml` or `word/endnotes.xml` (`tag` is "w:footnote" or "w:endnote"), one line each; the separators that Word keeps there are left out.
+fn notes_text(xml: &str, tag: &str) -> String {
+    let (open, close) = (format!("<{tag} "), format!("</{tag}>"));
+    let mut out = String::new();
+    for chunk in xml.split(open.as_str()).skip(1) {
+        let (attrs, rest) = chunk.split_once('>').unwrap_or((chunk, ""));
+        if attrs.contains("w:type=") {
+            continue;
+        }
+        let note = xml_text(rest.split(close.as_str()).next().unwrap_or(""), "w:t", "w:p");
+        let note = note.split_whitespace().collect::<Vec<_>>().join(" ");
+        if !note.is_empty() {
+            out.push_str(&note);
+            out.push('\n');
+        }
+    }
+    out
 }
 
 /// The text of a PowerPoint file: every slide, in order, under a "Slide N" line.
@@ -786,6 +814,27 @@ fn odf_text(xml: &str, kind: Odf) -> String {
     out
 }
 
+/// The characters of a saved web page: UTF-8 (with or without its mark) or UTF-16 when the file says so, Windows-1252 when the page declares that or when the bytes are not valid UTF-8 (the HTML that
+/// Word and other Office programs save is Windows-1252: its curly quotes are single bytes). Other legacy encodings (Shift-JIS, GBK, KOI8-R ...) are not known here and come out as replacement characters.
+fn decode_html(bytes: &[u8]) -> String {
+    if let Some(rest) = bytes.strip_prefix(&[0xef, 0xbb, 0xbf]) {
+        return String::from_utf8_lossy(rest).into_owned();
+    }
+    if bytes.starts_with(&[0xff, 0xfe]) || bytes.starts_with(&[0xfe, 0xff]) {
+        let little = bytes[0] == 0xff;
+        let units: Vec<u16> = bytes[2..].chunks_exact(2).map(|c| if little { u16::from_le_bytes([c[0], c[1]]) } else { u16::from_be_bytes([c[0], c[1]]) }).collect();
+        return String::from_utf16_lossy(&units);
+    }
+    // the charset the page declares near its start (<meta charset=...> or the http-equiv form)
+    let head = String::from_utf8_lossy(&bytes[..bytes.len().min(4096)]).to_lowercase();
+    let declared = head.find("charset=").map(|i| head[i + 8..].trim_start_matches(['"', '\'', ' ']).chars().take_while(|c| c.is_ascii_alphanumeric() || *c == '-' || *c == '_').collect::<String>()).unwrap_or_default();
+    let legacy = matches!(declared.as_str(), "windows-1252" | "cp1252" | "iso-8859-1" | "latin1" | "latin-1" | "iso-8859-15" | "us-ascii" | "ascii");
+    match std::str::from_utf8(bytes) {
+        Ok(s) if !legacy => s.to_string(),
+        _ => bytes.iter().map(|&b| cp1252(b)).collect(),
+    }
+}
+
 /// The text of a web page: what is between the tags, without scripts, styles and comments, with a line break where a block ends (paragraph, heading, list item, row) and the entities decoded.
 pub fn html_text(html: &str) -> String {
     fn push_text(out: &mut String, s: &str) {
@@ -1082,6 +1131,23 @@ mod tests {
     }
 
     #[test]
+    fn the_footnotes_and_endnotes_of_a_word_file_follow_its_text() {
+        let dir = temp_dir("docx-notes");
+        let f = dir.join("notes.docx");
+        let body = "<w:document><w:body><w:p><w:r><w:t>Body with a note.</w:t></w:r><w:r><w:footnoteReference w:id=\"1\"/></w:r></w:p></w:body></w:document>";
+        // the separators (ids -1 and 0) have a type and no text of their own; a note can have several paragraphs
+        let footnotes = "<w:footnotes><w:footnote w:type=\"separator\" w:id=\"-1\"><w:p><w:r><w:separator/></w:r></w:p></w:footnote><w:footnote w:id=\"1\"><w:p><w:r><w:footnoteRef/></w:r><w:r><w:t xml:space=\"preserve\"> First note,</w:t></w:r></w:p><w:p><w:r><w:t>second paragraph.</w:t></w:r></w:p></w:footnote><w:footnote w:id=\"2\"><w:p><w:r><w:t>Another one &amp; more.</w:t></w:r></w:p></w:footnote></w:footnotes>";
+        let endnotes = "<w:endnotes><w:endnote w:type=\"separator\" w:id=\"-1\"><w:p/></w:endnote><w:endnote w:id=\"1\"><w:p><w:r><w:t>An endnote.</w:t></w:r></w:p></w:endnote></w:endnotes>";
+        write_zip(&f, &[("word/document.xml", body), ("word/footnotes.xml", footnotes), ("word/endnotes.xml", endnotes)]);
+        assert_eq!(read_document(&f, 1 << 20).unwrap(), "Body with a note.\n\nFootnotes:\nFirst note, second paragraph.\nAnother one & more.\n\nEndnotes:\nAn endnote.");
+        // a file with notes parts that hold only separators gets no heading
+        let g = dir.join("plain.docx");
+        write_zip(&g, &[("word/document.xml", body), ("word/footnotes.xml", "<w:footnotes><w:footnote w:type=\"separator\" w:id=\"-1\"><w:p/></w:footnote></w:footnotes>")]);
+        assert_eq!(read_document(&g, 1 << 20).unwrap(), "Body with a note.");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn a_powerpoint_file_gives_its_slides_in_order() {
         let dir = temp_dir("pptx");
         let f = dir.join("deck.pptx");
@@ -1182,6 +1248,28 @@ mod tests {
         assert!(!t.contains("color") && !t.contains("alert") && !t.contains("comment"));
         assert_eq!(html_text("no tags at all"), "no tags at all");
         assert_eq!(html_text("broken <p>tag"), "broken \ntag");
+    }
+
+    #[test]
+    fn a_saved_page_is_decoded_as_utf8_utf16_or_windows_1252() {
+        // Word's HTML: curly quotes are the single bytes 0x93 and 0x94, the page declares windows-1252
+        let word = b"<html><head><meta http-equiv=Content-Type content=\"text/html; charset=windows-1252\"></head><body><p>\x93Machine learning\x94 isn\x92t magic.</p></body></html>";
+        assert_eq!(decode_html(word), "<html><head><meta http-equiv=Content-Type content=\"text/html; charset=windows-1252\"></head><body><p>\u{201c}Machine learning\u{201d} isn\u{2019}t magic.</p></body></html>");
+        // no declaration, bytes that are not UTF-8: the same guess
+        assert_eq!(decode_html(b"caf\xe9 \x93x\x94"), "caf\u{e9} \u{201c}x\u{201d}");
+        // UTF-8 stays UTF-8 (also when it has its mark, and when the declaration says utf-8)
+        assert_eq!(decode_html("<meta charset=\"utf-8\">caf\u{e9} \u{201c}x\u{201d}".as_bytes()), "<meta charset=\"utf-8\">caf\u{e9} \u{201c}x\u{201d}");
+        assert_eq!(decode_html(b"\xef\xbb\xbfplain"), "plain");
+        // UTF-16 with its mark, both byte orders
+        assert_eq!(decode_html(&[0xff, 0xfe, b'h', 0, b'i', 0, 0xe9, 0]), "hi\u{e9}");
+        assert_eq!(decode_html(&[0xfe, 0xff, 0, b'h', 0, b'i']), "hi");
+        assert_eq!(decode_html(b""), "");
+        // the file is read through it
+        let dir = temp_dir("html-1252");
+        let f = dir.join("page.html");
+        std::fs::write(&f, word).unwrap();
+        assert_eq!(read_document(&f, 1 << 20).unwrap(), "\u{201c}Machine learning\u{201d} isn\u{2019}t magic.");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

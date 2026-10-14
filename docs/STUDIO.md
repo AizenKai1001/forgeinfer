@@ -33,10 +33,10 @@ Drop a file on the window and ask about it. The line that appears under your mes
 |---|---|
 | text and code (UTF-8) | the text |
 | PDF | the text layer, page by page (a word that a line break cut with a hyphen is put together again, ligatures such as "fi" are spelled out). A page that is only a picture, as in a scan, is read by the text recognition that comes with Windows, for the languages of your account: nothing is downloaded and nothing leaves the computer, three scanned pages take about a second. On macOS and Linux a scan says that it cannot be read |
-| Word (.docx), PowerPoint (.pptx) | the paragraphs; the slides in order, with the text of their SmartArt diagrams and their speaker notes |
+| Word (.docx), PowerPoint (.pptx) | the paragraphs and then the footnotes and endnotes (headers, footers and comments are left out); the slides in order, with the text of their SmartArt diagrams and their speaker notes |
 | Excel (.xlsx), OpenDocument spreadsheet (.ods) | every sheet under a "Sheet: name" line, one line per row, the cells separated by tabs, dates shown as dates, formulas as the value last computed |
 | OpenDocument text and presentation (.odt, .odp), RTF (what WordPad saves) | the paragraphs, the slides |
-| EPUB book, saved web page (.html) | the chapters in the order of the book, the text of the page without scripts and styles |
+| EPUB book, saved web page (.html) | the chapters in the order of the book, the text of the page without scripts and styles (pages are decoded as UTF-8, UTF-16 or Windows-1252, which is what Word saves) |
 | picture (.png, .jpg, .bmp, .gif, .tif, .webp) | on Windows the text that the system's text recognition reads in it (a screenshot of an error message, a photo of a page); elsewhere a message that says it cannot |
 
 The old binary formats .doc, .xls and .ppt are not read: save them as .docx, .xlsx, .pptx or PDF first.
