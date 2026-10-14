@@ -410,6 +410,23 @@ mod tests {
     }
 
     #[test]
+    fn the_longest_possible_choice_reaches_the_engine_as_an_automatic_context_and_the_k8v4_cache() {
+        let mut l = launch(EngineKind::Forge);
+        l.ctx = 0;
+        l.kv = KvMode::K8V4;
+        let a = command_args(&l).join(" ");
+        assert!(a.contains("--ctx auto"), "{a}");
+        assert!(a.contains("--kv k8v4"), "{a}");
+        // llama.cpp has no automatic context and no 4-bit cache: its own default context and the 8-bit cache
+        let mut other = launch(EngineKind::LlamaCpp);
+        other.ctx = 0;
+        other.kv = KvMode::K8V4;
+        let b = command_args(&other).join(" ");
+        assert!(b.contains("-c 8192"), "{b}");
+        assert!(b.contains("-ctk q8_0 -ctv q8_0"), "{b}");
+    }
+
+    #[test]
     fn the_lookup_can_be_switched_off() {
         let mut l = launch(EngineKind::Forge);
         l.lookup = false;
