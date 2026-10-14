@@ -35,7 +35,7 @@ pub fn read_document(path: &Path, limit: u64) -> Result<String, String> {
         _ => pptx_text(path).map_err(|e| format!("{name}: {e}"))?,
     };
     let text = tidy(&text);
-    if text.is_empty() {
+    if text.chars().all(|c| c.is_whitespace()) {
         return Err(if kind == "pdf" { format!("{name} has no text layer (a scan?): it would need character recognition (OCR) first.") } else { format!("{name} holds no text.") });
     }
     if text.len() as u64 > limit {
@@ -52,10 +52,18 @@ fn unligate(text: &str) -> String {
 /// Page breaks and runs of blank lines and spaces tidied up: at most one blank line in a row, no trailing spaces, ligatures spelled out, a word that a line break cut with a hyphen put together again
 /// ("neu-" at the end of a line and "ral" at the start of the next).
 fn tidy(text: &str) -> String {
+    // the pages of a PDF are tidied one by one and keep their form feed between them (an empty page stays: the numbers must not move)
+    if text.contains('\u{c}') {
+        return text.split('\u{c}').map(tidy_run).collect::<Vec<_>>().join("\u{c}");
+    }
+    tidy_run(text)
+}
+
+fn tidy_run(text: &str) -> String {
     let text = unligate(text);
     let mut out = String::with_capacity(text.len());
     let mut blank = 0usize;
-    for line in text.replace('\r', "").replace('\u{c}', "\n\n").lines() {
+    for line in text.replace('\r', "").lines() {
         let line = line.trim_end();
         if line.trim().is_empty() {
             blank += 1;
@@ -85,9 +93,10 @@ fn pdf_text(path: &Path) -> Result<String, String> {
 
 fn pdf_text_from_bytes(bytes: &[u8]) -> Result<String, String> {
     // (the panic message of the parser goes to the standard error as usual: the panic hook is process-wide, and two files read at once must not fight over it)
-    let r = std::panic::catch_unwind(|| pdf_extract::extract_text_from_mem(bytes));
+    let r = std::panic::catch_unwind(|| pdf_extract::extract_text_from_mem_by_pages(bytes));
     match r {
-        Ok(Ok(t)) => Ok(t),
+        // the pages one after the other, a form feed between two of them (the chat reads them back as page numbers)
+        Ok(Ok(pages)) => Ok(pages.join("\u{c}")),
         Ok(Err(e)) => Err(format!("not a PDF that can be read ({e})")),
         Err(_) => Err("this PDF could not be read (its structure is not one the reader understands)".to_string()),
     }
@@ -264,7 +273,8 @@ mod tests {
 
     #[test]
     fn page_breaks_and_blank_runs_are_tidied() {
-        assert_eq!(tidy("one  \r\ntwo\n\n\n\nthree\u{c}four\n"), "one\ntwo\n\nthree\n\nfour");
+        assert_eq!(tidy("one  \r\ntwo\n\n\n\nthree\u{c}four\n"), "one\ntwo\n\nthree\u{c}four");
+        assert_eq!(tidy("a\u{c}\u{c}c"), "a\u{c}\u{c}c");
         assert_eq!(tidy("  \n\n"), "");
         // ligatures and words cut by a hyphen at the end of a line; a hyphen before a capital, a digit or a blank line stays
         assert_eq!(tidy("the o\u{fb03}ce of neu-\nral networks and \u{fb01}ne state-\nOf the art\n\nend-\n\nnew 5-\n6"), "the office of neural networks and fine state-\nOf the art\n\nend-\n\nnew 5-\n6");
@@ -327,6 +337,11 @@ mod tests {
     fn real_files() {
         for p in std::env::var("FORGE_TEST_DOCS").unwrap_or_default().split(';').filter(|p| !p.is_empty()) {
             let t0 = std::time::Instant::now();
+            if p.ends_with(".pdf") {
+                if let Ok(raw) = pdf_text(Path::new(p)) {
+                    println!("{p}: the parser's text has {} page breaks", raw.matches('\u{c}').count());
+                }
+            }
             match read_document(Path::new(p), 24 << 20) {
                 Ok(t) => println!("{p}: {} characters, {} lines in {:.2} s; starts: {:?}", t.chars().count(), t.lines().count(), t0.elapsed().as_secs_f64(), t.chars().take(160).collect::<String>()),
                 Err(e) => println!("{p}: ERROR {e}"),

@@ -54,6 +54,9 @@ pub struct Citation {
     /// Below the minimum score: one of the nearest passages of a question that matched nothing well.
     #[serde(default)]
     pub weak: bool,
+    /// The page of a PDF the passage is on.
+    #[serde(default)]
+    pub page: Option<u32>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -108,7 +111,7 @@ impl Message {
     /// What the model reads: the attached files (each between `<file name=...>` tags), then the text; for a question about files that are searched, the passages found and the question.
     pub fn prompt_text(&self) -> String {
         if self.by_retrieval {
-            let passages: Vec<(String, String)> = self.citations.iter().map(|c| (c.file.clone(), c.text.clone())).collect();
+            let passages: Vec<(String, Option<u32>, String)> = self.citations.iter().map(|c| (c.file.clone(), c.page, c.text.clone())).collect();
             return crate::rag::citations_prompt(&passages, self.citations.first().is_some_and(|c| c.weak), &self.content);
         }
         if self.attachments.is_empty() {
@@ -119,7 +122,7 @@ impl Message {
             s.push_str(&format!(
                 "<file name=\"{}\">\n{}\n</file>\n\n",
                 a.name,
-                a.text.trim_end()
+                a.text.replace('\u{c}', "\n\n").trim_end()
             ));
         }
         s.push_str(&self.content);
@@ -484,7 +487,7 @@ mod tests {
         let mut m = Message::new(Role::User, "When does the ship dock?");
         m.attachments.push(Attachment { name: "log.txt".into(), text: "x".repeat(100_000) });
         m.by_retrieval = true;
-        m.citations.push(Citation { file: "log.txt".into(), text: "The ship docks at six.".into(), score: 0.8, weak: false });
+        m.citations.push(Citation { file: "log.txt".into(), text: "The ship docks at six.".into(), score: 0.8, weak: false, page: None });
         c.messages.push(m);
         c.messages.push(Message::new(Role::Assistant, "At six."));
         // a later question has no files of its own and is searched too

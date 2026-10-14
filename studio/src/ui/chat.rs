@@ -198,6 +198,32 @@ fn conversation(app: &mut StudioApp, ui: &mut Ui) {
             .show(ui, |ui| super::embed::show(app, ui));
         return;
     }
+    // a chat that searches its files says which ones and how many passages each has
+    let mut files: Vec<String> = Vec::new();
+    for m in app.chat.messages.iter().filter(|m| m.by_retrieval) {
+        for a in &m.attachments {
+            if !files.contains(&a.name) {
+                files.push(a.name.clone());
+            }
+        }
+    }
+    if !files.is_empty() {
+        let index = app.doc_index.get(&app.chat.id);
+        let parts: Vec<String> = files
+            .iter()
+            .map(|f| match index.map(|i| i.passages.iter().filter(|p| &p.file == f).count()) {
+                Some(n) if n > 0 => format!("{f} ({n} passages)"),
+                _ => f.clone(),
+            })
+            .collect();
+        Panel::top("chat_docs")
+            .exact_size(26.0)
+            .resizable(false)
+            .frame(Frame::new().fill(theme::PANEL).inner_margin(Margin::symmetric(16, 4)))
+            .show(ui, |ui| {
+                ui.add(egui::Label::new(RichText::new(format!("Searching {}: the model reads the best passages for each question", parts.join(", "))).small().color(theme::MUTED)).truncate());
+            });
+    }
     Panel::bottom("chat_input")
         .resizable(false)
         .frame(
@@ -487,7 +513,8 @@ fn passages(app: &StudioApp, ui: &mut Ui, m: &crate::chats::Message) {
     };
     egui::CollapsingHeader::new(RichText::new(title).small().color(theme::MUTED)).id_salt(("passages", &m.id)).default_open(app.opts.open_passages).show(ui, |ui| {
         for c in &m.citations {
-            ui.label(RichText::new(format!("{} \u{00B7} score {:.2}", c.file, c.score)).small().color(theme::ACCENT));
+            let page = c.page.map(|p| format!(" \u{00B7} page {p}")).unwrap_or_default();
+            ui.label(RichText::new(format!("{}{page} \u{00B7} score {:.2}", c.file, c.score)).small().color(theme::ACCENT));
             ui.add(egui::Label::new(RichText::new(truncate(&c.text, 900)).small().color(theme::TEXT)).wrap());
             ui.add_space(4.0);
         }
@@ -864,7 +891,7 @@ fn input_box(app: &mut StudioApp, ui: &mut Ui) {
             ui.add_space(2.0);
             ui.label(
                 RichText::new(
-                    "Tip: drop a text or code file on the window to attach it to your message.",
+                    "Tip: drop a PDF, Word, PowerPoint, text or code file on the window to ask about it (a long one is searched, not sent whole).",
                 )
                 .small()
                 .color(theme::MUTED),

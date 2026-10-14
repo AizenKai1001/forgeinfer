@@ -18,6 +18,15 @@ pub const WEAK_FLOOR: f32 = 0.4;
 /// The share of the free context the files may take before they are searched instead of sent whole (LM Studio's 70 percent).
 const INLINE_SHARE: f32 = 0.7;
 
+/// Is this a question about the document as a whole (what it is about, a summary, its abstract or introduction)? Meaning-based search cannot find "the abstract": such a question gets the opening
+/// passages of the files as well.
+pub fn is_overview(question: &str) -> bool {
+    let q = question.to_lowercase();
+    ["summar", "overview", "abstract", "what is this", "what's this", "what is the document", "what is the paper", "what is the file", "about this", "what is it about", "main point", "main idea", "tl;dr", "tldr", "introduction", "outline", "table of contents", "tell me about", "key point", "the gist"]
+        .iter()
+        .any(|k| q.contains(k))
+}
+
 /// Send the files whole, or search them?
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Strategy {
@@ -104,6 +113,18 @@ fn merge(pieces: &[String], sep: &str, size: usize, overlap: usize, out: &mut Ve
     emit(&window, out);
 }
 
+/// The passages of a file with the page of each: a text with page breaks (form feeds: what `office` makes of a PDF) is split page by page, so that a passage never crosses a page; any other text is one run.
+pub fn split_pages(text: &str, size: usize, overlap: usize) -> Vec<(String, Option<u32>)> {
+    if !text.contains('\u{c}') {
+        return split(text, size, overlap).into_iter().map(|p| (p, None)).collect();
+    }
+    let mut out = Vec::new();
+    for (i, page) in text.split('\u{c}').enumerate() {
+        out.extend(split(page, size, overlap).into_iter().map(|p| (p, Some(i as u32 + 1))));
+    }
+    out
+}
+
 /// A 64-bit FNV-1a hash of a text: which attached files an index already holds.
 pub fn fingerprint(text: &str) -> u64 {
     let mut h = 0xcbf29ce484222325u64;
@@ -119,6 +140,8 @@ pub fn fingerprint(text: &str) -> u64 {
 pub struct Passage {
     pub file: String,
     pub text: String,
+    /// The page of a PDF the passage is on.
+    pub page: Option<u32>,
 }
 
 /// The passages of the files of one chat with their vectors (all of length one: the dot product is the cosine).
@@ -146,13 +169,29 @@ impl DocIndex {
     }
 
     /// Add the passages of a file with their vectors (one per passage).
-    pub fn add(&mut self, fingerprint: u64, file: &str, texts: Vec<String>, vectors: Vec<Vec<f32>>) {
-        debug_assert_eq!(texts.len(), vectors.len());
+    pub fn add(&mut self, fingerprint: u64, file: &str, passages: Vec<(String, Option<u32>)>, vectors: Vec<Vec<f32>>) {
+        debug_assert_eq!(passages.len(), vectors.len());
         self.docs.insert(fingerprint);
-        for (t, v) in texts.into_iter().zip(vectors) {
-            self.passages.push(Passage { file: file.to_string(), text: t });
+        for ((text, page), v) in passages.into_iter().zip(vectors) {
+            self.passages.push(Passage { file: file.to_string(), text, page });
             self.vectors.push(v);
         }
+    }
+
+    /// The first passage of each of the first `files` files (the opening of a document: its title, abstract or introduction).
+    pub fn openings(&self, files: usize) -> Vec<usize> {
+        let mut seen: Vec<&str> = Vec::new();
+        let mut out = Vec::new();
+        for (i, p) in self.passages.iter().enumerate() {
+            if !seen.contains(&p.file.as_str()) {
+                if seen.len() == files {
+                    break;
+                }
+                seen.push(&p.file);
+                out.push(i);
+            }
+        }
+        out
     }
 
     /// The best `limit` passages for a question vector whose score is above `threshold`, best first.
@@ -206,13 +245,13 @@ pub fn search(
 ) -> Result<(DocIndex, Vec<Citation>), String> {
     let stop = || progress.cancel.load(Ordering::Relaxed);
     // what has to be embedded: the passages of the files the index has not seen
-    let mut todo: Vec<(u64, &str, Vec<String>)> = Vec::new();
+    let mut todo: Vec<(u64, &str, Vec<(String, Option<u32>)>)> = Vec::new();
     for (name, text) in docs {
         let fp = fingerprint(text);
         if index.has(fp) || todo.iter().any(|t| t.0 == fp) {
             continue;
         }
-        let parts = split(text, CHUNK_CHARS, OVERLAP_CHARS);
+        let parts = split_pages(text, CHUNK_CHARS, OVERLAP_CHARS);
         progress.total.fetch_add(parts.len(), Ordering::Relaxed);
         todo.push((fp, name, parts));
     }
@@ -222,7 +261,7 @@ pub fn search(
             if stop() {
                 return Err("stopped".to_string());
             }
-            let inputs: Vec<String> = batch.iter().map(|p| format!("{}{p}", prefixes.0)).collect();
+            let inputs: Vec<String> = batch.iter().map(|p| format!("{}{}", prefixes.0, p.0)).collect();
             let v = embed(&inputs)?;
             if v.len() != batch.len() {
                 return Err(format!("{} vectors came back for {} passages", v.len(), batch.len()));
@@ -238,16 +277,30 @@ pub fn search(
     let q = embed(&[format!("{}{question}", prefixes.1)])?;
     let q = q.first().ok_or("the embedding model returned no vector for the question")?;
     let mut hits = index.search(q, limit, threshold);
-    let weak = hits.is_empty() && threshold > WEAK_FLOOR;
+    let mut weak = hits.is_empty() && threshold > WEAK_FLOOR;
     if weak {
         hits = index.search(q, limit.min(2), WEAK_FLOOR);
     }
-    let citations = hits.iter().map(|h| Citation { file: index.passages[h.passage].file.clone(), text: index.passages[h.passage].text.clone(), score: h.score, weak }).collect();
+    if is_overview(question) {
+        // the opening of each file (two files at most) in front of the best matches, which for such a question are mostly weak ones: the matches only count when they are strong
+        if weak {
+            hits.clear();
+            weak = false;
+        }
+        let mut merged: Vec<Hit> = index.openings(2).into_iter().map(|i| Hit { passage: i, score: index.vectors[i].iter().zip(q).map(|(a, b)| a * b).sum() }).collect();
+        for h in hits {
+            if !merged.iter().any(|m| m.passage == h.passage) {
+                merged.push(h);
+            }
+        }
+        hits = merged;
+    }
+    let citations = hits.iter().map(|h| Citation { file: index.passages[h.passage].file.clone(), text: index.passages[h.passage].text.clone(), score: h.score, weak, page: index.passages[h.passage].page }).collect();
     Ok((index, citations))
 }
 
 /// What the model reads for a question with passages found in the user's files (LM Studio's wording; the file name is added so that the model can say where something comes from).
-pub fn citations_prompt(passages: &[(String, String)], weak: bool, question: &str) -> String {
+pub fn citations_prompt(passages: &[(String, Option<u32>, String)], weak: bool, question: &str) -> String {
     if passages.is_empty() {
         return format!(
             "No passage of the files provided by the user matched the question closely enough. Respond to the best of your ability, and say so if you would need the files for it.\n\nUser Query:\n\n{question}"
@@ -258,8 +311,12 @@ pub fn citations_prompt(passages: &[(String, String)], weak: bool, question: &st
     } else {
         String::from("The following citations were found in the files provided by the user:\n\n")
     };
-    for (i, (file, text)) in passages.iter().enumerate() {
-        s.push_str(&format!("Citation {} (from {file}): \"{}\"\n\n", i + 1, text.trim()));
+    for (i, (file, page, text)) in passages.iter().enumerate() {
+        let from = match page {
+            Some(p) => format!("{file}, page {p}"),
+            None => file.clone(),
+        };
+        s.push_str(&format!("Citation {} (from {from}): \"{}\"\n\n", i + 1, text.trim()));
     }
     s.push_str("Use the citations above to respond to the user query, only if they are relevant. Otherwise, respond to the best of your ability without them.\n\nUser Query:\n\n");
     s.push_str(question);
@@ -340,10 +397,23 @@ mod tests {
     }
 
     #[test]
+    fn a_text_with_page_breaks_is_split_page_by_page() {
+        let text = "The ship docks at six.\u{c}Cargo: tea and rope.\u{c}\u{c}Last page.";
+        let parts = split_pages(text, 100, 10);
+        assert_eq!(parts, vec![("The ship docks at six.".to_string(), Some(1)), ("Cargo: tea and rope.".to_string(), Some(2)), ("Last page.".to_string(), Some(4))]);
+        // no page breaks: one run, no page numbers
+        assert!(split_pages("plain text", 100, 10).iter().all(|p| p.1.is_none()));
+        // long pages give several passages of the same page
+        let long = "word ".repeat(100) + "\u{c}short";
+        let p = split_pages(&long, 100, 20);
+        assert!(p.iter().filter(|x| x.1 == Some(1)).count() >= 4 && p.last().unwrap() == &("short".to_string(), Some(2)));
+    }
+
+    #[test]
     fn the_index_ranks_by_cosine_and_applies_the_threshold() {
         let mut idx = DocIndex::default();
         assert!(!idx.has(7));
-        idx.add(7, "a.txt", vec!["north".into(), "east".into(), "northeast".into()], vec![vec![0.0, 1.0], vec![1.0, 0.0], vec![0.7071, 0.7071]]);
+        idx.add(7, "a.txt", vec![("north".into(), None), ("east".into(), None), ("northeast".into(), Some(2))], vec![vec![0.0, 1.0], vec![1.0, 0.0], vec![0.7071, 0.7071]]);
         assert!(idx.has(7));
         assert_eq!(idx.passages.len(), 3);
         let hits = idx.search(&[0.0, 1.0], 2, 0.5);
@@ -356,14 +426,14 @@ mod tests {
 
     #[test]
     fn the_prompt_names_the_files_and_the_question() {
-        let p = citations_prompt(&[("notes.txt".into(), "The ship docks at six.".into()), ("log.txt".into(), "Cargo: tea.".into())], false, "When does it dock?");
+        let p = citations_prompt(&[("notes.txt".into(), None, "The ship docks at six.".into()), ("log.pdf".into(), Some(3), "Cargo: tea.".into())], false, "When does it dock?");
         assert!(p.starts_with("The following citations were found in the files provided by the user:"));
         assert!(p.contains("Citation 1 (from notes.txt): \"The ship docks at six.\""));
-        assert!(p.contains("Citation 2 (from log.txt): \"Cargo: tea.\""));
+        assert!(p.contains("Citation 2 (from log.pdf, page 3): \"Cargo: tea.\""));
         assert!(p.ends_with("User Query:\n\nWhen does it dock?"));
         let none = citations_prompt(&[], false, "Anything?");
         assert!(none.contains("No passage") && none.ends_with("Anything?"));
-        let weak = citations_prompt(&[("a.txt".into(), "Maybe.".into())], true, "Summary?");
+        let weak = citations_prompt(&[("a.txt".into(), None, "Maybe.".into())], true, "Summary?");
         assert!(weak.starts_with("No passage of the files provided by the user matched the question closely.") && weak.contains("Citation 1 (from a.txt): \"Maybe.\"") && weak.ends_with("Summary?"));
     }
 
@@ -420,6 +490,23 @@ mod tests {
         // a good match is not weak
         let (_, good) = search(DocIndex::default(), &docs, "cc", 3, 0.9, ("", ""), &Progress::default(), &mut |t| toy(t)).unwrap();
         assert!(good.len() == 1 && !good[0].weak);
+    }
+
+    #[test]
+    fn a_question_about_the_whole_document_gets_its_opening() {
+        assert!(is_overview("What does the abstract say?") && is_overview("Summarize this file") && is_overview("what is it about?"));
+        assert!(!is_overview("When does the ship dock?"));
+        // two files of two pages each: the question matches the c passage of the second file best, and the openings of both files come first
+        let docs = vec![("alpha.txt".to_string(), "aaaa aaaa\u{c}bbbb bbbb".to_string()), ("gamma.txt".to_string(), "cccc cccc\u{c}cccc ccab".to_string())];
+        let (index, cites) = search(DocIndex::default(), &docs, "Summarize the cccc part", 1, 0.9, ("", ""), &Progress::default(), &mut |t| toy(t)).unwrap();
+        let named: Vec<(String, Option<u32>)> = cites.iter().map(|c| (c.file.clone(), c.page)).collect();
+        assert_eq!(named[0], ("alpha.txt".to_string(), Some(1)), "{named:?}");
+        assert_eq!(named[1], ("gamma.txt".to_string(), Some(1)), "{named:?}");
+        assert!(cites.iter().all(|c| !c.weak));
+        assert_eq!(index.openings(1), vec![0]);
+        // an ordinary question gets no openings
+        let (_, plain) = search(index, &docs, "cccc", 1, 0.9, ("", ""), &Progress::default(), &mut |t| toy(t)).unwrap();
+        assert!(plain.iter().all(|c| c.file == "gamma.txt"), "{plain:?}");
     }
 
     #[test]
