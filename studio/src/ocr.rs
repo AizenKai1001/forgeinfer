@@ -19,15 +19,21 @@ impl Picture {
 
 /// The biggest picture of every page of a PDF, in page order (a scan is one picture per page); None for a page without one or whose picture is in a format that is not read here (CCITT, JBIG2,
 /// JPEG 2000, a palette, CMYK).
+#[cfg(test)]
 pub fn page_pictures(pdf: &[u8]) -> Result<Vec<Option<Picture>>, String> {
-    let doc = Document::load_mem(pdf).map_err(|e| format!("not a PDF that can be read ({e})"))?;
-    let mut out = Vec::new();
-    for (_, page_id) in doc.get_pages() {
-        let images = doc.get_page_images(page_id).unwrap_or_default();
-        let best = images.iter().max_by_key(|i| i.width.max(0).saturating_mul(i.height.max(0)));
-        out.push(best.and_then(|img| picture_of(&doc, img)));
-    }
-    Ok(out)
+    let doc = load(pdf)?;
+    Ok(doc.get_pages().values().map(|&id| page_picture(&doc, id)).collect())
+}
+
+fn load(pdf: &[u8]) -> Result<Document, String> {
+    Document::load_mem(pdf).map_err(|e| format!("not a PDF that can be read ({e})"))
+}
+
+/// The biggest picture of one page.
+fn page_picture(doc: &Document, page_id: lopdf::ObjectId) -> Option<Picture> {
+    let images = doc.get_page_images(page_id).unwrap_or_default();
+    let best = images.iter().max_by_key(|i| i.width.max(0).saturating_mul(i.height.max(0)))?;
+    picture_of(doc, best)
 }
 
 fn picture_of(doc: &Document, img: &lopdf::xobject::PdfImage) -> Option<Picture> {
@@ -112,23 +118,25 @@ pub fn read_blank_pages(pdf: &[u8], pages: &mut [String]) -> Result<(), String> 
     if blank.is_empty() {
         return Ok(());
     }
-    let pictures = page_pictures(pdf)?;
-    if blank.iter().all(|&i| pictures.get(i).is_none_or(Option::is_none)) {
-        return Err("its pages are pictures in a format that is not read here".to_string());
-    }
-    let (mut read, mut first_error) = (0, None);
+    let doc = load(pdf)?;
+    let ids: Vec<lopdf::ObjectId> = doc.get_pages().values().copied().collect();
+    // one page at a time: the pictures of a long scan do not all fit in memory together
+    let (mut usable, mut read, mut first_error) = (0, 0, None);
     for i in blank {
-        if let Some(Some(p)) = pictures.get(i) {
-            match recognize(p.bytes()) {
-                Ok(t) => {
-                    read += usize::from(!t.trim().is_empty());
-                    pages[i] = t;
-                }
-                Err(e) => {
-                    first_error.get_or_insert(e);
-                }
+        let Some(picture) = ids.get(i).and_then(|&id| page_picture(&doc, id)) else { continue };
+        usable += 1;
+        match recognize(picture.bytes()) {
+            Ok(t) => {
+                read += usize::from(!t.trim().is_empty());
+                pages[i] = t;
+            }
+            Err(e) => {
+                first_error.get_or_insert(e);
             }
         }
+    }
+    if usable == 0 {
+        return Err("its pages are pictures in a format that is not read here".to_string());
     }
     match first_error {
         Some(e) if read == 0 => Err(e),
