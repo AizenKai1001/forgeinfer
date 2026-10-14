@@ -60,6 +60,9 @@ pub struct Citation {
     /// Set when `text` is the summary of a part of the file (a request for a summary of the whole file): the number of the part and how many parts the file has.
     #[serde(default)]
     pub part: Option<(u32, u32)>,
+    /// The passage has a word of the question that few passages have (a name, an identifier): found by the keyword search, whatever its score.
+    #[serde(default)]
+    pub keyword: bool,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -494,7 +497,7 @@ mod tests {
         let mut m = Message::new(Role::User, "When does the ship dock?");
         m.attachments.push(Attachment { name: "log.txt".into(), text: "x".repeat(100_000) });
         m.by_retrieval = true;
-        m.citations.push(Citation { file: "log.txt".into(), text: "The ship docks at six.".into(), score: 0.8, weak: false, page: None, part: None });
+        m.citations.push(Citation { file: "log.txt".into(), text: "The ship docks at six.".into(), score: 0.8, weak: false, page: None, part: None, keyword: false });
         c.messages.push(m);
         c.messages.push(Message::new(Role::Assistant, "At six."));
         // a later question has no files of its own and is searched too
@@ -525,8 +528,8 @@ mod tests {
         let mut c = Chat::new();
         let mut m = Message::new(Role::User, "Summarize the report");
         m.by_retrieval = true;
-        m.citations.push(Citation { file: "report.pdf".into(), text: "It starts with costs.".into(), score: 1.0, weak: false, page: None, part: Some((1, 2)) });
-        m.citations.push(Citation { file: "report.pdf".into(), text: "It ends with plans.".into(), score: 1.0, weak: false, page: None, part: Some((2, 2)) });
+        m.citations.push(Citation { file: "report.pdf".into(), text: "It starts with costs.".into(), score: 1.0, weak: false, page: None, part: Some((1, 2)), keyword: false });
+        m.citations.push(Citation { file: "report.pdf".into(), text: "It ends with plans.".into(), score: 1.0, weak: false, page: None, part: Some((2, 2)), keyword: false });
         c.messages.push(m);
         let p = c.api_messages("");
         assert!(p[0].1.contains("File \"report.pdf\", part 1 of 2: It starts with costs.") && p[0].1.contains("part 2 of 2: It ends with plans.") && p[0].1.ends_with("Summarize the report"), "{}", p[0].1);

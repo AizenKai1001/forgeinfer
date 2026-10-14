@@ -528,7 +528,10 @@ fn passages(app: &StudioApp, ui: &mut Ui, m: &crate::chats::Message) {
             let page = c.page.map(|p| format!(" \u{00B7} page {p}")).unwrap_or_default();
             match c.part {
                 Some((i, parts)) => ui.label(RichText::new(format!("{} \u{00B7} part {i} of {parts}", c.file)).small().color(theme::ACCENT)),
-                None => ui.label(RichText::new(format!("{}{page} \u{00B7} score {:.2}", c.file, c.score)).small().color(theme::ACCENT)),
+                None => {
+                    let by_word = if c.keyword { " \u{00B7} has a word of the question" } else { "" };
+                    ui.label(RichText::new(format!("{}{page} \u{00B7} score {:.2}{by_word}", c.file, c.score)).small().color(theme::ACCENT))
+                }
             };
             ui.add(egui::Label::new(RichText::new(truncate(&c.text, 900)).small().color(theme::TEXT)).wrap());
             ui.add_space(4.0);

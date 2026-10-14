@@ -144,6 +144,21 @@ pub struct Passage {
     pub page: Option<u32>,
 }
 
+/// The words of a text for the keyword search: lower-case letters and digits.
+fn words(text: &str) -> impl Iterator<Item = String> + '_ {
+    text.split(|c: char| !c.is_alphanumeric()).filter(|w| !w.is_empty()).map(|w| w.to_lowercase())
+}
+
+/// The little words of questions: they say nothing about which passage is meant.
+const LITTLE_WORDS: &[&str] = &[
+    "the", "a", "an", "of", "to", "in", "on", "at", "for", "and", "or", "is", "are", "was", "were", "be", "been", "what", "who", "whom", "which", "where", "when", "why", "how", "did", "does", "do", "with", "by", "from", "it",
+    "its", "this", "that", "these", "those", "as", "about", "into", "than", "then", "there", "their", "they", "he", "she", "his", "her", "you", "your", "me", "my", "we", "our", "can", "could", "would", "should", "will",
+    "has", "have", "had", "not", "no", "any", "all", "some", "tell", "give", "show", "please", "say", "says", "said", "mean", "means",
+];
+
+/// A word is rare when it is in at most this many passages (and at most a thirtieth of them).
+const RARE_MAX: usize = 12;
+
 /// A vector scaled to length one (a server that returns vectors of another length, as some do, still gives cosines).
 fn unit(v: &[f32]) -> Vec<f32> {
     let n = v.iter().map(|x| x * x).sum::<f32>().sqrt();
@@ -211,6 +226,58 @@ impl DocIndex {
             }
         }
         out
+    }
+
+    /// The passages that have a word of the question that few passages have (a name, an identifier, a number), best first, at most `limit`: BM25 over the rare words of the question only. Embeddings
+    /// are weak exactly there (a question that names "invoice INV-7731-QX" or "Marguerite Okafor" scores 0.5 to 0.6 against the right passage, and sometimes far below the rest), a keyword match is not.
+    pub fn lexical(&self, question: &str, limit: usize) -> Vec<usize> {
+        let n = self.passages.len();
+        // in a short file every word is rare
+        if n < 8 || limit == 0 {
+            return Vec::new();
+        }
+        let mut terms: Vec<String> = words(question).filter(|w| (w.chars().count() >= 2 || w.chars().all(|c| c.is_ascii_digit())) && !LITTLE_WORDS.contains(&w.as_str())).collect();
+        terms.sort();
+        terms.dedup();
+        if terms.is_empty() {
+            return Vec::new();
+        }
+        let slot: HashMap<&str, usize> = terms.iter().enumerate().map(|(i, t)| (t.as_str(), i)).collect();
+        // per passage: how often each word of the question occurs, and how long it is
+        let mut counts: Vec<Vec<u32>> = Vec::with_capacity(n);
+        let mut lens: Vec<usize> = Vec::with_capacity(n);
+        for p in &self.passages {
+            let mut c = vec![0u32; terms.len()];
+            let mut len = 0;
+            for w in words(&p.text) {
+                len += 1;
+                if let Some(&i) = slot.get(w.as_str()) {
+                    c[i] += 1;
+                }
+            }
+            counts.push(c);
+            lens.push(len);
+        }
+        let avg = (lens.iter().sum::<usize>() as f32 / n as f32).max(1.0);
+        let df: Vec<usize> = (0..terms.len()).map(|t| counts.iter().filter(|c| c[t] > 0).count()).collect();
+        // rare: in at most a thirtieth of the passages (and in no more than twelve)
+        let cap = (n / 30).clamp(2, RARE_MAX);
+        let (k1, b) = (1.2f32, 0.75f32);
+        let mut scored: Vec<(f32, usize)> = (0..n)
+            .filter_map(|i| {
+                let s: f32 = (0..terms.len())
+                    .filter(|&t| counts[i][t] > 0 && df[t] <= cap)
+                    .map(|t| {
+                        let idf = (1.0 + (n - df[t]) as f32 / (df[t] as f32 + 0.5) + 0.5 / (df[t] as f32 + 0.5)).ln();
+                        let f = counts[i][t] as f32;
+                        idf * f * (k1 + 1.0) / (f + k1 * (1.0 - b + b * lens[i] as f32 / avg))
+                    })
+                    .sum();
+                (s > 0.0).then_some((s, i))
+            })
+            .collect();
+        scored.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
+        scored.into_iter().take(limit).map(|s| s.1).collect()
     }
 
     /// The best `limit` passages for a question vector whose score is above `threshold`, best first.
@@ -369,7 +436,7 @@ pub fn summarize(cache: &Mutex<SummaryCache>, docs: &[(String, String)], plan: &
         };
         let n = summaries.len() as u32;
         for (i, text) in summaries.into_iter().enumerate() {
-            out.push(Citation { file: name.clone(), text, score: 1.0, weak: false, page: None, part: Some((i as u32 + 1, n)) });
+            out.push(Citation { file: name.clone(), text, score: 1.0, weak: false, page: None, part: Some((i as u32 + 1, n)), keyword: false });
         }
     }
     Ok(out)
@@ -386,8 +453,9 @@ pub fn summaries_prompt(parts: &[(String, (u32, u32), String)], question: &str) 
     s
 }
 
-/// Passages per request to the embedding model.
-const BATCH: usize = 32;
+/// Passages per request to the embedding model. Stop is felt when the request in flight ends, and on the processor 16 passages of about 450 tokens take about 8 seconds (on a graphics card the batch
+/// size hardly matters: 16 or 32 passages are one pass either way).
+const BATCH: usize = 16;
 
 /// The prefixes an embedding model wants in front of the passages it indexes and the questions it is asked (nomic-embed-text was trained with `search_document: ` and `search_query: `; other models use none).
 pub fn prefixes_for(model_file: &str) -> (&'static str, &'static str) {
@@ -447,9 +515,21 @@ pub fn search(
     let q = unit(q.first().ok_or("the embedding model returned no vector for the question")?);
     let q = &q;
     let mut hits = index.search(q, limit, threshold);
-    let mut weak = hits.is_empty() && threshold > WEAK_FLOOR;
+    // the passages that have a word of the question that few passages have (a name, an identifier) count whatever their vectors say: one place at most when the vectors already fill the answer
+    let keyword = index.lexical(question, if hits.len() >= limit { 1 } else { 2 });
+    let mut weak = hits.is_empty() && keyword.is_empty() && threshold > WEAK_FLOOR;
     if weak {
         hits = index.search(q, limit.min(2), WEAK_FLOOR);
+    }
+    if !keyword.is_empty() {
+        let mut merged: Vec<Hit> = keyword.iter().map(|&i| Hit { passage: i, score: index.vectors[i].iter().zip(q).map(|(a, b)| a * b).sum() }).collect();
+        for h in hits {
+            if !merged.iter().any(|m| m.passage == h.passage) {
+                merged.push(h);
+            }
+        }
+        merged.truncate(limit.max(1));
+        hits = merged;
     }
     if is_overview(question) {
         // the opening of each file (two files at most) in front of the best matches, which for such a question are mostly weak ones: the matches only count when they are strong
@@ -465,7 +545,7 @@ pub fn search(
         }
         hits = merged;
     }
-    let citations = hits.iter().map(|h| Citation { file: index.passages[h.passage].file.clone(), text: index.passages[h.passage].text.clone(), score: h.score, weak, page: index.passages[h.passage].page, part: None }).collect();
+    let citations = hits.iter().map(|h| Citation { file: index.passages[h.passage].file.clone(), text: index.passages[h.passage].text.clone(), score: h.score, weak, page: index.passages[h.passage].page, part: None, keyword: keyword.contains(&h.passage) }).collect();
     Ok((index, citations))
 }
 
@@ -844,6 +924,61 @@ mod tests {
         let params = ChatParams { model, messages: vec![(Role::User, prompt)], gen: GenParams { thinking: ThinkingMode::Off, ..GenParams::default() } };
         let answer = client::complete(&ep, &params, &AtomicBool::new(false)).unwrap();
         println!("=== answer in {:.1} s:\n{answer}", t1.elapsed().as_secs_f32());
+    }
+
+    fn ledger() -> DocIndex {
+        let mut idx = DocIndex::default();
+        let passages: Vec<(String, Option<u32>)> = (0..40)
+            .map(|i| match i {
+                17 => ("The harbour office paid invoice INV-7731-QX to Marguerite Okafor of Delta Freight.".to_string(), None),
+                30 => ("Marguerite Okafor signed for the rope.".to_string(), None),
+                _ => (format!("The harbour office counted crates number {i} and filed the copy."), None),
+            })
+            .collect();
+        idx.add(1, "ledger.txt", passages, vec![vec![1.0, 0.0]; 40]);
+        idx
+    }
+
+    #[test]
+    fn a_rare_word_of_the_question_finds_its_passage() {
+        let idx = ledger();
+        assert_eq!(idx.lexical("What happened with invoice INV-7731-QX?", 2), vec![17]);
+        // a name that two passages have: the one that has more of the question comes first
+        assert_eq!(idx.lexical("What did Marguerite Okafor pay to Delta Freight?", 2), vec![17, 30]);
+        // words that nearly every passage has, little words, and a word that no passage has: nothing
+        assert!(idx.lexical("What did the harbour office do with the crates?", 3).is_empty());
+        assert!(idx.lexical("Who is Zebulon?", 3).is_empty());
+        assert!(idx.lexical("What happened with invoice INV-7731-QX?", 0).is_empty());
+        // in a short file every word is rare, so none counts
+        let mut small = DocIndex::default();
+        small.add(2, "s.txt", vec![("alpha beta".into(), None), ("gamma".into(), None)], vec![vec![1.0], vec![1.0]]);
+        assert!(small.lexical("alpha", 2).is_empty());
+    }
+
+    #[test]
+    fn a_word_in_the_question_finds_the_passage_even_when_the_vectors_are_far_away() {
+        let text: String = (0..20)
+            .map(|i| if i == 7 { format!("{} zorblax77 {}\n\n", "cccc ".repeat(120), "cccc ".repeat(120)) } else { format!("{}\n\n", "cccc ".repeat(240)) })
+            .collect();
+        let docs = vec![("log.txt".to_string(), text)];
+        let (index, cites) = search(DocIndex::default(), &docs, "What is zorblax77?", 3, 0.6, ("", ""), &Progress::default(), &mut |t| toy(t)).unwrap();
+        assert!(index.passages.len() >= 8);
+        assert!(cites.len() == 1 && cites[0].text.contains("zorblax77") && cites[0].keyword && !cites[0].weak && cites[0].score < 0.1, "{cites:?}");
+        // a question without such a word and without close vectors still finds nothing
+        let (_, none) = search(index, &docs, "Who signed it?", 3, 0.6, ("", ""), &Progress::default(), &mut |t| toy(t)).unwrap();
+        assert!(none.is_empty(), "{none:?}");
+    }
+
+    #[test]
+    fn a_keyword_match_takes_one_place_when_the_vectors_have_filled_the_answer() {
+        // twenty passages that the vectors like, one that has a rare word
+        let mut text: String = (0..20).map(|_| format!("{}\n\n", "aaaa ".repeat(240))).collect();
+        text.push_str(&format!("{} zorblax77\n\n", "cccc ".repeat(200)));
+        let docs = vec![("log.txt".to_string(), text)];
+        let (_, cites) = search(DocIndex::default(), &docs, "aaa zorblax77", 3, 0.5, ("", ""), &Progress::default(), &mut |t| toy(t)).unwrap();
+        assert_eq!(cites.len(), 3, "{cites:?}");
+        assert!(cites[0].text.contains("zorblax77") && cites[0].keyword);
+        assert!(cites[1..].iter().all(|c| !c.keyword && c.score > 0.5), "{cites:?}");
     }
 
     #[test]

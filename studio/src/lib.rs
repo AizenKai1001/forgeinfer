@@ -14,4 +14,5 @@ pub mod rag;
 pub mod settings;
 pub mod theme;
 pub mod ui;
+pub mod update;
 pub mod util;

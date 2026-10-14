@@ -22,7 +22,7 @@ pub fn show(app: &mut StudioApp, ui: &mut Ui) {
                     documents(app, ui);
                     files(app, ui);
                     interface(app, ui);
-                    about(ui);
+                    about(app, ui);
                 });
         });
 }
@@ -308,7 +308,7 @@ fn interface(app: &mut StudioApp, ui: &mut Ui) {
     });
 }
 
-fn about(ui: &mut Ui) {
+fn about(app: &mut StudioApp, ui: &mut Ui) {
     section(ui, "About");
     card(ui, |ui| {
         kv(ui, "Forge Studio", env!("CARGO_PKG_VERSION"));
@@ -322,6 +322,17 @@ fn about(ui: &mut Ui) {
                 "https://github.com/AizenKai1001/forgeinfer",
             );
         });
-        muted(ui, "Chats, settings and downloads stay on this computer. The only network use is what you ask for: model searches and downloads from huggingface.co, and a server you connect to.");
+        ui.horizontal(|ui| {
+            if ui.add_enabled(!app.update_busy, egui::Button::new("Check for updates")).on_hover_text("Asks github.com for the newest release of the project (one request, only when you press this)").clicked() {
+                app.actions.push(Action::CheckUpdates);
+            }
+            if !app.update_status.is_empty() {
+                ui.label(RichText::new(&app.update_status).small().color(if app.update_url.is_some() { theme::ACCENT } else { theme::MUTED }));
+            }
+            if let Some(url) = app.update_url.clone() {
+                ui.hyperlink_to("Open the release page", url);
+            }
+        });
+        muted(ui, "Chats, settings and downloads stay on this computer. The only network use is what you ask for: model searches and downloads from huggingface.co, the button above, and a server you connect to.");
     });
 }

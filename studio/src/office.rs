@@ -40,18 +40,24 @@ pub fn read_document(path: &Path, limit: u64) -> Result<String, String> {
     if meta.len() > MAX_FILE {
         return Err(format!("{name} is {}: too large to open (the limit is {}).", human_bytes(meta.len()), human_bytes(MAX_FILE)));
     }
-    let text = match kind.as_str() {
-        "pdf" => pdf_text(path).map_err(|e| format!("{name}: {e}"))?,
-        "docx" => docx_text(path).map_err(|e| format!("{name}: {e}"))?,
-        "pptx" => pptx_text(path).map_err(|e| format!("{name}: {e}"))?,
-        "xlsx" | "xlsm" => xlsx_text(path).map_err(|e| format!("{name}: {e}"))?,
-        "odt" => odf_file_text(path, Odf::Text).map_err(|e| format!("{name}: {e}"))?,
-        "ods" => odf_file_text(path, Odf::Sheet).map_err(|e| format!("{name}: {e}"))?,
-        "odp" => odf_file_text(path, Odf::Slides).map_err(|e| format!("{name}: {e}"))?,
-        "rtf" => rtf_text(&std::fs::read(path).map_err(|e| format!("{name}: {e}"))?),
-        "epub" => epub_text(path).map_err(|e| format!("{name}: {e}"))?,
-        _ => html_text(&String::from_utf8_lossy(&std::fs::read(path).map_err(|e| format!("{name}: {e}"))?)),
+    let parse = || -> Result<String, String> {
+        Ok(match kind.as_str() {
+            "pdf" => pdf_text(path)?,
+            "docx" => docx_text(path)?,
+            "pptx" => pptx_text(path)?,
+            "xlsx" | "xlsm" => xlsx_text(path)?,
+            "odt" => odf_file_text(path, Odf::Text)?,
+            "ods" => odf_file_text(path, Odf::Sheet)?,
+            "odp" => odf_file_text(path, Odf::Slides)?,
+            "rtf" => rtf_text(&std::fs::read(path).map_err(|e| e.to_string())?),
+            "epub" => epub_text(path)?,
+            _ => html_text(&String::from_utf8_lossy(&std::fs::read(path).map_err(|e| e.to_string())?)),
+        })
     };
+    // a file that no reader copes with is an error on screen, never a thread that dies and leaves "Reading ..." behind
+    let text = std::panic::catch_unwind(std::panic::AssertUnwindSafe(parse))
+        .unwrap_or_else(|_| Err("this file could not be read (its structure is not one the reader understands)".to_string()))
+        .map_err(|e| format!("{name}: {e}"))?;
     // prose is tidied (hyphens at line ends rejoined ...); the rows of a sheet are not prose: a row that ends with a hyphen must not swallow the next one
     let text = if matches!(kind.as_str(), "xlsx" | "xlsm" | "ods") { text.trim_matches(['\n', '\r', ' ']).to_string() } else { tidy(&text) };
     if text.chars().all(|c| c.is_whitespace()) {

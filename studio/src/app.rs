@@ -96,6 +96,8 @@ pub enum Action {
     CancelDownload(u64),
     /// Embed the lines of the playground with the loaded embedding model.
     Embed,
+    /// Ask GitHub for the newest release (Settings > About).
+    CheckUpdates,
     Toast(String),
 }
 
@@ -125,6 +127,8 @@ pub enum Msg {
     Models(Result<Vec<String>, String>),
     Inspected(Result<Inspect, String>),
     Embedded(Result<EmbedOut, String>),
+    /// The newest release on GitHub (None: there is none), or why it could not be asked.
+    Updates(Result<Option<crate::update::Release>, String>),
     /// A PDF, Office, OpenDocument, EPUB or HTML file has been read for the next message (or could not be).
     Attached(Result<chats::Attachment, String>),
     /// A search of the files of a chat is over: the index that now holds them and the passages found for the question.
@@ -291,6 +295,10 @@ pub struct StudioApp {
     pub retrieval: Option<Retrieval>,
     /// What the parts of the files were summarized to for a request to summarize them (shared with the thread that does it).
     pub summaries: Arc<Mutex<rag::SummaryCache>>,
+    /// Settings > About: whether GitHub is being asked for the newest release, what it said, and the page of that release when it is newer than this version.
+    pub update_busy: bool,
+    pub update_status: String,
+    pub update_url: Option<String>,
 
     pub hf_query: String,
     pub hf_results: Vec<Repo>,
@@ -377,6 +385,9 @@ impl StudioApp {
             doc_index: HashMap::new(),
             retrieval: None,
             summaries: Arc::new(Mutex::new(HashMap::new())),
+            update_busy: false,
+            update_status: String::new(),
+            update_url: None,
             hf_query: opts.hf_query.clone().unwrap_or_default(),
             hf_results: Vec::new(),
             hf_busy: false,
@@ -1278,6 +1289,19 @@ impl StudioApp {
                     }
                 }
             }
+            Msg::Updates(r) => {
+                self.update_busy = false;
+                let current = env!("CARGO_PKG_VERSION");
+                match r {
+                    Ok(Some(rel)) if crate::update::is_newer(current, &rel.tag) => {
+                        self.update_status = format!("{} is available (you have {current}), published {}{}.", rel.tag, rel.published, if rel.prerelease { ", a pre-release" } else { "" });
+                        self.update_url = Some(rel.url);
+                    }
+                    Ok(Some(rel)) => self.update_status = format!("You have the newest version ({current}; the newest release is {}).", rel.tag),
+                    Ok(None) => self.update_status = "No release has been published yet.".to_string(),
+                    Err(e) => self.update_status = e,
+                }
+            }
             Msg::Embedded(r) => {
                 self.embed_busy = false;
                 match r {
@@ -1581,6 +1605,17 @@ impl StudioApp {
                     }
                 }
                 Action::Embed => self.embed_now(),
+                Action::CheckUpdates => {
+                    if !self.update_busy {
+                        self.update_busy = true;
+                        self.update_status = "asking github.com ...".to_string();
+                        self.update_url = None;
+                        self.spawn(move |tx, wake| {
+                            let _ = tx.send(Msg::Updates(crate::update::check()));
+                            wake();
+                        });
+                    }
+                }
                 Action::Toast(t) => self.toast(t),
             }
         }
