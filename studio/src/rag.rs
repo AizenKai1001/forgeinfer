@@ -415,7 +415,7 @@ fn whole_sentences(text: &str) -> String {
 /// The request the model gets for one part of a file.
 pub fn summary_prompt(file: &str, part: usize, parts: usize, text: &str, words: usize) -> String {
     format!(
-        "Summarize this part of the file \"{file}\" (part {part} of {parts}) in at most {words} words. Keep the names, numbers, dates and terms that matter. Reply with the summary only.\n\n{}",
+        "Summarize this part of the file \"{file}\" (part {part} of {parts}) in at most {words} words. Keep the names, numbers, dates and terms that matter; leave out legal notices, copyright text and page headers. Reply with the summary only.\n\n{}",
         text.replace('\u{c}', "\n\n").trim()
     )
 }
