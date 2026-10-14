@@ -642,6 +642,10 @@ fn message_view(app: &mut StudioApp, ui: &mut Ui, i: usize, last: bool) {
                     ui.spacing_mut().item_spacing.x = 10.0;
                     if let Some(s) = &m.stats {
                         ui.label(RichText::new(format!("{} tokens  \u{00B7}  {:.1} tok/s  \u{00B7}  {:.2} s to first token", s.completion_tokens, s.tok_per_s, s.first_token_s)).small().color(theme::MUTED));
+                        // how much of the conversation the engine did not have to read again (its prefix reuse and its chat memory): only worth a line when it was a lot
+                        if s.cached_tokens >= 256 && s.prompt_tokens >= s.cached_tokens {
+                            ui.label(RichText::new(format!("{} of {} prompt tokens already in memory", s.cached_tokens, s.prompt_tokens)).small().color(theme::MUTED));
+                        }
                     }
                     if !answer.is_empty() && ui.add(egui::Button::new(RichText::new("Copy").small().color(theme::MUTED)).frame(false)).clicked() {
                         ui.ctx().copy_text(answer.clone());

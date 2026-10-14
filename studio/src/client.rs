@@ -189,6 +189,8 @@ pub struct Chunk {
     pub finish: Option<String>,
     pub completion_tokens: Option<u32>,
     pub prompt_tokens: Option<u32>,
+    /// Prompt tokens the server did not have to read again (OpenAI's `prompt_tokens_details.cached_tokens`, llama.cpp's `timings.cache_n`).
+    pub cached_tokens: Option<u32>,
     /// The server's own decode speed, when it reports one.
     pub tok_per_s: Option<f32>,
     /// A report of how far the server has read the prompt.
@@ -213,6 +215,7 @@ pub fn parse_chunk(data: &str) -> Option<Chunk> {
     if let Some(u) = v.get("usage").filter(|u| u.is_object()) {
         c.completion_tokens = u["completion_tokens"].as_u64().map(|n| n as u32);
         c.prompt_tokens = u["prompt_tokens"].as_u64().map(|n| n as u32);
+        c.cached_tokens = u["prompt_tokens_details"]["cached_tokens"].as_u64().map(|n| n as u32);
     }
     if let Some(p) = v.get("prompt_progress").filter(|p| p.is_object()) {
         if let (Some(total), Some(processed)) = (p["total"].as_u64(), p["processed"].as_u64()) {
@@ -231,6 +234,9 @@ pub fn parse_chunk(data: &str) -> Option<Chunk> {
         }
         if c.prompt_tokens.is_none() {
             c.prompt_tokens = t["prompt_n"].as_u64().map(|n| n as u32);
+        }
+        if c.cached_tokens.is_none() {
+            c.cached_tokens = t["cache_n"].as_u64().map(|n| n as u32);
         }
     }
     Some(c)
@@ -290,6 +296,7 @@ pub fn stream_chat(
     let mut finish = String::new();
     let mut usage_completion: Option<u32> = None;
     let mut usage_prompt: Option<u32> = None;
+    let mut usage_cached: Option<u32> = None;
     let mut server_speed: Option<f32> = None;
     loop {
         if cancel.load(Ordering::Relaxed) {
@@ -338,6 +345,7 @@ pub fn stream_chat(
         }
         usage_completion = chunk.completion_tokens.or(usage_completion);
         usage_prompt = chunk.prompt_tokens.or(usage_prompt);
+        usage_cached = chunk.cached_tokens.or(usage_cached);
         server_speed = chunk.tok_per_s.or(server_speed);
     }
     if cancel.load(Ordering::Relaxed) {
@@ -357,6 +365,7 @@ pub fn stream_chat(
     emit(ChatEvent::Finished(Stats {
         completion_tokens: tokens,
         prompt_tokens: usage_prompt.unwrap_or(0),
+        cached_tokens: usage_cached.unwrap_or(0),
         tok_per_s,
         first_token_s,
         total_s: total,
@@ -419,6 +428,12 @@ mod tests {
         assert_eq!(f.finish.as_deref(), Some("stop"));
         assert_eq!((f.prompt_tokens, f.completion_tokens), (Some(20), Some(8)));
         assert!((f.tok_per_s.unwrap() - 363.4).abs() < 0.01);
+        assert_eq!(f.cached_tokens, None);
+        // how much of the prompt the engine already had: OpenAI's field, or llama.cpp's
+        let c = parse_chunk(r#"{"choices":[{"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":6399,"completion_tokens":24,"prompt_tokens_details":{"cached_tokens":6354}}}"#).unwrap();
+        assert_eq!((c.prompt_tokens, c.cached_tokens), (Some(6399), Some(6354)));
+        let l = parse_chunk(r#"{"choices":[{"delta":{},"finish_reason":"stop"}],"timings":{"cache_n":120,"prompt_n":30,"predicted_per_second":50.0}}"#).unwrap();
+        assert_eq!((l.prompt_tokens, l.cached_tokens), (Some(30), Some(120)));
         assert!(parse_chunk("not json").is_none());
     }
 

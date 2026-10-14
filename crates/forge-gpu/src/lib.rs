@@ -1417,12 +1417,16 @@ impl CpuState {
 
 const ARGMAX_BLOCKS: u32 = 128;
 const SAMPLE_BLOCKS: u32 = 128;
-/// positions per split of the split-KV attention kernels (decode_h.cu: AS_CH); used when the context is longer than AS_MAX_SINGLE
+/// positions per split of the split-KV attention kernels (decode.cu / decode_h.cu: AS_CH)
 const AS_CH: usize = 1024;
-const AS_MAX_SINGLE: usize = 4096;
+/// the split kernels are used from a session context of one split on: below it the one-block kernel runs the same single block per head (and the merge launch is saved), above it a block per split of the
+/// context reads keys and values at several times the speed (see `GpuSession::attn_split`)
+const ATTN_SPLIT_FROM: usize = AS_CH;
 /// the longest context the one-block-per-head decode attention of a dense model can take: scores[max_ctx] + q[hd] + part[1024] + red[32] floats in the 48 KB of dynamic shared memory a launch gets without an opt-in
 /// (11,168 positions for a head width of 64, 11,104 for 128)
 const DENSE_ONE_BLOCK_MAX: usize = 11_000;
+/// the same limit of the hybrid kernels (256 threads, head width 256: scores[max_ctx] + q[256] + part[2048] + red[32] floats)
+const HYBRID_ONE_BLOCK_MAX: usize = 9_900;
 /// capacity of the candidate list the device builds for the sampler
 const CAND_CAP: usize = 2048;
 
@@ -1489,6 +1493,48 @@ pub struct StateSnapshot {
     mtp_filled: usize,
 }
 
+impl StateSnapshot {
+    /// The position the snapshot was taken at.
+    pub fn position(&self) -> usize {
+        self.pos
+    }
+
+    /// Memory the snapshot occupies (device or page-locked host memory).
+    pub fn bytes(&self) -> usize {
+        self.s.len() + self.conv.len() + self.hidden.len()
+    }
+}
+
+/// The KV entries of the first `n` positions of a conversation, in page-locked host memory (`GpuSession::export_kv`).
+pub struct KvBlob {
+    n: usize,
+    /// per region (the order of `GpuSession::kv_regions`): byte offset in `buf` of its first position, and the bytes per position
+    layout: Vec<(usize, usize)>,
+    buf: PinnedBuffer,
+}
+
+impl KvBlob {
+    /// The positions the blob holds.
+    pub fn positions(&self) -> usize {
+        self.n
+    }
+
+    /// Bytes of the blob's entries.
+    pub fn bytes(&self) -> usize {
+        self.layout.iter().map(|(_, row)| row * self.n).sum()
+    }
+
+    /// Host memory the blob occupies (the buffer may be bigger than the entries when it was reused).
+    pub fn capacity(&self) -> usize {
+        self.buf.len()
+    }
+
+    /// The page-locked buffer, to export another conversation into (`GpuSession::export_kv_with`).
+    pub fn into_buffer(self) -> PinnedBuffer {
+        self.buf
+    }
+}
+
 /// One buffer of a snapshot: on the device, or in page-locked host memory when weights live there too (a snapshot of the 27B's Gated DeltaNet states is 144 MiB: the 8 GB card cannot spare three of them).
 enum SnapBuf {
     Dev(DeviceBuffer),
@@ -1502,6 +1548,13 @@ impl SnapBuf {
         } else {
             SnapBuf::Dev(DeviceBuffer::alloc(bytes)?)
         })
+    }
+
+    fn len(&self) -> usize {
+        match self {
+            SnapBuf::Dev(b) => b.len(),
+            SnapBuf::Host(p) => p.as_slice().len(),
+        }
     }
 
     /// copy `src` (a device buffer) into the snapshot
@@ -1732,8 +1785,12 @@ pub struct GpuSession<'m> {
     flash_a80: bool,
     /// the Gated DeltaNet prompt scan on blocks of 128 threads with several state columns per thread (prefill_h.cu `gdn_scan_nc_*`, bit-identical results; FORGE_SCAN_NC=0 keeps one column per thread)
     scan_nc: bool,
-    /// the decode attention of a dense model runs in splits of AS_CH positions (decode.cu `attn_split_kernel`) instead of one block per head with all scores in shared memory: from a context of
-    /// DENSE_ONE_BLOCK_MAX positions on (the one-block kernel needs 4 bytes of shared memory per position and fails to launch beyond 48 KB); FORGE_ATTN_SPLIT=1 / 0 forces it on / off (for tests)
+    /// the decode attention runs in splits of AS_CH positions (decode.cu `attn_split_kernel`, decode_h.cu `attn_split_g_kernel`; an exact merge follows) instead of one block per head with all scores in shared
+    /// memory. Beyond about 11,000 positions (the one-block kernel needs 4 bytes of shared memory per position of the session's context and fails to launch beyond 48 KB) it is the only way; below that it is the
+    /// faster one for contexts of more than a thousand positions or so: one block per head leaves a card of 30 SMs with 32 blocks of 4 warps, too little to hide the latency of the key and value loads (Qwen3-4B on
+    /// a 2060 SUPER at 6,400 positions: 29 ms per token with the one-block kernel, 14 ms with the split one; 42 new prompt tokens after it 910 ms against 225 ms; at 200 positions both take 10 ms; the hybrid
+    /// Qwen3.5-4B, whose attention layers are a quarter of its layers: 12.7 ms against 8.8 ms per token at 6,400 positions, 10.2 against 8.5 at 2,900 and 9.3 against 8.4 at 1,700).
+    /// FORGE_ATTN_SPLIT=1 / 0 forces it on / off (0 is ignored where the one-block kernel cannot launch)
     attn_split: bool,
     /// calibration passes that start or stop inside the network (`eval_chunk_resid`): the residual stream to start from / the one the pass ended with
     resid_in: Option<Vec<f32>>,
@@ -2092,8 +2149,8 @@ impl<'m> GpuSession<'m> {
             scan_nc: std::env::var("FORGE_SCAN_NC").map(|v| v != "0").unwrap_or(true),
             attn_split: match std::env::var("FORGE_ATTN_SPLIT").ok().as_deref() {
                 Some("1") => true,
-                Some("0") => false,
-                _ => max_ctx > DENSE_ONE_BLOCK_MAX,
+                Some("0") => max_ctx > if m.cfg.delta.is_some() { HYBRID_ONE_BLOCK_MAX } else { DENSE_ONE_BLOCK_MAX },
+                _ => max_ctx > ATTN_SPLIT_FROM,
             },
             fused_max: if std::env::var("FORGE_NO_FUSED").is_ok() {
                 [0; 3]
@@ -3059,7 +3116,7 @@ impl<'m> GpuSession<'m> {
                         .i32(c.rotary_dim as i32)
                         .f32(c.rms_eps),
                 )?;
-                if self.max_ctx > AS_MAX_SINGLE {
+                if self.attn_split {
                     // long contexts: split-KV attention (partial softmax per block of AS_CH positions), then an exact merge with the output gate and the quantization
                     let ns_max = (self.max_ctx + AS_CH - 1) / AS_CH;
                     k.attn_split_g.launch(
@@ -3994,7 +4051,7 @@ impl<'m> GpuSession<'m> {
         pos0: usize,
         next_after: Option<u32>,
     ) -> Result<()> {
-        if self.mrow_ok(tokens.len()) {
+        if self.mrow_ok(tokens.len(), pos0) {
             // short chunk: the weights are streamed once for groups of up to 16 rows (mrow.rs); the residual streams of the rows end up in pf.x as after the GEMM path
             self.layers_m(tokens, pos0, false)?;
             if let Some(n) = self.mtp_fill_chunk(tokens, pos0, next_after)? {
@@ -4479,7 +4536,7 @@ impl<'m> GpuSession<'m> {
         if self.m.cfg.delta.is_some() {
             return self.prefill_chunk_h(tokens, pos0, next_after);
         }
-        if self.mrow_ok(tokens.len()) {
+        if self.mrow_ok(tokens.len(), pos0) {
             // short chunk: the weights are streamed once for groups of up to 16 rows (mrow.rs); the residual streams of the rows end up in pf.x as after the GEMM path
             return self.layers_m(tokens, pos0, false);
         }
@@ -5308,6 +5365,106 @@ impl<'m> GpuSession<'m> {
         Ok(())
     }
 
+    /// The positions the session holds (the next token goes to this position).
+    pub fn position(&self) -> usize {
+        self.pos
+    }
+
+    /// Every region of the device that holds the KV entries of positions, in a fixed order: (address of position 0, bytes per position). Per attention layer K and V of the plain fp16 cache, or the four arrays of a
+    /// compressed one (K values, K scales, V values, V scales), then the MTP head's K and V. Every region is position-major, so the entries of positions [0, n) are its first n rows.
+    fn kv_regions(&self) -> Vec<(u64, usize)> {
+        let c = &self.m.cfg;
+        let n_attn = (0..c.n_layer).filter(|&l| !c.is_delta(l)).count();
+        let mut v = Vec::new();
+        for s in 0..n_attn {
+            match &self.kvq {
+                Some(q) => {
+                    let p = q.ptrs(s, c, self.max_ctx);
+                    let scales = c.n_head_kv * (c.head_dim / q.cfg.group) * 2;
+                    v.push((p[0], c.n_head_kv * c.head_dim * q.cfg.bits_k as usize / 8));
+                    v.push((p[1], scales));
+                    v.push((p[2], c.n_head_kv * c.head_dim * q.cfg.bits_v as usize / 8));
+                    v.push((p[3], scales));
+                }
+                None => {
+                    let off = (s * self.max_ctx * c.kv_dim() * 2) as u64;
+                    v.push((self.k_cache.ptr() + off, c.kv_dim() * 2));
+                    v.push((self.v_cache.ptr() + off, c.kv_dim() * 2));
+                }
+            }
+        }
+        if self.m.mtp.is_some() {
+            v.push((self.mtp_k.ptr(), c.kv_dim() * 2));
+            v.push((self.mtp_v.ptr(), c.kv_dim() * 2));
+        }
+        v
+    }
+
+    /// Bytes of host memory `export_kv(n)` needs.
+    pub fn kv_blob_bytes(&self, n: usize) -> usize {
+        self.kv_regions().iter().map(|(_, row)| row * n).sum()
+    }
+
+    /// Copy the KV entries of positions [0, n) to page-locked host memory (n at most the positions the session holds). With the tokens and, for a hybrid model, a `StateSnapshot` of position n, this is
+    /// everything a conversation needs to continue after the cache has been used for another one (see `adopt`). 12 GB/s over PCIe: 2.4 GB for 16,000 tokens of a dense 4B model take 0.2 s.
+    pub fn export_kv(&self, n: usize) -> Result<KvBlob> {
+        self.export_kv_with(n, None)
+    }
+
+    /// `export_kv` into a buffer of an earlier blob (`KvBlob::into_buffer`) when it is big enough: page-locking 1 GB of host memory takes 0.3 s and unlocking it as long, which the swap of two
+    /// conversations of the prompt cache does not need to pay every time.
+    pub fn export_kv_with(&self, n: usize, reuse: Option<PinnedBuffer>) -> Result<KvBlob> {
+        assert!(n <= self.pos, "export of positions the session does not hold");
+        let regions = self.kv_regions();
+        let total: usize = regions.iter().map(|(_, row)| row * n).sum();
+        let buf = match reuse {
+            Some(b) if b.len() >= total => b,
+            _ => PinnedBuffer::alloc(total)?,
+        };
+        let mut layout = Vec::with_capacity(regions.len());
+        let mut off = 0;
+        for (addr, row) in &regions {
+            self.stream.download_to_async(&buf, off, *addr, row * n)?;
+            layout.push((off, *row));
+            off += row * n;
+        }
+        self.stream.synchronize()?;
+        Ok(KvBlob { n, layout, buf })
+    }
+
+    /// Write the first `m` positions of a blob into the cache (m at most the blob's); the position of the session does not change (see `adopt`).
+    pub fn import_kv(&mut self, blob: &KvBlob, m: usize) -> Result<()> {
+        assert!(m <= blob.n && m <= self.max_ctx, "import beyond the blob or the context");
+        let regions = self.kv_regions();
+        assert_eq!(regions.len(), blob.layout.len(), "the blob is of another model or cache format");
+        for ((addr, row), (off, brow)) in regions.iter().zip(&blob.layout) {
+            assert_eq!(row, brow, "the blob is of another model or cache format");
+            self.stream.upload_from_async(*addr, &blob.buf, *off, row * m)?;
+        }
+        self.stream.synchronize()
+    }
+
+    /// Continue a conversation that was taken out of the cache: its first `n` positions (n at most the blob's: a dense model may take fewer than it was stored with) become the session's, and a hybrid model's
+    /// recurrent state returns with them (`state`: a snapshot taken at position n; required for hybrid models, which cannot roll back, and must then be of exactly n positions).
+    pub fn adopt(&mut self, blob: &KvBlob, n: usize, state: Option<&StateSnapshot>) -> Result<()> {
+        self.import_kv(blob, n)?;
+        // (the step state of the device: the output ring starts again, as after `reset`)
+        self.state.upload(&[0u8; 16])?;
+        match state {
+            Some(s) => {
+                assert_eq!(s.pos, n, "the snapshot is of another position");
+                self.restore_state(s)
+            }
+            None => {
+                assert!(self.can_truncate(), "a hybrid model's recurrent state must come back with the cache");
+                self.pos = n;
+                self.mtp_filled = 0;
+                self.generated = 0;
+                Ok(())
+            }
+        }
+    }
+
     /// A single pending MTP slot (the last position of an earlier prefill, or of a restored snapshot) is filled once the token after it is known; its hidden state is still in `x`.
     fn mtp_fill_pending(&mut self, next_token: u32) -> Result<()> {
         if self.m.mtp.is_some() && self.pos > 0 && self.mtp_filled + 1 == self.pos {
@@ -5470,7 +5627,7 @@ impl<'m> GpuSession<'m> {
             return Ok(None);
         }
         let (kc, vc) = (self.mtp_k.ptr(), self.mtp_v.ptr());
-        if self.max_ctx > AS_MAX_SINGLE {
+        if self.attn_split {
             let ns_max = (self.max_ctx + AS_CH - 1) / AS_CH;
             k.attn_split_g.launch(
                 (c.n_head as u32, ns_max as u32, 1),
@@ -5919,7 +6076,7 @@ impl<'m> GpuSession<'m> {
                         .f32(c.rms_eps),
                 )?;
                 let gate = vb.qg.ptr() + (c.head_dim * 4) as u64;
-                if self.max_ctx > AS_MAX_SINGLE {
+                if self.attn_split {
                     k.attn_split_g.launch(
                         (c.n_head as u32, ns_max as u32, 2),
                         (256, 1, 1),

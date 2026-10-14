@@ -1,5 +1,5 @@
-//! The split-KV decode attention of dense models (decode.cu: `attn_split_kernel` + `attn_merge_*_kernel`, used from a context of 4,096 positions on; the one-block-per-head kernel keeps all scores in 48 KB of
-//! shared memory and fails beyond about 11k positions) against the one-block kernel on the same context: the last logits after a few decoded tokens must agree to float rounding and the greedy tokens must
+//! The split-KV decode attention of dense models (decode.cu: `attn_split_kernel` + `attn_merge_*_kernel`, the default from a session context of 1,024 positions on; the one-block-per-head kernel keeps all scores
+//! in 48 KB of shared memory and fails beyond about 11k positions) against the one-block kernel on the same context: the last logits after a few decoded tokens must agree to float rounding and the greedy tokens must
 //! match. The decode graph is captured when the session is created, so each variant gets its own session (FORGE_ATTN_SPLIT=0 / 1). Also checks that a context far beyond the old limit loads and decodes.
 //! Qwen2.5-0.5B-Instruct (14 query heads over 2 key/value heads of width 64); skipped when the file or a CUDA device is missing: set FORGE_QWEN2_GGUF to the file, or put it in FORGE_MODELS as
 //! Qwen__Qwen2.5-0.5B-Instruct-GGUF/qwen2.5-0.5b-instruct-q4_k_m.gguf.

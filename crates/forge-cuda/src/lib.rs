@@ -582,6 +582,10 @@ impl PinnedBuffer {
     pub fn as_ptr(&self) -> *mut c_void {
         self.ptr
     }
+    /// Bytes allocated.
+    pub fn len(&self) -> usize {
+        self.bytes
+    }
     pub fn as_slice(&self) -> &[u8] {
         unsafe { std::slice::from_raw_parts(self.ptr as *const u8, self.bytes) }
     }
@@ -675,6 +679,24 @@ impl Stream {
                 (drv()?.cu_memcpy_dtoh_async)(dst.ptr, src.ptr + offset as u64, bytes, self.0)
             },
             "cuMemcpyDtoHAsync",
+        )
+    }
+
+    /// `bytes` of the device address `src` (any address inside an allocation, not only a whole buffer) into `dst` at byte `dst_offset`.
+    pub fn download_to_async(&self, dst: &PinnedBuffer, dst_offset: usize, src: u64, bytes: usize) -> Result<()> {
+        assert!(dst_offset + bytes <= dst.bytes, "download beyond the host buffer");
+        check(
+            unsafe { (drv()?.cu_memcpy_dtoh_async)((dst.ptr as *mut u8).add(dst_offset) as *mut c_void, src, bytes, self.0) },
+            "cuMemcpyDtoHAsync",
+        )
+    }
+
+    /// `bytes` of `src` from byte `src_offset` into the device address `dst`.
+    pub fn upload_from_async(&self, dst: u64, src: &PinnedBuffer, src_offset: usize, bytes: usize) -> Result<()> {
+        assert!(src_offset + bytes <= src.bytes, "upload beyond the host buffer");
+        check(
+            unsafe { (drv()?.cu_memcpy_htod_async)(dst, (src.ptr as *mut u8).add(src_offset) as *mut c_void, bytes, self.0) },
+            "cuMemcpyHtoDAsync",
         )
     }
 

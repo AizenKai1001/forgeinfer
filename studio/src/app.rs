@@ -608,6 +608,7 @@ impl StudioApp {
             },
             mtp,
             lookup: self.settings.lookup,
+            prompt_cache_mb: self.settings.prompt_cache_mb,
             api_key: self.settings.api_key.clone(),
             extra: self
                 .settings
@@ -1341,6 +1342,7 @@ fn demo_chat() -> Chat {
     a.stats = Some(chats::Stats {
         completion_tokens: 212,
         prompt_tokens: 38,
+        cached_tokens: 0,
         tok_per_s: 80.3,
         first_token_s: 0.21,
         total_s: 2.9,

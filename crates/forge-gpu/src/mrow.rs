@@ -158,9 +158,27 @@ impl<'m> GpuSession<'m> {
         })
     }
 
-    /// Does a chunk of `t` tokens take the multi-row path?
-    pub(crate) fn mrow_ok(&self, t: usize) -> bool {
-        t >= 1 && t <= self.mrow_max && self.mrow_usable()
+    /// Does a chunk of `t` tokens that starts at position `pos0` take the multi-row path?
+    pub(crate) fn mrow_ok(&self, t: usize, pos0: usize) -> bool {
+        t >= 1 && t <= self.mrow_limit(pos0) && self.mrow_usable()
+    }
+
+    /// The longest chunk starting at position `pos0` that still takes the multi-row path (a dense model; hybrid ones and models with their FFN in host memory keep `mrow_max`). Every row of that path
+    /// reads the keys and values of the whole context on its own (a group of 16 rows streams the weights once, not the cache), so the cost of a chunk grows with its length and with the context, while the GEMM
+    /// path's attention reads each tile of keys once per 64 rows and costs about the same for any chunk of 16 to 56 tokens. Qwen3-4B Q6_K on a 2060 SUPER, multi-row against GEMM: 2.4, 3.5 and 5.6 ms per new
+    /// token against 86, 91 and 102 ms per chunk after 1,600, 3,200 and 6,400 positions, so the chunk length at which the GEMM path wins falls from `mrow_max` (56, an empty cache) to 35, 26 and 18. The limit
+    /// follows (1 + 0.041 s t) / (1 + 0.5 s t) of `mrow_max`, t the context in thousands of positions and s the model's bytes of keys and values per position (fp16, all attention layers) relative to that
+    /// model's 147,456; never below 16, the smallest chunk the GEMM path is used for. FORGE_MROW_CTX=0 keeps `mrow_max` at every context.
+    pub(crate) fn mrow_limit(&self, pos0: usize) -> usize {
+        static RULE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+        let c = &self.m.cfg;
+        if c.delta.is_some() || self.m.host_ffn_bytes > 0 || !*RULE.get_or_init(|| std::env::var("FORGE_MROW_CTX").map(|v| v != "0").unwrap_or(true)) {
+            return self.mrow_max;
+        }
+        let s = (c.n_layer * c.kv_dim() * 4) as f64 / 147_456.0;
+        let st = s * pos0 as f64 / 1024.0;
+        let n = self.mrow_max as f64 * (1.0 + 0.041 * st) / (1.0 + 0.5 * st);
+        (n.round() as usize).clamp(16.min(self.mrow_max), self.mrow_max)
     }
 
     fn ensure_mrow_bufs(&mut self) -> Result<()> {
@@ -181,7 +199,7 @@ impl<'m> GpuSession<'m> {
             Ok(b)
         };
         let ns_max = (self.max_ctx + AS_CH - 1) / AS_CH;
-        let split = self.attn_split || (c.delta.is_some() && self.max_ctx > AS_MAX_SINGLE);
+        let split = self.attn_split;
         self.mb = Some(MrowBufs {
             xq_e: zeroed(16 * e)?,
             xd_e: zeroed(16 * e / 32 * 4)?,
@@ -747,7 +765,7 @@ impl<'m> GpuSession<'m> {
                             .f32(c.rms_eps),
                     )?;
                     let gate = mb.qraw.ptr() + (hd * 4) as u64;
-                    if self.max_ctx > AS_MAX_SINGLE {
+                    if self.attn_split {
                         let ns_max = (self.max_ctx + AS_CH - 1) / AS_CH;
                         k.attn_split_g.launch(
                             (nh as u32, ns_max as u32, n as u32),

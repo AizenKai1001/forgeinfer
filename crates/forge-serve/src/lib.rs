@@ -85,15 +85,46 @@ impl HttpRequest {
 enum ReadError {
     Closed,
     TooLarge,
+    /// the request did not arrive within its deadline
+    Timeout,
     Bad(&'static str),
 }
 
 const MAX_BODY: usize = 8 << 20;
 const MAX_CONNECTIONS: usize = 256;
+/// the request line and headers must be in within this long (a client that drips a byte at a time must not keep a thread, and a slot of MAX_CONNECTIONS, for ever), the body within BODY_DEADLINE after them
+const HEAD_DEADLINE: Duration = Duration::from_secs(30);
+const BODY_DEADLINE: Duration = Duration::from_secs(120);
 
-fn read_request(stream: &mut TcpStream) -> Result<HttpRequest, ReadError> {
+/// A connection the request reader can limit: a read may block for `limit` at most (None: for ever).
+trait Conn: Read + Write {
+    fn read_limit(&mut self, limit: Option<Duration>);
+}
+
+impl Conn for TcpStream {
+    fn read_limit(&mut self, limit: Option<Duration>) {
+        let _ = self.set_read_timeout(limit);
+    }
+}
+
+/// One read that cannot outlast `deadline`: the socket's timeout is set to what is left of it before the read.
+fn read_before<S: Conn>(stream: &mut S, buf: &mut [u8], deadline: Instant) -> Result<usize, ReadError> {
+    let left = deadline.saturating_duration_since(Instant::now());
+    if left.is_zero() {
+        return Err(ReadError::Timeout);
+    }
+    stream.read_limit(Some(left));
+    match stream.read(buf) {
+        Ok(n) => Ok(n),
+        Err(e) if matches!(e.kind(), std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut) => Err(ReadError::Timeout),
+        Err(_) => Err(ReadError::Closed),
+    }
+}
+
+fn read_request<S: Conn>(stream: &mut S) -> Result<HttpRequest, ReadError> {
     let mut buf: Vec<u8> = Vec::with_capacity(4096);
     let mut chunk = [0u8; 4096];
+    let head_deadline = Instant::now() + HEAD_DEADLINE;
     let head_end = loop {
         if let Some(p) = buf.windows(4).position(|w| w == b"\r\n\r\n") {
             break p;
@@ -101,12 +132,13 @@ fn read_request(stream: &mut TcpStream) -> Result<HttpRequest, ReadError> {
         if buf.len() > 64 * 1024 {
             return Err(ReadError::Bad("headers too large"));
         }
-        let n = stream.read(&mut chunk).map_err(|_| ReadError::Closed)?;
+        let n = read_before(stream, &mut chunk, head_deadline)?;
         if n == 0 {
             return Err(ReadError::Closed);
         }
         buf.extend_from_slice(&chunk[..n]);
     };
+    let body_deadline = Instant::now() + BODY_DEADLINE;
     let head = String::from_utf8_lossy(&buf[..head_end]).to_string();
     let mut lines = head.split("\r\n");
     let first = lines.next().unwrap_or("");
@@ -142,12 +174,15 @@ fn read_request(stream: &mut TcpStream) -> Result<HttpRequest, ReadError> {
         // chunked request body
         let mut out = Vec::new();
         loop {
-            // read a chunk-size line
+            // read a chunk-size line (a size and a few extensions: a line that does not end soon is not one)
             let line_end = loop {
                 if let Some(p) = body.windows(2).position(|w| w == b"\r\n") {
                     break p;
                 }
-                let n = stream.read(&mut chunk).map_err(|_| ReadError::Closed)?;
+                if body.len() > 4096 {
+                    return Err(ReadError::Bad("chunk size line too long"));
+                }
+                let n = read_before(stream, &mut chunk, body_deadline)?;
                 if n == 0 {
                     return Err(ReadError::Closed);
                 }
@@ -166,11 +201,12 @@ fn read_request(stream: &mut TcpStream) -> Result<HttpRequest, ReadError> {
             if size == 0 {
                 break;
             }
-            if out.len() + size > MAX_BODY {
+            // (a size near usize::MAX must not wrap around the sum)
+            if size > MAX_BODY - out.len() {
                 return Err(ReadError::TooLarge);
             }
             while body.len() < size + 2 {
-                let n = stream.read(&mut chunk).map_err(|_| ReadError::Closed)?;
+                let n = read_before(stream, &mut chunk, body_deadline)?;
                 if n == 0 {
                     return Err(ReadError::Closed);
                 }
@@ -189,7 +225,7 @@ fn read_request(stream: &mut TcpStream) -> Result<HttpRequest, ReadError> {
             return Err(ReadError::TooLarge);
         }
         while body.len() < len {
-            let n = stream.read(&mut chunk).map_err(|_| ReadError::Closed)?;
+            let n = read_before(stream, &mut chunk, body_deadline)?;
             if n == 0 {
                 return Err(ReadError::Closed);
             }
@@ -201,13 +237,87 @@ fn read_request(stream: &mut TcpStream) -> Result<HttpRequest, ReadError> {
     Ok(req)
 }
 
+/// Compare two secrets without stopping at the first difference (a key checked over the network must not leak its prefix through the time the comparison takes).
+fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
+    if a.len() != b.len() {
+        return false;
+    }
+    a.iter().zip(b).fold(0u8, |d, (x, y)| d | (x ^ y)) == 0
+}
+
+/// The host of a Host header or of an origin's authority: no port, no brackets around an IPv6 address.
+fn host_part(h: &str) -> &str {
+    let h = h.trim();
+    if let Some(rest) = h.strip_prefix('[') {
+        return rest.split(']').next().unwrap_or("");
+    }
+    // (an IPv6 address without brackets, as the config of the server has it: no port to strip)
+    if h.matches(':').count() > 1 {
+        return h;
+    }
+    match h.rsplit_once(':') {
+        Some((name, port)) if !port.is_empty() && port.bytes().all(|b| b.is_ascii_digit()) => name,
+        _ => h,
+    }
+}
+
+/// localhost, anything under .localhost, an address of 127.0.0.0/8, ::1
+fn is_loopback_name(h: &str) -> bool {
+    let h = host_part(h).to_ascii_lowercase();
+    h == "localhost"
+        || h.ends_with(".localhost")
+        || h.parse::<std::net::Ipv4Addr>().map(|a| a.is_loopback()).unwrap_or(false)
+        || h.parse::<std::net::Ipv6Addr>().map(|a| a.is_loopback()).unwrap_or(false)
+}
+
+/// Host names a loopback server answers to besides the loopback names: FORGE_ALLOWED_HOSTS=name,name (for a reverse proxy that passes its public name on); `*` turns the check off.
+fn allowed_hosts() -> &'static Vec<String> {
+    static ALLOWED: std::sync::OnceLock<Vec<String>> = std::sync::OnceLock::new();
+    ALLOWED.get_or_init(|| {
+        std::env::var("FORGE_ALLOWED_HOSTS")
+            .unwrap_or_default()
+            .split(',')
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .collect()
+    })
+}
+
+/// Why a request to a server on a loopback address is refused: its Host header names something else (DNS rebinding) or it comes from a web page of another origin (a script posting to http://127.0.0.1).
+/// A request without these headers (curl, the OpenAI SDKs, Forge Studio) passes.
+fn foreign_request(req: &HttpRequest) -> Option<String> {
+    foreign_request_with(req, allowed_hosts())
+}
+
+fn foreign_request_with(req: &HttpRequest, allowed: &[String]) -> Option<String> {
+    if allowed.iter().any(|a| a == "*") {
+        return None;
+    }
+    let ok = |name: &str| is_loopback_name(name) || allowed.iter().any(|a| a.eq_ignore_ascii_case(host_part(name)));
+    if let Some(h) = req.header("host") {
+        if !ok(h) {
+            return Some(format!("this server only answers requests for a local address, the Host header says {h} (FORGE_ALLOWED_HOSTS={} allows it)", host_part(h)));
+        }
+    }
+    if let Some(o) = req.header("origin") {
+        let authority = o.split_once("://").map(|(_, rest)| rest).unwrap_or(o);
+        let authority = authority.split('/').next().unwrap_or("");
+        if !ok(authority) {
+            return Some(format!("a server on a local address does not take requests from the web origin {o} (FORGE_ALLOWED_HOSTS={} allows it)", host_part(authority)));
+        }
+    }
+    None
+}
+
 fn status_text(code: u16) -> &'static str {
     match code {
         200 => "OK",
         400 => "Bad Request",
         401 => "Unauthorized",
+        403 => "Forbidden",
         404 => "Not Found",
         405 => "Method Not Allowed",
+        408 => "Request Timeout",
         413 => "Payload Too Large",
         429 => "Too Many Requests",
         500 => "Internal Server Error",
@@ -874,14 +984,17 @@ fn handle_generation(
 
 fn handle(mut stream: TcpStream, engine: Arc<Engine>, cfg: Arc<ServerConfig>) {
     let _ = stream.set_nodelay(true);
-    // a client that connects and says nothing must not hold a thread forever; once the request is in, the socket is only watched for the peer hanging up
-    let _ = stream.set_read_timeout(Some(Duration::from_secs(60)));
+    // a client that connects and says nothing, or drips its request, must not hold a thread for ever (the reader sets the socket's timeout before every read from what is left of the request's deadline);
+    // once the request is in, the socket is only watched for the peer hanging up
     let req = match read_request(&mut stream) {
         Ok(r) => {
             let _ = stream.set_read_timeout(None);
             r
         }
         Err(ReadError::Closed) => return,
+        Err(ReadError::Timeout) => {
+            return respond_error(&mut stream, 408, "invalid_request_error", "the request did not arrive in time")
+        }
         Err(ReadError::TooLarge) => {
             return respond_error(
                 &mut stream,
@@ -894,10 +1007,17 @@ fn handle(mut stream: TcpStream, engine: Arc<Engine>, cfg: Arc<ServerConfig>) {
             return respond_error(&mut stream, 400, "invalid_request_error", m)
         }
     };
+    // a server on the loopback address is reachable by every web page the user opens (a script can post to http://127.0.0.1, and DNS rebinding makes a hostile name point there): such a server only answers
+    // requests that name a local host and do not come from a foreign web origin
+    if is_loopback_name(&cfg.host) {
+        if let Some(why) = foreign_request(&req) {
+            return respond_error(&mut stream, 403, "invalid_request_error", &why);
+        }
+    }
     if let Some(key) = &cfg.api_key {
         let ok = req
             .header("authorization")
-            .map(|h| h.strip_prefix("Bearer ").unwrap_or("") == key)
+            .map(|h| constant_time_eq(h.strip_prefix("Bearer ").unwrap_or("").as_bytes(), key.as_bytes()))
             .unwrap_or(false);
         if !ok && req.path != "/health" && req.path != "/v1/health" {
             return respond_error(&mut stream, 401, "invalid_request_error", "invalid API key");
@@ -1174,6 +1294,133 @@ mod tests {
         assert!(err(r#"{"type": "json_schema"}"#).contains("json_schema.schema"));
         assert!(err(r#"{"type": "json_schema", "json_schema": {"schema": {"type": "foo"}}}"#).contains("unknown type"));
         assert!(err(r#"{"type": "xml"}"#).contains("not supported"));
+    }
+
+    /// A connection made of bytes: what the client sent, what the server wrote back, and (when `stall`) a read that times out once the bytes are used up, as a socket with a read timeout does.
+    struct Mock {
+        input: std::io::Cursor<Vec<u8>>,
+        written: Vec<u8>,
+        stall: bool,
+    }
+
+    impl Mock {
+        fn new(bytes: &[u8], stall: bool) -> Mock {
+            Mock { input: std::io::Cursor::new(bytes.to_vec()), written: Vec::new(), stall }
+        }
+    }
+
+    impl Read for Mock {
+        fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+            let n = self.input.read(buf)?;
+            if n == 0 && self.stall {
+                return Err(std::io::Error::from(std::io::ErrorKind::WouldBlock));
+            }
+            Ok(n)
+        }
+    }
+
+    impl Write for Mock {
+        fn write(&mut self, b: &[u8]) -> std::io::Result<usize> {
+            self.written.extend_from_slice(b);
+            Ok(b.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    impl Conn for Mock {
+        fn read_limit(&mut self, _: Option<Duration>) {}
+    }
+
+    fn read(bytes: &[u8], stall: bool) -> Result<HttpRequest, ReadError> {
+        read_request(&mut Mock::new(bytes, stall))
+    }
+
+    #[test]
+    fn a_request_with_a_length_or_in_chunks_is_read_whole() {
+        let r = read(b"POST /v1/chat/completions HTTP/1.1\r\nHost: 127.0.0.1:1234\r\nContent-Length: 11\r\n\r\nhello world", false).ok().unwrap();
+        assert_eq!((r.method.as_str(), r.path.as_str(), r.body.as_slice()), ("POST", "/v1/chat/completions", &b"hello world"[..]));
+        let r = read(b"POST /x?y=1 HTTP/1.1\r\nTransfer-Encoding: chunked\r\n\r\n5\r\nhello\r\n6;ext=1\r\n world\r\n0\r\n\r\n", false).ok().unwrap();
+        assert_eq!((r.path.as_str(), r.body.as_slice()), ("/x", &b"hello world"[..]));
+        let mut m = Mock::new(b"POST /x HTTP/1.1\r\nExpect: 100-continue\r\nContent-Length: 2\r\n\r\nhi", false);
+        assert!(read_request(&mut m).is_ok());
+        assert!(m.written.starts_with(b"HTTP/1.1 100 Continue"));
+    }
+
+    #[test]
+    fn oversized_and_malformed_requests_are_refused_before_they_cost_memory() {
+        let too_large = |r: Result<HttpRequest, ReadError>| matches!(r, Err(ReadError::TooLarge));
+        assert!(too_large(read(format!("POST /x HTTP/1.1\r\nContent-Length: {}\r\n\r\n", MAX_BODY + 1).as_bytes(), false)));
+        // a chunk size that wraps around the sum of the sizes so far (the first chunk makes the running total 4, the second asks for usize::MAX - 3)
+        let wrap = format!("POST /x HTTP/1.1\r\nTransfer-Encoding: chunked\r\n\r\n4\r\nabcd\r\n{:x}\r\n", usize::MAX - 3);
+        assert!(too_large(read(wrap.as_bytes(), true)));
+        assert!(too_large(read(format!("POST /x HTTP/1.1\r\nTransfer-Encoding: chunked\r\n\r\n{:x}\r\n", MAX_BODY + 1).as_bytes(), true)));
+        // a chunk size line that never ends
+        let mut endless = b"POST /x HTTP/1.1\r\nTransfer-Encoding: chunked\r\n\r\n".to_vec();
+        endless.extend(std::iter::repeat(b'f').take(10_000));
+        assert!(matches!(read(&endless, true), Err(ReadError::Bad("chunk size line too long"))));
+        assert!(matches!(read(b"POST /x HTTP/1.1\r\nTransfer-Encoding: chunked\r\n\r\nzz\r\n", true), Err(ReadError::Bad("bad chunk size"))));
+        // headers without an end
+        let mut headers = b"GET / HTTP/1.1\r\n".to_vec();
+        headers.extend(std::iter::repeat(b'a').take(70_000));
+        assert!(matches!(read(&headers, true), Err(ReadError::Bad("headers too large"))));
+    }
+
+    #[test]
+    fn a_client_that_stops_sending_times_out_instead_of_holding_the_thread() {
+        // (the mock's read times out like a socket whose read timeout ran out)
+        assert!(matches!(read(b"POST /x HTTP/1.1\r\nContent-Le", true), Err(ReadError::Timeout)));
+        assert!(matches!(read(b"POST /x HTTP/1.1\r\nContent-Length: 100\r\n\r\nonly a few bytes", true), Err(ReadError::Timeout)));
+        assert!(matches!(read(b"POST /x HTTP/1.1\r\nContent-Length: 100\r\n\r\nonly a few bytes", false), Err(ReadError::Closed)));
+    }
+
+    fn with_headers(pairs: &[(&str, &str)]) -> HttpRequest {
+        HttpRequest {
+            method: "POST".into(),
+            path: "/v1/chat/completions".into(),
+            headers: pairs.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect(),
+            body: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn a_loopback_server_answers_local_names_and_refuses_rebinding_and_foreign_web_pages() {
+        let none: Vec<String> = Vec::new();
+        let check = |pairs: &[(&str, &str)]| foreign_request_with(&with_headers(pairs), &none);
+        // clients that send no Origin (curl, the SDKs, Forge Studio) and name a local host
+        assert!(check(&[]).is_none());
+        assert!(check(&[("host", "127.0.0.1:1234")]).is_none());
+        assert!(check(&[("host", "localhost:8080")]).is_none());
+        assert!(check(&[("host", "LocalHost")]).is_none());
+        assert!(check(&[("host", "[::1]:1234")]).is_none());
+        assert!(check(&[("host", "127.0.0.2:1234")]).is_none());
+        assert!(check(&[("host", "app.localhost:3000")]).is_none());
+        // a local web page (same machine) may still reach it
+        assert!(check(&[("host", "127.0.0.1:1234"), ("origin", "http://localhost:3000")]).is_none());
+        // DNS rebinding: the page's own name resolves to 127.0.0.1, the Host header keeps the name
+        assert!(check(&[("host", "evil.example:1234")]).unwrap().contains("evil.example"));
+        assert!(check(&[("host", "192.168.1.x:1234")]).is_some());
+        // a script of a foreign web page, or of a sandboxed one
+        assert!(check(&[("host", "127.0.0.1:1234"), ("origin", "https://evil.example")]).unwrap().contains("evil.example"));
+        assert!(check(&[("host", "127.0.0.1:1234"), ("origin", "null")]).is_some());
+        // allowed by the owner
+        let allowed = vec!["chat.home".to_string()];
+        assert!(foreign_request_with(&with_headers(&[("host", "chat.home")]), &allowed).is_none());
+        assert!(foreign_request_with(&with_headers(&[("host", "127.0.0.1:1234"), ("origin", "https://CHAT.home")]), &allowed).is_none());
+        assert!(foreign_request_with(&with_headers(&[("host", "evil.example")]), &allowed).is_some());
+        assert!(foreign_request_with(&with_headers(&[("host", "evil.example"), ("origin", "https://evil.example")]), &["*".to_string()]).is_none());
+        assert!(is_loopback_name("127.0.0.1") && is_loopback_name("localhost") && is_loopback_name("::1") && is_loopback_name("[::1]:80"));
+        assert!(!is_loopback_name("0.0.0.0") && !is_loopback_name("192.168.1.x") && !is_loopback_name("localhost.evil.example"));
+    }
+
+    #[test]
+    fn the_key_is_compared_in_full() {
+        assert!(constant_time_eq(b"secret-key", b"secret-key"));
+        assert!(!constant_time_eq(b"secret-key", b"secret-kez"));
+        assert!(!constant_time_eq(b"secret-key", b"secret-ke"));
+        assert!(!constant_time_eq(b"", b"x"));
+        assert!(constant_time_eq(b"", b""));
     }
 }
 

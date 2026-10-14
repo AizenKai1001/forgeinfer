@@ -28,6 +28,9 @@ impl Role {
 pub struct Stats {
     pub completion_tokens: u32,
     pub prompt_tokens: u32,
+    /// Prompt tokens the engine already had from an earlier request (its prefix reuse and prompt cache); 0 when the server does not say.
+    #[serde(default)]
+    pub cached_tokens: u32,
     pub tok_per_s: f32,
     pub first_token_s: f32,
     pub total_s: f32,
@@ -328,6 +331,9 @@ mod tests {
         assert_eq!(back.messages.len(), 2);
         assert_eq!(back.messages[1].reasoning, "thinking");
         assert_eq!(back.messages[1].stats.as_ref().unwrap().tok_per_s, 40.5);
+        // a chat saved before the field existed still loads
+        let old: Stats = serde_json::from_str(r#"{"completion_tokens":5,"prompt_tokens":7,"tok_per_s":1.5,"first_token_s":0.1,"total_s":1.0,"finish":"stop"}"#).unwrap();
+        assert_eq!((old.prompt_tokens, old.cached_tokens), (7, 0));
         assert_eq!(store.list().len(), 1);
         store.delete(&c.id);
         assert!(store.load(&c.id).is_none());

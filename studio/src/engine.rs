@@ -7,7 +7,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use crate::client::{list_models, Endpoint};
-use crate::settings::{EngineKind, KvMode};
+use crate::settings::{EngineKind, KvMode, DEFAULT_PROMPT_CACHE_MB};
 use crate::util::quiet_command;
 
 #[derive(Clone, Debug, PartialEq)]
@@ -56,6 +56,8 @@ pub struct Launch {
     pub mtp: Option<PathBuf>,
     /// Prompt-lookup drafting (`forge serve` only; on by default in the engine).
     pub lookup: bool,
+    /// Host memory for the chats the engine is not working on (`forge serve` only; 0 = off).
+    pub prompt_cache_mb: u32,
     pub api_key: String,
     pub extra: Vec<String>,
 }
@@ -111,6 +113,9 @@ pub fn command_args(l: &Launch) -> Vec<String> {
             }
             if !l.lookup {
                 a.push(s("--no-lookup"));
+            }
+            if l.prompt_cache_mb != DEFAULT_PROMPT_CACHE_MB {
+                a.extend([s("--prompt-cache-mb"), l.prompt_cache_mb.to_string()]);
             }
             if !l.api_key.is_empty() {
                 a.extend([s("--api-key"), l.api_key.clone()]);
@@ -381,6 +386,7 @@ mod tests {
             depth: 3,
             mtp: Some(PathBuf::from("head.safetensors")),
             lookup: true,
+            prompt_cache_mb: DEFAULT_PROMPT_CACHE_MB,
             api_key: "k".into(),
             extra: vec!["--threads".into(), "6".into()],
         }
@@ -398,6 +404,20 @@ mod tests {
         l.lookup = false;
         let a = command_args(&l).join(" ");
         assert!(a.contains("--depth 3 --no-lookup --api-key k"), "{a}");
+    }
+
+    #[test]
+    fn the_prompt_cache_size_is_passed_on_when_it_is_not_the_engines_default() {
+        let mut l = launch(EngineKind::Forge);
+        l.prompt_cache_mb = 0;
+        let a = command_args(&l).join(" ");
+        assert!(a.contains("--depth 3 --prompt-cache-mb 0 --api-key k"), "{a}");
+        l.prompt_cache_mb = 4096;
+        assert!(command_args(&l).join(" ").contains("--prompt-cache-mb 4096"));
+        // llama.cpp has no such cache
+        let mut other = launch(EngineKind::LlamaCpp);
+        other.prompt_cache_mb = 0;
+        assert!(!command_args(&other).join(" ").contains("prompt-cache"));
     }
 
     #[test]

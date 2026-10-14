@@ -13,6 +13,4 @@ forge-model = { path = "../forge-model" }
 forge-gpu = { path = "../forge-gpu" }
 forge-chat = { path = "../forge-chat" }
 forge-train = { path = "../forge-train" }
-
-[dev-dependencies]
 forge-cuda = { path = "../forge-cuda" }

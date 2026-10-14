@@ -168,6 +168,16 @@ fn loading(app: &mut StudioApp, ui: &mut Ui) {
         );
         muted(ui, "When the answer repeats words from the prompt or from earlier in the answer (code edits, quotes, lists, JSON), the engine proposes the next tokens from there and checks them in one pass over the weights. Up to twice as fast on such answers, no cost elsewhere; the text is the same a model would write without it.");
         ui.horizontal(|ui| {
+            ui.label("Chat memory");
+            ui.add(egui::DragValue::new(&mut app.settings.prompt_cache_mb).range(0..=65536).speed(64.0).suffix(" MB"));
+            for (label, n) in [("off", 0), ("1 GB", 1024), ("2 GB", 2048), ("4 GB", 4096), ("8 GB", 8192)] {
+                if ui.small_button(label).clicked() {
+                    app.settings.prompt_cache_mb = n;
+                }
+            }
+        });
+        muted(ui, "ForgeInfer keeps the chats it is not working on in this much computer memory (not video memory), so going back to a long chat or document copies it back in a fraction of a second instead of reading it again (a 6,000-token chat: about half a second instead of 3 to 5 s). Loads with the model.");
+        ui.horizontal(|ui| {
             ui.label("Speculative depth");
             ui.add(egui::DragValue::new(&mut app.settings.spec_depth).range(0..=7));
             muted(ui, "Models with a built-in prediction head (Qwen3.5) draft this many tokens ahead. 0 = the engine's choice, 2 to 3 is fastest.");

@@ -161,6 +161,9 @@ pub struct Preset {
     pub gen: GenParams,
 }
 
+/// The engine's own default for the prompt cache (`forge serve --prompt-cache-mb`); a setting that equals it is not passed on.
+pub const DEFAULT_PROMPT_CACHE_MB: u32 = 2048;
+
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 #[serde(default)]
 pub struct Settings {
@@ -185,6 +188,8 @@ pub struct Settings {
     pub speculative: bool,
     /// Prompt-lookup drafting of the ForgeInfer engine: tokens that repeat earlier text are drafted from the text itself (any model; up to twice as fast code edits, quotes, structured output).
     pub lookup: bool,
+    /// Megabytes of memory the ForgeInfer engine may use to keep the chats it is not working on (0 = off): going back to a long chat copies it back instead of reading it again.
+    pub prompt_cache_mb: u32,
     /// Port of the local server (the default is the one LM Studio uses, so tools that know it just work).
     pub port: u16,
     /// Listen on every network interface instead of this computer only.
@@ -229,6 +234,7 @@ impl Default for Settings {
             spec_depth: 0,
             speculative: true,
             lookup: true,
+            prompt_cache_mb: DEFAULT_PROMPT_CACHE_MB,
             port: 1234,
             serve_on_lan: false,
             api_key: String::new(),

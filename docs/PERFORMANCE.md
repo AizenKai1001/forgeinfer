@@ -208,6 +208,41 @@ The lead shrinks with the length because the attention takes a growing share, an
 
 What did not help: an fp16-accumulate form of the scores S (flushed into fp32 after every k16 step: 3 to 4 percent more prompt speed for a KL of 4e-4 on the 4B and 1.2e-3 on the dense 28-layer Qwen3-1.7B against the old kernels, so it was removed); fusing the gate and up projections of the feed-forward layer with SwiGLU into one integer GEMM (bit-identical, but the pass got no faster: the integer GEMMs run compute-bound, so the saved 75 MB of elementwise traffic per layer hides behind the MMAs); a conditional rescale of the attention accumulators; a warp per token for the gated RMSNorm after the scan (as fast: it reads and writes what the bandwidth allows); spreading, staggering or trickling the cp.async issue of the integer GEMM, and 16 warps of 32 x 32 instead of 8 of 64 x 32 (all within noise of 25 TMAC/s: the kernel is latency-bound with two warps per scheduler).
 
+## Chat follow-ups at long context, and going back to a chat
+
+A follow-up in a chat that already holds a long document is the common long-context case: 30 to 40 new tokens after thousands. Measured on the RTX 2060 SUPER (34 SMs, 448 GB/s) with `tools/followup_probe.py MODEL [paragraphs]` (a document of N paragraphs and a question, then short follow-up questions, each answered with up to 24 tokens) and `tools/cache_check.py`, three things made it slow, none of them the prompt GEMMs:
+
+**1. The decode attention ran one block per head.** The dense decode attention kept every score of a head in shared memory (4 bytes per position of the context the session was started with) and ran one block of 128 threads per head: 32 blocks of 4 warps on a card with 34 SMs, too little to hide the latency of the loads of keys and values. After 6,400 positions it read the KV cache at 49 GB/s. The split-KV kernels (blocks of 1,024 positions, an exact merge; the output is the same up to the rounding of the sum, `crates/forge-gpu/tests/attn_split.rs`) existed for contexts beyond 11,000 positions only, where the one-block kernel no longer launches. They are the default for every session started with a context of more than 1,024 positions now, dense and hybrid models alike (`FORGE_ATTN_SPLIT=0` keeps the old kernel where it can launch); on this card they read the cache at 276 GB/s. A whole conversation was faster by more than the attention alone: the chunks of a prompt that go through the multi-row path (below) use the same kernels.
+
+| model, context | decode per token, one block per head | split-KV | the 40 new tokens of a follow-up, one block per head | split-KV |
+|---|---|---|---|---|
+| Qwen3-4B Q6_K, 200 positions | 10.0 ms | 10.0 ms | 61 ms | 61 ms |
+| Qwen3-4B Q6_K, 1,700 | 14.6 ms | 12.6 ms | 135 ms | 99 ms |
+| Qwen3-4B Q6_K, 6,400 | 29.2 ms | 13.4 ms | 900 ms | 230 ms |
+| Qwen3.5-4B Q4_K_M, 1,700 | 9.3 ms | 8.4 ms | about 100 ms | about 95 ms |
+| Qwen3.5-4B Q4_K_M, 6,400 | 12.7 ms | 8.8 ms | 187 ms | 115 ms |
+
+The compressed KV caches gain the same, because the attention kernels read the layer's fp16 scratch either way: with `--kv int8` or `--kv int4` the 24 tokens of an answer after 6,400 positions take 419 ms instead of 790 on the dense 4B (the greedy answers agree except where two words are a near tie and the order of summation decides, as it does between the two attention kernels with the fp16 cache).
+
+**2. A short chunk took the multi-row path whatever the context.** Chunks of up to 56 tokens run through the multi-row kernels (the weights are streamed once for groups of 16 rows), whose attention reads the whole cache again for every row, while the GEMM path's attention reads each tile of keys once per 64 rows. After 6,400 positions the multi-row path costs 5.6 ms per new token, the GEMM path 102 ms for any chunk of 16 to 56 tokens:
+
+| new tokens after 6,400 positions | 11 | 16 | 21 | 26 | 31 | 41 | 51 |
+|---|---|---|---|---|---|---|---|
+| multi-row path | 63 ms | 87 ms | 122 ms | 146 ms | 170 ms | 229 ms | 286 ms |
+| GEMM path | 145 ms (token by token) | 102 ms | 101 ms | 101 ms | 102 ms | 103 ms | 103 ms |
+
+The crossover moves from 56 tokens on an empty cache to 35, 26 and 18 after 1,600, 3,200 and 6,400 positions, so a dense model's limit now follows the context (`FORGE_MROW_CTX=0` keeps the fixed 56; the rule scales with the model's bytes of KV cache per position). The hybrid Qwen3.5-4B stays on the multi-row path at every context: its attention is a quarter of its layers, and the path won 70 to 125 ms against 120 to 140 ms at 1,700, 3,200 and 6,400 positions. A follow-up of 40 new tokens after 6,400 positions reads in 104 ms instead of 900 (8.7 times), and the whole request (40 new tokens, 24 generated) takes 0.43 s instead of 1.4 to 1.6.
+
+**3. Going back to an earlier chat read it again.** The engine holds one conversation on the GPU; a request that shared little with it threw it away. With a second chat in between, a return to a 6,400-token chat cost its whole prompt (3.1 to 5.3 s here). Now the conversation is kept in page-locked host memory (`--prompt-cache-mb`, default 2,048; see [ENGINE.md](ENGINE.md#what-the-engine-does-about-memory)) and copied back. `tools/cache_check.py` replays two such chats that take turns (A, B, A, B, A, B; greedy answers, identical with the cache off and on; the figures are one request each, the copy of the chat that goes out included):
+
+| model | return to a 6,400-token chat, cache off | cache on |
+|---|---|---|
+| Qwen3-4B Q6_K (dense, 1 GB of KV cache) | 3.46 s | 0.58 s |
+| Qwen3.5-4B Q4_K_M (hybrid, 250 MB) | 3.14 s | 0.38 s |
+| Qwen3.5-9B Q4_K_M with its prediction head | 5.25 s | 0.52 s |
+
+The rest of a return is reading the new 40 tokens (0.1 s) and answering (0.3 s on the dense 4B); the copies are 0.08 s each way for the dense 4B (12 GB/s over PCIe) and 0.02 s for the hybrid ones. Locking 1 GB of host memory takes 0.3 s and unlocking it as long, which made the first version of the cache cost 0.46 s per swap on the dense model; it keeps one spare buffer now (an eighth bigger than what it holds, so the next version of a growing chat fits), and a swap costs the two copies (0.16 s on the dense 4B).
+
 ## What the integer GEMMs cost in quality at long context
 
 The integer prompt GEMMs quantize the activations to int8 (one scale per 32 values, as llama.cpp's mul_mat_q does). Against the plain fp16 path (`forge ppl --dump-ref` with `FORGE_MMQ=0 FORGE_F16ACC=0 FORGE_FLASH_A80=0 FORGE_SCAN_NC=0`) the Qwen3.5-4B on a 16,000-token text of English prose and tables shows a KL of 0.0152 (top-1 token equal at 98.05 percent, +0.0096 nats per token, perplexity 12.38 to 12.50); the same text in windows of 512 tokens shows 0.0010. With `FORGE_MMQ=0` and everything else at its default the KL is 0.00009, so the new attention, scan and fusion kernels add nothing. The error is not there from the start: the first 2,000 tokens are at 0.0008, then it sits on a plateau of 0.006 to 0.023 that moves with the text and does not keep growing (65,536 tokens: 0.0089 on average). It is carried by very few positions: the worst 0.1 percent of them hold half of the KL and the worst 1 percent hold 92 percent, confident predictions where the text offers several continuations (the next word after a date in a changelog, a list of links) and the int8 path commits to another one that also occurs in the text; the median position is at 0.0003. The same effect shows when the single-token decode kernels, a separate implementation, are compared with the fp16 path on a second GPU (KL 0.0161 at 16,000 tokens, 0.0009 at 512), so it comes from the int8 activations and not from the integer GEMM kernels; the 0.8B shows none of it (0.0008 at both lengths), and the 9B shows a KL of 0.0098 at 16,000 tokens (0.0019 at 512; the decode kernels give 0.0108) with no change in perplexity (+0.0005 nats per token for the emulated int8 rule, -0.0004 for the decode kernels). Retrieval is not hurt: 16 access codes spread over 16,000 tokens, and 16 of 790 near-identical lines, are found 48 of 48 times by the fp16 path and by an emulation of the int8 rule (`tools/retrieval_check.py`). Keeping a matrix out of the integer path shows where it comes from (`FORGE_MMQ_SKIP=role,...` with the roles `dn_qkv dn_z dn_out attn_q attn_kv attn_o ffn_gate_up ffn_down`, groups `dn attn ffn all`; those matrices then take the fp16 GEMM):
@@ -265,6 +300,8 @@ Method notes that saved time: compare *mean and median* over 48 or more runs (12
 python tools/bench_engines.py Qwen3.5-9B-Q4_K_M llama forge-plain forge-lookup forge-head   # five chat workloads, tokens/s, video memory, time to ready
 python tools/bench_engines.py --prefill 2100 Qwen3.5-9B-Q4_K_M llama forge-plain            # prompt reading speed from the servers' timings
 python tools/teacher_force.py Qwen3.5-9B-Q4_K_M bench_Qwen3.5-9B-Q4_K_M.json llama          # how often forge's top-1 equals the token llama.cpp produced
+python tools/followup_probe.py MODEL.gguf 100                                                    # a chat follow-up after a 6,400-token document: time to read and to answer
+python tools/cache_check.py MODEL.gguf 100                                                      # two long chats that take turns, prompt cache off and on, answers compared
 tools/bench_vs_llama.sh        # forge vs llama.cpp on the same files (needs llama.cpp's llama-bench)
 forge gpu-bench ...            # decode microbenchmarks;  forge prefill-bench ...
 forge ppl / eval-*             # perplexity and KL against a reference, HellaSwag and friends

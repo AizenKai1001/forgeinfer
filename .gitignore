@@ -25,3 +25,6 @@ studio/retry_test/
 studio/home_llama/
 studio/home_shot/
 studio/home_ux/
+
+# chats written by running Studio from the source tree (tests, demos)
+studio/home_lib/chats/
