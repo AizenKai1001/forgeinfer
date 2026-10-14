@@ -405,7 +405,7 @@ fn whole_sentences(text: &str) -> String {
     if t.ends_with(['.', '!', '?', ')', '"', '\'', '*', '`', ':', ';', '\u{2019}', '\u{201d}']) {
         return t.to_string();
     }
-    let cut = t.char_indices().filter(|&(i, c)| matches!(c, '.' | '!' | '?') && t[i + c.len_utf8()..].starts_with(char::is_whitespace)).map(|(i, c)| i + c.len_utf8()).last();
+    let cut = t.char_indices().filter(|&(i, c)| matches!(c, '.' | '!' | '?') && t[i + c.len_utf8()..].starts_with(char::is_whitespace)).map(|(i, c)| i + c.len_utf8()).next_back();
     match cut {
         Some(end) if end * 2 >= t.len() => t[..end].to_string(),
         _ => t.to_string(),

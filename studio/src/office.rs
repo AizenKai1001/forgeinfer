@@ -75,7 +75,7 @@ pub fn read_document(path: &Path, limit: u64) -> Result<String, String> {
         .unwrap_or_else(|_| Err("this file could not be read (its structure is not one the reader understands)".to_string()))
         .map_err(|e| format!("{name}: {e}"))?;
     // prose is tidied (hyphens at line ends rejoined ...); the rows of a sheet are not prose: a row that ends with a hyphen must not swallow the next one
-    let text = if matches!(kind.as_str(), "xlsx" | "xlsm" | "ods") { text.trim_matches(['\n', '\r', ' ']).to_string() } else { tidy(&text) };
+    let text = if matches!(kind.as_str(), "xlsx" | "xlsm" | "ods") { repeat_headers(text.trim_matches(['\n', '\r', ' '])) } else { tidy(&text) };
     if text.chars().all(|c| c.is_whitespace()) {
         return Err(if kind == "pdf" {
             match scan_failure.borrow().as_deref() {
@@ -90,6 +90,42 @@ pub fn read_document(path: &Path, limit: u64) -> Result<String, String> {
         return Err(format!("the text of {name} is {} and the limit is {}: attach a smaller file.", human_bytes(text.len() as u64), human_bytes(limit)));
     }
     Ok(text)
+}
+
+/// In a long sheet the rows far from the top no longer say what their columns are, and a passage cut out of the middle of the text has no header at all: after every 30 rows the sheet's name and its first row
+/// with two or more cells (its header, most of the time) are said again, under "(continued)". Sheets of 40 rows or fewer are left as they are.
+fn repeat_headers(text: &str) -> String {
+    const EVERY: usize = 30;
+    let mut out = String::with_capacity(text.len() + text.len() / 20);
+    let blocks: Vec<&str> = text.split("\n\n").collect();
+    for (b, block) in blocks.iter().enumerate() {
+        if b > 0 {
+            out.push_str("\n\n");
+        }
+        let lines: Vec<&str> = block.lines().collect();
+        let name = lines.first().and_then(|l| l.strip_prefix("Sheet: "));
+        // the header: the widest of the first rows (a title row above it has fewer cells)
+        let cells = |l: &str| l.split('\t').filter(|c| !c.trim().is_empty()).count();
+        let header = lines.iter().skip(1).take(8).fold(None::<&&str>, |best, l| if cells(l) >= 2 && best.is_none_or(|b| cells(l) > cells(b)) { Some(l) } else { best });
+        let (Some(name), Some(header)) = (name, header) else {
+            out.push_str(block);
+            continue;
+        };
+        if lines.len() <= 40 {
+            out.push_str(block);
+            continue;
+        }
+        for (i, line) in lines.iter().enumerate() {
+            if i > 0 {
+                out.push('\n');
+            }
+            if i >= EVERY && i % EVERY == 0 && i + 5 < lines.len() {
+                out.push_str(&format!("Sheet: {name} (continued)\n{header}\n"));
+            }
+            out.push_str(line);
+        }
+    }
+    out
 }
 
 /// The ligature characters that PDF fonts carry (one glyph for "fi", "ffi" ...) as the letters they stand for: a search for "office" finds "o\u{fb03}ce".
@@ -136,12 +172,14 @@ fn tidy_run(text: &str) -> String {
     out
 }
 
-/// The text layer of a PDF. A malformed file can make the parser panic: that is an error here, not a crash.
+/// The text layer of a PDF as one text (the tests use it; `read_document` goes through `pdf_pages`). A malformed file can make the parser panic: that is an error here, not a crash.
+#[cfg(test)]
 fn pdf_text(path: &Path) -> Result<String, String> {
     let bytes = std::fs::read(path).map_err(|e| e.to_string())?;
     pdf_text_from_bytes(&bytes)
 }
 
+#[cfg(test)]
 fn pdf_text_from_bytes(bytes: &[u8]) -> Result<String, String> {
     // the pages one after the other, a form feed between two of them (the chat reads them back as page numbers)
     pdf_pages(bytes).map(|pages| pages.join("\u{c}"))
@@ -171,11 +209,11 @@ fn zip_entry(z: &mut zip::ZipArchive<std::fs::File>, name: &str) -> Result<Strin
     Ok(s)
 }
 
-/// The text of a Word document: the paragraphs of `word/document.xml`, then its footnotes and endnotes (each in a part of its own).
+/// The text of a Word document: the paragraphs of `word/document.xml`, then its footnotes, endnotes and comments (each in a part of its own; a comment starts with the name of its author).
 fn docx_text(path: &Path) -> Result<String, String> {
     let mut z = open_zip(path)?;
     let mut text = xml_text(&zip_entry(&mut z, "word/document.xml")?, "w:t", "w:p");
-    for (part, tag, title) in [("word/footnotes.xml", "w:footnote", "Footnotes"), ("word/endnotes.xml", "w:endnote", "Endnotes")] {
+    for (part, tag, title) in [("word/footnotes.xml", "w:footnote", "Footnotes"), ("word/endnotes.xml", "w:endnote", "Endnotes"), ("word/comments.xml", "w:comment", "Comments")] {
         if let Ok(xml) = zip_entry(&mut z, part) {
             let notes = notes_text(&xml, tag);
             if !notes.is_empty() {
@@ -186,7 +224,8 @@ fn docx_text(path: &Path) -> Result<String, String> {
     Ok(text)
 }
 
-/// The notes of `word/footnotes.xml` or `word/endnotes.xml` (`tag` is "w:footnote" or "w:endnote"), one line each; the separators that Word keeps there are left out.
+/// The notes of `word/footnotes.xml`, `word/endnotes.xml` or `word/comments.xml` (`tag` is "w:footnote", "w:endnote" or "w:comment"), one line each, a comment after the name of its author; the
+/// separators that Word keeps among the footnotes are left out.
 fn notes_text(xml: &str, tag: &str) -> String {
     let (open, close) = (format!("<{tag} "), format!("</{tag}>"));
     let mut out = String::new();
@@ -198,6 +237,9 @@ fn notes_text(xml: &str, tag: &str) -> String {
         let note = xml_text(rest.split(close.as_str()).next().unwrap_or(""), "w:t", "w:p");
         let note = note.split_whitespace().collect::<Vec<_>>().join(" ");
         if !note.is_empty() {
+            if let Some(author) = attr(attrs, "w:author").map(decode_entities).filter(|a| !a.trim().is_empty()) {
+                out.push_str(&format!("{author}: "));
+            }
             out.push_str(&note);
             out.push('\n');
         }
@@ -1350,8 +1392,9 @@ mod tests {
         // the separators (ids -1 and 0) have a type and no text of their own; a note can have several paragraphs
         let footnotes = "<w:footnotes><w:footnote w:type=\"separator\" w:id=\"-1\"><w:p><w:r><w:separator/></w:r></w:p></w:footnote><w:footnote w:id=\"1\"><w:p><w:r><w:footnoteRef/></w:r><w:r><w:t xml:space=\"preserve\"> First note,</w:t></w:r></w:p><w:p><w:r><w:t>second paragraph.</w:t></w:r></w:p></w:footnote><w:footnote w:id=\"2\"><w:p><w:r><w:t>Another one &amp; more.</w:t></w:r></w:p></w:footnote></w:footnotes>";
         let endnotes = "<w:endnotes><w:endnote w:type=\"separator\" w:id=\"-1\"><w:p/></w:endnote><w:endnote w:id=\"1\"><w:p><w:r><w:t>An endnote.</w:t></w:r></w:p></w:endnote></w:endnotes>";
-        write_zip(&f, &[("word/document.xml", body), ("word/footnotes.xml", footnotes), ("word/endnotes.xml", endnotes)]);
-        assert_eq!(read_document(&f, 1 << 20).unwrap(), "Body with a note.\n\nFootnotes:\nFirst note, second paragraph.\nAnother one & more.\n\nEndnotes:\nAn endnote.");
+        let comments = "<w:comments><w:comment w:id=\"0\" w:author=\"Dr. Saban\" w:date=\"2026-05-02T10:00:00Z\"><w:p><w:r><w:annotationRef/></w:r><w:r><w:t>Cite the source here.</w:t></w:r></w:p></w:comment><w:comment w:id=\"1\" w:author=\"\"><w:p><w:r><w:t>An unsigned one.</w:t></w:r></w:p></w:comment></w:comments>";
+        write_zip(&f, &[("word/document.xml", body), ("word/footnotes.xml", footnotes), ("word/endnotes.xml", endnotes), ("word/comments.xml", comments)]);
+        assert_eq!(read_document(&f, 1 << 20).unwrap(), "Body with a note.\n\nFootnotes:\nFirst note, second paragraph.\nAnother one & more.\n\nEndnotes:\nAn endnote.\n\nComments:\nDr. Saban: Cite the source here.\nAn unsigned one.");
         // a file with notes parts that hold only separators gets no heading
         let g = dir.join("plain.docx");
         write_zip(&g, &[("word/document.xml", body), ("word/footnotes.xml", "<w:footnotes><w:footnote w:type=\"separator\" w:id=\"-1\"><w:p/></w:footnote></w:footnotes>")]);
@@ -1623,6 +1666,29 @@ mod tests {
         let xml = r##"<styleSheet><numFmts count="1"><numFmt numFmtId="170" formatCode="&quot;$&quot;#,##0.00"/></numFmts><cellXfs count="4"><xf numFmtId="0"/><xf numFmtId="9"/><xf numFmtId="4"/><xf numFmtId="170"/></cellXfs></styleSheet>"##;
         let s = cell_styles(xml);
         assert_eq!((s.numbers.get(&0), s.numbers.get(&1).map(String::as_str), s.numbers.get(&2).map(String::as_str), s.numbers.get(&3).map(String::as_str)), (None, Some("0%"), Some("#,##0.00"), Some("\"$\"#,##0.00")));
+    }
+
+    #[test]
+    fn a_long_sheet_says_again_what_its_columns_are() {
+        let rows: Vec<String> = (1..=100).map(|i| format!("item {i}\t{}\t{}", i * 3, i % 7)).collect();
+        let text = format!("Sheet: Stock\nName\tQty\tBin\n{}\n\nSheet: Short\nA\tB\n1\t2", rows.join("\n"));
+        let out = repeat_headers(&text);
+        // after rows 30, 60 and 90 (the line numbers count the heading and the header row), once more the name and the header
+        assert_eq!(out.matches("Sheet: Stock (continued)\nName\tQty\tBin\n").count(), 3, "{out}");
+        assert!(out.starts_with("Sheet: Stock\nName\tQty\tBin\nitem 1\t3\t1\n") && out.contains("item 28\t84\t0\nSheet: Stock (continued)\nName\tQty\tBin\nitem 29\t87\t1\n"), "{out}");
+        // nothing is lost or reordered: the lines that are not repeats are the lines that came in
+        let kept: Vec<&str> = out.lines().filter(|l| !l.ends_with("(continued)")).collect();
+        assert_eq!(kept.iter().filter(|l| **l == "Name\tQty\tBin").count(), 4);
+        assert!(out.ends_with("\n\nSheet: Short\nA\tB\n1\t2"));
+        // a short sheet, and a text that is not a sheet, stay as they are
+        assert_eq!(repeat_headers("Sheet: S\nA\tB\n1\t2\n3\t4"), "Sheet: S\nA\tB\n1\t2\n3\t4");
+        assert_eq!(repeat_headers("plain text\n\nmore"), "plain text\n\nmore");
+        // the last few rows do not get a repeat of their own
+        let nearly: Vec<String> = (1..=62).map(|i| format!("r{i}\t{i}")).collect();
+        let out = repeat_headers(&format!("Sheet: N\nK\tV\n{}", nearly.join("\n")));
+        assert_eq!(out.matches("(continued)").count(), 1, "{out}");
+        let more: Vec<String> = (1..=70).map(|i| format!("r{i}\t{i}")).collect();
+        assert_eq!(repeat_headers(&format!("Sheet: N\nK\tV\n{}", more.join("\n"))).matches("(continued)").count(), 2);
     }
 
     #[test]
