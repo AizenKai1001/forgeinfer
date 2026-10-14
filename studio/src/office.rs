@@ -188,12 +188,69 @@ fn pptx_text(path: &Path) -> Result<String, String> {
     slides.sort();
     let mut out = String::new();
     for (n, name) in slides {
-        let text = xml_text(&zip_entry(&mut z, &name)?, "a:t", "a:p");
-        if !text.trim().is_empty() {
-            out.push_str(&format!("Slide {n}\n{}\n\n", text.trim()));
+        let mut text = xml_text(&zip_entry(&mut z, &name)?, "a:t", "a:p").trim().to_string();
+        let (diagrams, notes) = slide_extras(&mut z, &name);
+        if !diagrams.is_empty() {
+            text.push('\n');
+            text.push_str(&diagrams);
+        }
+        if !text.trim().is_empty() || notes.is_some() {
+            out.push_str(&format!("Slide {n}\n{}\n", text.trim()));
+            if let Some(notes) = notes {
+                out.push_str(&format!("Notes:\n{notes}\n"));
+            }
+            out.push('\n');
         }
     }
     Ok(out)
+}
+
+/// The parts that a slide points to through its relationships file: the kind of each ("notesSlide", "diagramData" ...) and its path inside the file.
+fn slide_parts(z: &mut zip::ZipArchive<std::fs::File>, slide: &str) -> Vec<(String, String)> {
+    let Some(file) = slide.rsplit('/').next() else { return Vec::new() };
+    let rels = zip_entry(z, &format!("ppt/slides/_rels/{file}.rels")).unwrap_or_default();
+    rels.split('<')
+        .filter(|t| t.starts_with("Relationship "))
+        .filter_map(|t| {
+            let kind = attr(t, "Type")?.rsplit('/').next()?.to_string();
+            // the target is relative to the folder of the slide ("../notesSlides/notesSlide2.xml")
+            let target = attr(t, "Target")?;
+            let mut parts: Vec<&str> = if target.starts_with('/') { Vec::new() } else { vec!["ppt", "slides"] };
+            for p in target.split('/') {
+                match p {
+                    "" | "." => {}
+                    ".." => {
+                        parts.pop();
+                    }
+                    p => parts.push(p),
+                }
+            }
+            Some((kind, parts.join("/")))
+        })
+        .collect()
+}
+
+/// What a slide has outside its own file: the text of its SmartArt diagrams (it is in a part of its own) and its speaker notes (without the number of the notes page).
+fn slide_extras(z: &mut zip::ZipArchive<std::fs::File>, slide: &str) -> (String, Option<String>) {
+    let (mut diagrams, mut notes) = (String::new(), None);
+    for (kind, path) in slide_parts(z, slide) {
+        let Ok(xml) = zip_entry(z, &path) else { continue };
+        let text = xml_text(&xml, "a:t", "a:p");
+        match kind.as_str() {
+            "diagramData" => {
+                diagrams.push_str(text.trim());
+                diagrams.push('\n');
+            }
+            "notesSlide" => {
+                let lines: Vec<&str> = text.lines().map(str::trim).filter(|l| !l.is_empty() && !l.chars().all(|c| c.is_ascii_digit()) && *l != "\u{2039}#\u{203a}").collect();
+                if !lines.is_empty() {
+                    notes = Some(lines.join("\n"));
+                }
+            }
+            _ => {}
+        }
+    }
+    (diagrams.trim().to_string(), notes)
 }
 
 /// The text of an Excel workbook: every sheet under a "Sheet: name" line, one line per row, the cells separated by tabs (a gap between two cells keeps its tabs, so the columns stay in line). Text as
@@ -1035,6 +1092,36 @@ mod tests {
     }
 
     #[test]
+    fn a_slides_speaker_notes_follow_the_slide() {
+        let dir = temp_dir("pptx-notes");
+        let f = dir.join("deck.pptx");
+        let slide = |t: &str| format!("<p:sld><a:p><a:r><a:t>{t}</a:t></a:r></a:p></p:sld>");
+        let rels = |target: &str| format!(r#"<Relationships><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/slideLayout" Target="../slideLayouts/slideLayout1.xml"/><Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/notesSlide" Target="{target}"/><Relationship Id="rId3" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/diagramData" Target="../diagrams/data1.xml"/></Relationships>"#);
+        // the text of a SmartArt diagram is in a part of its own
+        let diagram = "<dgm:dataModel><dgm:pt><dgm:t><a:p><a:r><a:t>SmartArt text</a:t></a:r></a:p></dgm:t></dgm:pt></dgm:dataModel>";
+        // the notes page has the notes and the number of the page in a field
+        let notes = "<p:notes><a:p><a:r><a:t>Talk about the harbour.</a:t></a:r></a:p><a:p><a:r><a:t>Second point &amp; a figure.</a:t></a:r></a:p><a:p><a:fld><a:t>1</a:t></a:fld></a:p></p:notes>";
+        write_zip(
+            &f,
+            &[
+                ("ppt/slides/slide1.xml", &slide("Harbour")),
+                ("ppt/slides/_rels/slide1.xml.rels", &rels("../notesSlides/notesSlide7.xml")),
+                ("ppt/notesSlides/notesSlide7.xml", notes),
+                ("ppt/diagrams/data1.xml", diagram),
+                ("ppt/slides/slide2.xml", &slide("No notes here")),
+                ("ppt/slides/slide3.xml", "<p:sld/>"),
+                ("ppt/slides/_rels/slide3.xml.rels", &rels("/ppt/notesSlides/notesSlide7.xml")),
+            ],
+        );
+        // (slides 1 and 3 point to the same diagram and notes: the part is found by its path, a part that is missing is skipped)
+        assert_eq!(
+            read_document(&f, 1 << 20).unwrap(),
+            "Slide 1\nHarbour\nSmartArt text\nNotes:\nTalk about the harbour.\nSecond point & a figure.\n\nSlide 2\nNo notes here\n\nSlide 3\nSmartArt text\nNotes:\nTalk about the harbour.\nSecond point & a figure."
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn a_pdf_gives_its_text_and_a_scan_or_a_broken_file_says_why() {
         let dir = temp_dir("pdf");
         let f = dir.join("report.pdf");
@@ -1072,6 +1159,11 @@ mod tests {
             match read_document(Path::new(p), 24 << 20) {
                 Ok(t) => {
                     println!("{p}: {} characters, {} lines in {:.2} s; starts: {:?}", t.chars().count(), t.lines().count(), t0.elapsed().as_secs_f64(), t.chars().take(160).collect::<String>());
+                    // FORGE_TEST_DUMP=folder writes the text of every file there (name.txt)
+                    if let Ok(dir) = std::env::var("FORGE_TEST_DUMP") {
+                        let _ = std::fs::create_dir_all(&dir);
+                        let _ = std::fs::write(Path::new(&dir).join(format!("{}.txt", Path::new(p).file_name().unwrap().to_string_lossy())), &t);
+                    }
                     // FORGE_TEST_SHOW=2500 prints that many characters of the text itself
                     if let Some(n) = std::env::var("FORGE_TEST_SHOW").ok().and_then(|v| v.parse::<usize>().ok()) {
                         println!("{}", t.chars().take(n).collect::<String>());
