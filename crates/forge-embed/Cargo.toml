@@ -1,0 +1,11 @@
+[package]
+name = "forge-embed"
+description = "ForgeInfer embedding models: the nomic-embed-text / NomicBERT encoder on the CPU (WordPiece tokenizer, f32 forward pass, mean pooling), for the /v1/embeddings route (std only)"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+forge-core = { path = "../forge-core" }
+forge-gguf = { path = "../forge-gguf" }
+forge-tok = { path = "../forge-tok" }

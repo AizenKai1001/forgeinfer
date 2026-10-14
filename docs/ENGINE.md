@@ -8,7 +8,9 @@ forge serve <model.gguf> [--native | --q8 | --f16] [--tokenizer FILE] [--host H]
                          [--temp T] [--top-k K] [--top-p P] [--min-p P] [--repeat-penalty R] [--device D]
                          [--mtp DIR|FILE] [--no-speculate]
                          [--kv fp16|int8|int4|k8v4] [--depth N] [--chunk N] [--threads N] [--host-ffn LAYERS|all] [--vram-reserve MIB]
-                         [--prompt-cache-mb MB]
+                         [--prompt-cache-mb MB] [--embedding-model FILE] [--embedding-device cpu|gpu|auto] [--embedding-alias NAME]
+forge serve <nomic-embed-text.gguf> [--port P] [--alias NAME] [--device D] [--embedding-device cpu|gpu|auto]   # an embedding model on its own
+forge embed <nomic-embed-text.gguf> TEXT...                                   # the cosines between texts, `--json` for the vectors, `--cpu` / `--gpu`
 ```
 
 | flag | meaning |
@@ -23,6 +25,7 @@ forge serve <model.gguf> [--native | --q8 | --f16] [--tokenizer FILE] [--host H]
 | `--host-ffn LAYERS\|all` | force layers' feed-forward weights into system memory (the default planner does this automatically when the model does not fit the card) |
 | `--vram-reserve MIB` | leave this much video memory free for other programs |
 | `--prompt-cache-mb MB` | host memory for the chats the GPU is not working on (default 2048, 0 = off): going back to a long chat copies it back instead of reading it again (see below) |
+| `--embedding-model FILE` | an embedding model (nomic-embed-text-v1.5) served on `/v1/embeddings` next to the chat model, on the CPU unless `--embedding-device gpu` (the chat engine plans its memory around the whole card, so it is not touched by default). `forge serve nomic-embed-text.gguf` alone serves only the embeddings, on the GPU when there is one. See [EMBEDDINGS.md](EMBEDDINGS.md) |
 | `--api-key KEY`, `--host`, `--port` | access control; the default host is `127.0.0.1` |
 | `--mtp FILE` | the Qwen3.5 prediction head (`mtp.safetensors`, not part of the GGUF files; `tools/fetch_mtp.py REPO OUT` extracts it from the original checkpoint with range requests); picked up automatically when a file of that name sits next to the model. With `--depth 3` the 9B answers about 2 times faster ([PERFORMANCE.md](PERFORMANCE.md#speculative-decoding-on-the-rtx-4060)) |
 
@@ -33,6 +36,7 @@ GET  /health, /v1/health        {"status": "ok"}
 GET  /v1/models, /props         the served model
 POST /v1/chat/completions       messages, tools, streaming (SSE) with reasoning_content and tool_calls deltas, usage and timings
 POST /v1/completions            raw text completion
+POST /v1/embeddings             input (a string or a list), dimensions, encoding_format float|base64: the vectors of an embedding model (see EMBEDDINGS.md)
 POST /apply-template            the rendered prompt of a chat request
 POST /tokenize, /detokenize
 ```

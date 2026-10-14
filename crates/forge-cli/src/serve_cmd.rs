@@ -11,7 +11,9 @@
 //!   --no-lookup    no prompt-lookup drafting (on by default, any model: tokens that repeat earlier text are drafted from the text itself and verified in one sweep; --lookup-draft: at most N of them, default 11; a run starts at 7 and doubles after a cycle whose drafts were all right);
 //!   --no-speculate no speculative decoding at all (neither the MTP head nor the lookup);
 //!   --threads      CPU threads for the feed-forward layers kept in host memory; --host-ffn: force those layers (default: chosen automatically when the model does not fit the GPU);
-//!   --vram-reserve MiB of GPU memory left free for other programs.
+//!   --vram-reserve MiB of GPU memory left free for other programs;
+//!   --embedding-model FILE  an embedding model (a nomic-embed-text GGUF) served on /v1/embeddings next to the chat model; `forge serve nomic-embed-text.gguf` alone serves only the embeddings;
+//!   --embedding-device cpu|gpu|auto  where the embedding model runs (default: the GPU when it is served alone and one works, the CPU next to a chat model so that the chat engine keeps the card to itself; --device picks the GPU); --embedding-alias NAME: its name in /v1/models.
 
 use forge_chat::ChatFormat;
 use forge_engine::{Engine, EngineConfig, SamplingParams, WeightMode};
@@ -49,6 +51,38 @@ pub fn serve(args: &[String]) -> i32 {
         return 2;
     };
     let model = PathBuf::from(model);
+    let host = flag(args, "--host").unwrap_or("127.0.0.1").to_string();
+    let port: u16 = flag(args, "--port").and_then(|v| v.parse().ok()).unwrap_or(8080);
+    let api_key = flag(args, "--api-key").map(|s| s.to_string());
+    let stem = |p: &std::path::Path| p.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_else(|| "embedding".to_string());
+    // where the embedding model runs: `--embedding-device cpu|gpu|auto`; on its own it takes the GPU when there is one, next to a chat model it stays on the CPU (the chat engine plans its memory around the whole card)
+    let load_embedder = |path: &std::path::Path, default_device: &str| -> Option<Arc<dyn forge_embed::Encode>> {
+        let t = std::time::Instant::now();
+        let device = flag(args, "--embedding-device").unwrap_or(default_device);
+        let ordinal: usize = flag(args, "--device").and_then(|v| v.parse().ok()).unwrap_or(0);
+        match crate::embed_cmd::load_encoder(path, device, ordinal) {
+            Ok(e) => {
+                eprintln!("[serve] embedding model {} ready in {:.1} s: {} layers, {} dimensions, {} tokens of context ({})", e.name(), t.elapsed().as_secs_f64(), e.config().n_layer, e.dim(), e.config().ctx, e.backend());
+                Some(e)
+            }
+            Err(e) => {
+                eprintln!("cannot load the embedding model {}: {e}", path.display());
+                None
+            }
+        }
+    };
+    // an embedding model on its own: no chat model
+    if forge_embed::is_embedding_gguf(&model) {
+        let Some(embedder) = load_embedder(&model, "auto") else { return 1 };
+        let sc = ServerConfig { host, port, api_key, embedder: Some(embedder), embed_alias: flag(args, "--alias").map(|s| s.to_string()).unwrap_or_else(|| stem(&model)) };
+        return match forge_serve::serve(None, sc) {
+            Ok(()) => 0,
+            Err(e) => {
+                eprintln!("server error: {e}");
+                1
+            }
+        };
+    }
     // a downloaded GGUF is already quantized: its blocks are read as they are unless asked otherwise; our own full-precision checkpoints default to F16
     let is_gguf = model
         .extension()
@@ -157,14 +191,15 @@ pub fn serve(args: &[String]) -> i32 {
         engine.info.n_ctx,
         if engine.info.speculative { ", speculative decoding with the MTP head" } else { "" }
     );
-    let sc = ServerConfig {
-        host: flag(args, "--host").unwrap_or("127.0.0.1").to_string(),
-        port: flag(args, "--port")
-            .and_then(|v| v.parse().ok())
-            .unwrap_or(8080),
-        api_key: flag(args, "--api-key").map(|s| s.to_string()),
+    let (embedder, embed_alias) = match flag(args, "--embedding-model").map(PathBuf::from) {
+        Some(p) => {
+            let Some(e) = load_embedder(&p, "cpu") else { return 1 };
+            (Some(e), flag(args, "--embedding-alias").map(|s| s.to_string()).unwrap_or_else(|| stem(&p)))
+        }
+        None => (None, String::new()),
     };
-    match forge_serve::serve(Arc::new(engine), sc) {
+    let sc = ServerConfig { host, port, api_key, embedder, embed_alias };
+    match forge_serve::serve(Some(Arc::new(engine)), sc) {
         Ok(()) => 0,
         Err(e) => {
             eprintln!("server error: {e}");

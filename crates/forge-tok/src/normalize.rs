@@ -72,6 +72,31 @@ fn is_ascii(s: &str) -> bool {
     s.is_ascii()
 }
 
+/// Canonical decomposition with canonical ordering (NFD), for BERT's accent stripping.
+pub fn nfd(s: &str) -> String {
+    if s.is_ascii() {
+        return s.to_string();
+    }
+    let mut d: Vec<u32> = Vec::with_capacity(s.len());
+    for ch in s.chars() {
+        decompose_into(ch as u32, &mut d);
+    }
+    let mut i = 0;
+    while i < d.len() {
+        if ccc(d[i]) == 0 {
+            i += 1;
+            continue;
+        }
+        let mut j = i;
+        while j < d.len() && ccc(d[j]) != 0 {
+            j += 1;
+        }
+        d[i..j].sort_by_key(|&c| ccc(c));
+        i = j;
+    }
+    d.into_iter().map(|c| char::from_u32(c).unwrap_or('\u{FFFD}')).collect()
+}
+
 pub fn nfc(s: &str) -> String {
     if is_ascii(s) {
         return s.to_string();
@@ -137,5 +162,9 @@ mod tests {
         assert_eq!(nfc("\u{AC01}"), "\u{AC01}");
         assert_eq!(nfc("\u{212B}"), "\u{00C5}"); // ANGSTROM SIGN -> A with ring
         assert_eq!(nfc("hello"), "hello");
+        assert_eq!(nfd("\u{00E9}"), "e\u{0301}");
+        assert_eq!(nfd("\u{1EA1}\u{0307}"), "a\u{0323}\u{0307}");
+        assert_eq!(nfd("\u{AC01}"), "\u{1100}\u{1161}\u{11A8}");
+        assert_eq!(nfd("hello"), "hello");
     }
 }

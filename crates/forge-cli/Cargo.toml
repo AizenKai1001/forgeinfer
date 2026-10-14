@@ -14,6 +14,8 @@ forge-core = { path = "../forge-core" }
 forge-gguf = { path = "../forge-gguf" }
 forge-quant = { path = "../forge-quant" }
 forge-tok = { path = "../forge-tok" }
+forge-embed = { path = "../forge-embed" }
+forge-embed-gpu = { path = "../forge-embed-gpu" }
 forge-model = { path = "../forge-model" }
 forge-cuda = { path = "../forge-cuda" }
 forge-kernels = { path = "../forge-kernels" }

@@ -157,6 +157,9 @@ fn model_card(app: &mut StudioApp, ui: &mut Ui, e: &ModelEntry) {
             if e.projector {
                 badge(ui, "vision projector", theme::INFO, theme::CARD);
             } else if e.error.is_none() {
+                if e.is_embedding() {
+                    badge(ui, "embedding model", theme::INFO, theme::CARD).on_hover_text("Turns text into vectors for search and retrieval (/v1/embeddings). Load it to try it in the Chat screen.");
+                }
                 match fit(&app.hw, e.size) {
                     Fit::Gpu => {
                         badge(ui, "fits in video memory", theme::GOOD, theme::CARD);

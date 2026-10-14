@@ -92,6 +92,8 @@ pub enum Action {
         file: RepoFile,
     },
     CancelDownload(u64),
+    /// Embed the lines of the playground with the loaded embedding model.
+    Embed,
     Toast(String),
 }
 
@@ -120,7 +122,21 @@ pub enum Msg {
     },
     Models(Result<Vec<String>, String>),
     Inspected(Result<Inspect, String>),
+    Embedded(Result<EmbedOut, String>),
 }
+
+/// What the embedding playground got back: the texts it sent, their vectors and what it cost.
+#[derive(Clone, Debug, PartialEq)]
+pub struct EmbedOut {
+    pub texts: Vec<String>,
+    pub vectors: Vec<Vec<f32>>,
+    /// tokens the server counted
+    pub tokens: u64,
+    pub millis: f32,
+}
+
+/// The lines the embedding playground starts with.
+pub const EMBED_SAMPLE: &str = "search_query: What is the capital of France?\nsearch_document: Paris is the capital and largest city of France.\nsearch_document: The Eiffel Tower was finished in 1889 and stands in Paris.\nsearch_document: The mitochondria is the powerhouse of the cell.\nsearch_document: Berlin has been the capital of Germany since 1990.";
 
 /// The answer being generated right now.
 pub struct Generation {
@@ -183,6 +199,8 @@ pub struct StartupOpts {
     pub attach: Vec<PathBuf>,
     /// Start with the parameters panel open (screenshots).
     pub show_params: bool,
+    /// Embed the sample lines as soon as an embedding model is ready (tests and screenshots).
+    pub embed: bool,
 }
 
 pub struct ShotState {
@@ -239,6 +257,13 @@ pub struct StudioApp {
     pub renaming: Option<(String, String, bool)>,
     /// A user message being edited: (index, text, first frame).
     pub editing: Option<(usize, String, bool)>,
+
+    /// The embedding playground: the lines typed, whether a request is out, its answer or error.
+    pub embed_text: String,
+    pub embed_busy: bool,
+    pub embed_out: Option<EmbedOut>,
+    pub embed_error: String,
+    pending_embed: bool,
 
     pub hf_query: String,
     pub hf_results: Vec<Repo>,
@@ -317,6 +342,11 @@ impl StudioApp {
             chat_filter: String::new(),
             renaming: None,
             editing: None,
+            embed_text: EMBED_SAMPLE.to_string(),
+            embed_busy: false,
+            embed_out: None,
+            embed_error: String::new(),
+            pending_embed: opts.embed,
             hf_query: opts.hf_query.clone().unwrap_or_default(),
             hf_results: Vec::new(),
             hf_busy: false,
@@ -551,6 +581,34 @@ impl StudioApp {
     /// The name of what answers now, for the title bar.
     pub fn active_name(&self) -> Option<String> {
         self.active_endpoint().map(|(_, n)| n)
+    }
+
+    /// The loaded (or loading) model is an embedding model: the chat screen shows the embedding playground for it.
+    pub fn active_is_embedding(&self) -> bool {
+        self.settings.engine == EngineKind::Forge
+            && matches!(self.engine.state(), EngineState::Ready { .. } | EngineState::Loading { .. })
+            && self.engine.current().is_some_and(|l| self.library.iter().any(|e| e.path == l.model && e.is_embedding()))
+    }
+
+    /// Send the lines of the playground to the loaded embedding model (one text per line, at most 64).
+    pub fn embed_now(&mut self) {
+        let Some((ep, model)) = self.active_endpoint() else {
+            self.embed_error = "No embedding model is loaded yet.".to_string();
+            return;
+        };
+        let texts: Vec<String> = self.embed_text.lines().map(str::trim).filter(|l| !l.is_empty()).take(64).map(str::to_string).collect();
+        if texts.is_empty() {
+            self.embed_error = "Type some text first, one per line.".to_string();
+            return;
+        }
+        self.embed_busy = true;
+        self.embed_error.clear();
+        self.spawn(move |tx, wake| {
+            let t0 = Instant::now();
+            let r = client::embed(&ep, &model, &texts).map(|(vectors, tokens)| EmbedOut { texts, vectors, tokens, millis: t0.elapsed().as_secs_f32() * 1e3 });
+            let _ = tx.send(Msg::Embedded(r));
+            wake();
+        });
     }
 
     pub fn load_model(&mut self, path: PathBuf) {
@@ -1006,6 +1064,16 @@ impl StudioApp {
                     self.external_models.clear();
                 }
             },
+            Msg::Embedded(r) => {
+                self.embed_busy = false;
+                match r {
+                    Ok(out) => {
+                        self.embed_error.clear();
+                        self.embed_out = Some(out);
+                    }
+                    Err(e) => self.embed_error = e,
+                }
+            }
             Msg::Inspected(r) => {
                 self.inspect_loading = false;
                 let path = self
@@ -1222,8 +1290,14 @@ impl StudioApp {
             self.input = self.pending_send.take().unwrap_or_default();
             self.send();
         }
+        // test hook: embed the sample lines once an embedding model is ready
+        if self.pending_embed && self.active_is_embedding() && self.active_endpoint().is_some() && !self.embed_busy {
+            self.pending_embed = false;
+            self.embed_now();
+        }
         if self.engine.state().is_busy()
             || self.generation.is_some()
+            || self.embed_busy
             || self.downloads.iter().any(|d| d.state == DlState::Running)
         {
             self.ctx.request_repaint_after(Duration::from_millis(250));
@@ -1281,6 +1355,7 @@ impl StudioApp {
                         d.progress.cancel.store(true, Ordering::Relaxed);
                     }
                 }
+                Action::Embed => self.embed_now(),
                 Action::Toast(t) => self.toast(t),
             }
         }
@@ -1291,6 +1366,7 @@ impl StudioApp {
         let ready_for_reply = {
             let waiting = self.shot.as_ref().is_some_and(|s| s.wait_reply);
             !waiting
+                || (self.opts.embed && !self.pending_embed && !self.embed_busy && (self.embed_out.is_some() || !self.embed_error.is_empty()))
                 || (self.opts.send.is_some()
                     && self.pending_send.is_none()
                     && self.generation.is_none()

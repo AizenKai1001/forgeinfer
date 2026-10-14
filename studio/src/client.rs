@@ -117,6 +117,55 @@ pub fn list_models(ep: &Endpoint) -> Result<Vec<String>, String> {
     Ok(ids)
 }
 
+/// The vectors of some texts (`POST /v1/embeddings`) and the tokens the server counted for them.
+pub fn embed(ep: &Endpoint, model: &str, texts: &[String]) -> Result<(Vec<Vec<f32>>, u64), String> {
+    let mut req = agent()
+        .post(ep.url("embeddings"))
+        .config()
+        .timeout_global(Some(Duration::from_secs(120)))
+        .build()
+        .header("Content-Type", "application/json");
+    if !ep.key.is_empty() {
+        req = req.header("Authorization", format!("Bearer {}", ep.key));
+    }
+    let mut resp = req
+        .send_json(&json!({ "model": model, "input": texts }))
+        .map_err(|e| format!("cannot reach the server at {}: {e}", ep.base))?;
+    let status = resp.status().as_u16();
+    let body = resp.body_mut().read_to_string().map_err(|e| e.to_string())?;
+    if !(200..300).contains(&status) {
+        return Err(error_text(status, &body));
+    }
+    parse_embeddings(&body, texts.len())
+}
+
+/// The vectors of a `/v1/embeddings` answer, in the order of the request, and its token count.
+pub fn parse_embeddings(body: &str, expected: usize) -> Result<(Vec<Vec<f32>>, u64), String> {
+    let v: Value = serde_json::from_str(body).map_err(|e| format!("not an embeddings answer: {e}"))?;
+    let data = v["data"].as_array().ok_or("the answer has no data list")?;
+    let mut rows: Vec<(u64, Vec<f32>)> = Vec::with_capacity(data.len());
+    for (i, d) in data.iter().enumerate() {
+        let vec = d["embedding"].as_array().ok_or("an embedding is not a list of numbers")?;
+        rows.push((d["index"].as_u64().unwrap_or(i as u64), vec.iter().map(|x| x.as_f64().unwrap_or(0.0) as f32).collect()));
+    }
+    rows.sort_by_key(|r| r.0);
+    if rows.len() != expected {
+        return Err(format!("{} vectors came back for {expected} texts", rows.len()));
+    }
+    Ok((rows.into_iter().map(|r| r.1).collect(), v["usage"]["prompt_tokens"].as_u64().unwrap_or(0)))
+}
+
+/// The cosine of two vectors (the server's vectors have length one, so it is their dot product; this also copes with any other length).
+pub fn cosine(a: &[f32], b: &[f32]) -> f32 {
+    let dot: f32 = a.iter().zip(b).map(|(x, y)| x * y).sum();
+    let (na, nb) = (a.iter().map(|x| x * x).sum::<f32>().sqrt(), b.iter().map(|x| x * x).sum::<f32>().sqrt());
+    if na == 0.0 || nb == 0.0 {
+        0.0
+    } else {
+        dot / (na * nb)
+    }
+}
+
 fn error_text(status: u16, body: &str) -> String {
     if let Ok(v) = serde_json::from_str::<Value>(body) {
         if let Some(m) = v["error"]["message"]
@@ -537,5 +586,24 @@ mod tests {
             ("still going".into(), String::new(), true)
         );
         assert_eq!(split_think("plain"), (String::new(), "plain".into(), false));
+    }
+
+    #[test]
+    fn an_embeddings_answer_is_read_in_the_order_of_the_request() {
+        let body = r#"{"object":"list","data":[{"object":"embedding","index":1,"embedding":[0.0,1.0]},{"object":"embedding","index":0,"embedding":[1.0,0.0]}],"model":"m","usage":{"prompt_tokens":9,"total_tokens":9}}"#;
+        let (v, tokens) = parse_embeddings(body, 2).unwrap();
+        assert_eq!(v, vec![vec![1.0, 0.0], vec![0.0, 1.0]]);
+        assert_eq!(tokens, 9);
+        assert!(parse_embeddings(body, 3).is_err());
+        assert!(parse_embeddings("{}", 1).is_err());
+        assert!(parse_embeddings("nope", 1).is_err());
+    }
+
+    #[test]
+    fn cosine_of_vectors() {
+        assert!((cosine(&[1.0, 0.0], &[1.0, 0.0]) - 1.0).abs() < 1e-6);
+        assert!(cosine(&[1.0, 0.0], &[0.0, 1.0]).abs() < 1e-6);
+        assert!((cosine(&[3.0, 4.0], &[6.0, 8.0]) - 1.0).abs() < 1e-6);
+        assert_eq!(cosine(&[0.0, 0.0], &[1.0, 0.0]), 0.0);
     }
 }

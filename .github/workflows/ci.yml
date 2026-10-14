@@ -14,7 +14,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       # the GPU crates (forge-cuda, forge-kernels, forge-gpu, forge-engine ...) need nvcc and an NVIDIA GPU: they are built and tested on a GPU machine
-      - run: cargo test --release -p forge-core -p forge-tok -p forge-gguf -p forge-quant -p forge-chat
+      - run: cargo test --release -p forge-core -p forge-tok -p forge-gguf -p forge-quant -p forge-chat -p forge-embed
 
   studio:
     name: forge studio (${{ matrix.os }})

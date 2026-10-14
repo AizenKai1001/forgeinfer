@@ -9,8 +9,12 @@ pub mod unicode;
 #[allow(clippy::all)]
 mod unicode_norm_tables;
 #[allow(clippy::all)]
+mod unicode_punct;
+#[allow(clippy::all)]
 mod unicode_tables;
+pub mod wordpiece;
 
 pub use fast::Encoder;
 pub use pretok::PreTokenizer;
 pub use tokenizer::{AddedToken, Tokenizer};
+pub use wordpiece::WordPiece;

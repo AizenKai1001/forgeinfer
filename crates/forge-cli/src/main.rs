@@ -7,6 +7,7 @@
 
 mod chat_cmd;
 mod data_cmds;
+mod embed_cmd;
 mod eval_cmd;
 mod eval_lambada;
 mod gencheck_cmd;
@@ -316,6 +317,7 @@ fn main() {
         Some("cmp-hessians") => std::process::exit(quant_cmd::cmp_hessians(&args)),
         Some("mtp-agree") => std::process::exit(quant_cmd::mtp_agree(&args)),
         Some("serve") => std::process::exit(serve_cmd::serve(&args)),
+        Some("embed") => std::process::exit(embed_cmd::embed(&args)),
         Some("train") => std::process::exit(train_cmd::train(&args)),
         Some("kbench") => std::process::exit(kbench_cmd::kbench(&args)),
         Some("tok-train") => std::process::exit(data_cmds::tok_train(&args)),

@@ -2,6 +2,7 @@
 
 pub mod chat;
 pub mod discover;
+pub mod embed;
 pub mod library;
 pub mod server;
 pub mod settings;

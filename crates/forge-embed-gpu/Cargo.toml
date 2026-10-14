@@ -1,0 +1,13 @@
+[package]
+name = "forge-embed-gpu"
+description = "ForgeInfer embedding models on the GPU: the NomicBERT encoder of forge-embed with fp16 weights and the tensor-core GEMMs of forge-kernels"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+forge-core = { path = "../forge-core" }
+forge-cuda = { path = "../forge-cuda" }
+forge-kernels = { path = "../forge-kernels" }
+forge-embed = { path = "../forge-embed" }
+forge-tok = { path = "../forge-tok" }

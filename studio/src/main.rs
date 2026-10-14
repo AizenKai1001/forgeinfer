@@ -9,6 +9,7 @@
 //!   --shot PATH        save a screenshot as PNG and quit       --shot-delay S  wait S seconds first       --shot-after-reply
 //!   --stop-after S     press Stop S seconds after a reply starts (tests)
 //!   --params           open the parameters panel (screenshots)
+//!   --embed            with an embedding model: embed the sample lines of the playground once it is ready (tests and screenshots)
 //!   --attach FILE      attach a text file to the first message (repeatable)
 //!   --edit-msg N       open the editor on message N        --rename-first  start renaming the newest chat of the list (screenshots)
 //!   --size WxH         window size in points
@@ -72,6 +73,7 @@ fn parse_args() -> Result<StartupOpts, String> {
             }
             "--rename-first" => o.rename_first = true,
             "--params" => o.show_params = true,
+            "--embed" => o.embed = true,
             "--attach" => o.attach.push(value("--attach")?.into()),
             "--load" => o.load = Some(value("--load")?.into()),
             "--select" => o.select_model = Some(value("--select")?),
@@ -114,7 +116,7 @@ fn main() -> eframe::Result {
             if !m.is_empty() {
                 eprintln!("forge-studio: {m}");
             }
-            eprintln!("usage: forge-studio [--screen NAME] [--demo] [--load PATH] [--select NAME] [--send TEXT] [--search TEXT] [--inspect PATH] [--shot PATH [--shot-delay S] [--shot-after-reply]] [--size WxH]");
+            eprintln!("usage: forge-studio [--screen NAME] [--demo] [--load PATH] [--select NAME] [--send TEXT] [--embed] [--search TEXT] [--inspect PATH] [--shot PATH [--shot-delay S] [--shot-after-reply]] [--size WxH]");
             std::process::exit(if m.is_empty() { 0 } else { 2 });
         }
     };

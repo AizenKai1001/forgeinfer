@@ -90,19 +90,37 @@ pub fn show_server(app: &mut StudioApp, ui: &mut Ui) {
             if let Some(b) = base {
                 let key = if app.settings.api_key.is_empty() { "not-needed".to_string() } else { app.settings.api_key.clone() };
                 section(ui, "Use it from your tools");
-                code(
-                    ui,
-                    "curl",
-                    &format!(
-                        "curl {b}/chat/completions \\\n  -H \"Content-Type: application/json\" \\\n  -H \"Authorization: Bearer {key}\" \\\n  -d '{{\"model\": \"{model}\", \"messages\": [{{\"role\": \"user\", \"content\": \"Hello!\"}}], \"stream\": true}}'"
-                    ),
-                );
-                ui.add_space(6.0);
-                code(
-                    ui,
-                    "Python (openai package)",
-                    &format!("from openai import OpenAI\n\nclient = OpenAI(base_url=\"{b}\", api_key=\"{key}\")\nreply = client.chat.completions.create(\n    model=\"{model}\",\n    messages=[{{\"role\": \"user\", \"content\": \"Hello!\"}}],\n)\nprint(reply.choices[0].message.content)"),
-                );
+                if app.active_is_embedding() {
+                    code(
+                        ui,
+                        "curl",
+                        &format!(
+                            "curl {b}/embeddings \\\n  -H \"Content-Type: application/json\" \\\n  -H \"Authorization: Bearer {key}\" \\\n  -d '{{\"model\": \"{model}\", \"input\": [\"search_query: What is TCP?\", \"search_document: TCP is a transport protocol.\"]}}'"
+                        ),
+                    );
+                    ui.add_space(6.0);
+                    code(
+                        ui,
+                        "Python (openai package)",
+                        &format!("from openai import OpenAI\n\nclient = OpenAI(base_url=\"{b}\", api_key=\"{key}\")\nreply = client.embeddings.create(\n    model=\"{model}\",\n    input=[\"search_query: What is TCP?\", \"search_document: TCP is a transport protocol.\"],\n)\nprint(len(reply.data[0].embedding), reply.data[0].embedding[:5])"),
+                    );
+                    ui.add_space(6.0);
+                    muted(ui, "Start the texts you search through with \"search_document: \" and the questions with \"search_query: \" (nomic-embed-text was trained that way). `dimensions` keeps the first N numbers (64 to 768).");
+                } else {
+                    code(
+                        ui,
+                        "curl",
+                        &format!(
+                            "curl {b}/chat/completions \\\n  -H \"Content-Type: application/json\" \\\n  -H \"Authorization: Bearer {key}\" \\\n  -d '{{\"model\": \"{model}\", \"messages\": [{{\"role\": \"user\", \"content\": \"Hello!\"}}], \"stream\": true}}'"
+                        ),
+                    );
+                    ui.add_space(6.0);
+                    code(
+                        ui,
+                        "Python (openai package)",
+                        &format!("from openai import OpenAI\n\nclient = OpenAI(base_url=\"{b}\", api_key=\"{key}\")\nreply = client.chat.completions.create(\n    model=\"{model}\",\n    messages=[{{\"role\": \"user\", \"content\": \"Hello!\"}}],\n)\nprint(reply.choices[0].message.content)"),
+                    );
+                }
                 ui.add_space(6.0);
                 code(ui, "Settings of another app", &format!("API base URL:  {b}\nAPI key:       {key}\nModel:         {model}"));
             }

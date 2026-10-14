@@ -133,6 +133,28 @@ def dequant(t, raw, n_values):
             out[:, g * 64:g * 64 + 32] = (d * scales[:, 2 * g:2 * g + 1]) * (q & 0xF) - dmin * mins[:, 2 * g:2 * g + 1]
             out[:, g * 64 + 32:g * 64 + 64] = (d * scales[:, 2 * g + 1:2 * g + 2]) * (q >> 4) - dmin * mins[:, 2 * g + 1:2 * g + 2]
         return out.reshape(-1)
+    if name == "Q5_K":                                                          # d, dmin, 12 bytes of packed scales/mins (as Q4_K), qh[32] fifth bits (bit 2g and 2g+1 for the two halves of group g), qs[128] nibbles
+        dmin = blk[:, 2:4].copy().view("<f2").astype(np.float32)
+        sc = blk[:, 4:16].astype(np.uint32)
+        qh = blk[:, 16:48].astype(np.uint32)
+        qs = blk[:, 48:176]
+        scales = np.zeros((nb, 8), np.float32)
+        mins = np.zeros((nb, 8), np.float32)
+        for j in range(8):
+            if j < 4:
+                scales[:, j] = sc[:, j] & 63
+                mins[:, j] = sc[:, j + 4] & 63
+            else:
+                scales[:, j] = (sc[:, j + 4] & 0xF) | ((sc[:, j - 4] >> 6) << 4)
+                mins[:, j] = (sc[:, j + 4] >> 4) | ((sc[:, j] >> 6) << 4)
+        out = np.zeros((nb, 256), np.float32)
+        for g in range(4):
+            q = qs[:, g * 32:(g + 1) * 32]
+            h1 = (((qh >> (2 * g)) & 1) << 4).astype(np.float32)
+            h2 = (((qh >> (2 * g + 1)) & 1) << 4).astype(np.float32)
+            out[:, g * 64:g * 64 + 32] = (d * scales[:, 2 * g:2 * g + 1]) * ((q & 0xF).astype(np.float32) + h1) - dmin * mins[:, 2 * g:2 * g + 1]
+            out[:, g * 64 + 32:g * 64 + 64] = (d * scales[:, 2 * g + 1:2 * g + 2]) * ((q >> 4).astype(np.float32) + h2) - dmin * mins[:, 2 * g + 1:2 * g + 2]
+        return out.reshape(-1)
     if name == "Q6_K":                                                          # ql[128] low 4 bits, qh[64] high 2 bits, scales[16] int8, d at the END of the block
         ql = blk[:, 0:128]
         qh = blk[:, 128:192]

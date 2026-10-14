@@ -9,3 +9,4 @@ publish.workspace = true
 forge-core = { path = "../forge-core" }
 forge-engine = { path = "../forge-engine" }
 forge-chat = { path = "../forge-chat" }
+forge-embed = { path = "../forge-embed" }

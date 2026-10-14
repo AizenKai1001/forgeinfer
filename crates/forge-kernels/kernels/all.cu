@@ -24,3 +24,4 @@
 #include "flash_doc.cu"
 #include "decode_f1.cu"
 #include "decode_q8f.cu"
+#include "encoder.cu"

@@ -6,6 +6,9 @@
 //!   POST /v1/completions            raw text completion
 //!   POST /apply-template            the rendered prompt of a chat request (llama.cpp's route: the oracle for template tests)
 //!   POST /tokenize, /detokenize     llama.cpp shapes
+//!   POST /v1/embeddings             input (a string or an array of strings), `dimensions`, `encoding_format` float or base64: the vectors of an embedding model (`forge_embed`, on the CPU or the GPU)
+//!
+//! A server holds a chat model (`Engine`), an embedding model, or both; a route whose model is not loaded answers 404.
 //!
 //! The wire shapes follow what Ember and the OpenAI SDKs read (research note "ForgeInfer Research - Ember Integration and Serving Spec"): first chunk with the assistant role, `reasoning_content` for
 //! thinking text, tool calls as one chunk with id / name and empty arguments followed by argument fragments, a final chunk with the finish reason, optional usage, `[DONE]`; errors as JSON with the
@@ -24,6 +27,81 @@ pub struct ServerConfig {
     pub host: String,
     pub port: u16,
     pub api_key: Option<String>,
+    /// the embedding model behind /v1/embeddings, if any
+    pub embedder: Option<Arc<dyn forge_embed::Encode>>,
+    /// the name it is listed under
+    pub embed_alias: String,
+}
+
+/// Embedding requests run one at a time: the encoder already uses every core.
+static EMBED_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+const BASE64: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+
+fn base64(bytes: &[u8]) -> String {
+    let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
+    for c in bytes.chunks(3) {
+        let n = (c[0] as u32) << 16 | (*c.get(1).unwrap_or(&0) as u32) << 8 | *c.get(2).unwrap_or(&0) as u32;
+        out.push(BASE64[(n >> 18) as usize & 63] as char);
+        out.push(BASE64[(n >> 12) as usize & 63] as char);
+        out.push(if c.len() > 1 { BASE64[(n >> 6) as usize & 63] as char } else { '=' });
+        out.push(if c.len() > 2 { BASE64[n as usize & 63] as char } else { '=' });
+    }
+    out
+}
+
+/// The body of POST /v1/embeddings: Ok(response) or Err((status, message)): 400 for a request that cannot be answered, 500 when the device failed.
+fn embeddings_response(body: &Json, emb: &dyn forge_embed::Encode, alias: &str) -> Result<Json, (u16, String)> {
+    let bad = |m: &str| Err((400, m.to_string()));
+    let inputs: Vec<String> = match body.get("input") {
+        Some(Json::Str(t)) => vec![t.clone()],
+        Some(Json::Arr(a)) if !a.is_empty() && a.iter().all(|v| matches!(v, Json::Str(_))) => a.iter().filter_map(|v| v.as_str().map(|s| s.to_string())).collect(),
+        Some(Json::Arr(a)) if a.is_empty() => return bad("input must not be empty"),
+        _ => return bad("input must be a string or an array of strings"),
+    };
+    if inputs.len() > 2048 {
+        return bad("input holds more than 2048 texts");
+    }
+    let dims = match body.get("dimensions") {
+        None | Some(Json::Null) => None,
+        Some(d) => match d.as_usize() {
+            Some(n) if (1..=emb.dim()).contains(&n) => Some(n),
+            _ => return bad(&format!("dimensions must be between 1 and {}", emb.dim())),
+        },
+    };
+    let as_base64 = match body.get("encoding_format").and_then(|v| v.as_str()) {
+        None | Some("float") => false,
+        Some("base64") => true,
+        Some(other) => return bad(&format!("encoding_format {other:?} is not supported: use \"float\" or \"base64\"")),
+    };
+    let _one_at_a_time = EMBED_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let texts: Vec<&str> = inputs.iter().map(|t| t.as_str()).collect();
+    let results = emb.embed_many(&texts).map_err(|e| (500, format!("the embedding failed: {e}")))?;
+    let mut tokens = 0usize;
+    let mut data = Vec::with_capacity(inputs.len());
+    for (i, r) in results.into_iter().enumerate() {
+        tokens += r.tokens;
+        let v = match dims {
+            Some(d) => forge_embed::truncate_normalized(&r.vector, d),
+            None => r.vector,
+        };
+        let value = if as_base64 {
+            let mut bytes = Vec::with_capacity(v.len() * 4);
+            for x in &v {
+                bytes.extend_from_slice(&x.to_le_bytes());
+            }
+            Json::Str(base64(&bytes))
+        } else {
+            Json::Arr(v.iter().map(|&x| Json::Float(x as f64)).collect())
+        };
+        data.push(obj(vec![("object", s("embedding")), ("index", Json::Int(i as i64)), ("embedding", value)]));
+    }
+    Ok(obj(vec![
+        ("object", s("list")),
+        ("data", Json::Arr(data)),
+        ("model", s(alias)),
+        ("usage", obj(vec![("prompt_tokens", Json::Int(tokens as i64)), ("total_tokens", Json::Int(tokens as i64))])),
+    ]))
 }
 
 fn s(v: &str) -> Json {
@@ -982,7 +1060,7 @@ fn handle_generation(
     }
 }
 
-fn handle(mut stream: TcpStream, engine: Arc<Engine>, cfg: Arc<ServerConfig>) {
+fn handle(mut stream: TcpStream, engine: Option<Arc<Engine>>, cfg: Arc<ServerConfig>) {
     let _ = stream.set_nodelay(true);
     // a client that connects and says nothing, or drips its request, must not hold a thread for ever (the reader sets the socket's timeout before every read from what is left of the request's deadline);
     // once the request is in, the socket is only watched for the peer hanging up
@@ -1029,34 +1107,84 @@ fn handle(mut stream: TcpStream, engine: Arc<Engine>, cfg: Arc<ServerConfig>) {
         Json::parse(&String::from_utf8_lossy(&req.body))
             .map_err(|e| format!("invalid JSON body: {e}"))
     };
+    // the routes of the chat model answer 404 on a server that holds an embedding model only
+    macro_rules! chat_engine {
+        () => {
+            match engine.as_ref() {
+                Some(e) => e,
+                None => {
+                    return respond_error(&mut stream, 404, "invalid_request_error", "this server holds an embedding model only: use /v1/embeddings")
+                }
+            }
+        };
+    }
     match (method, path) {
         ("GET", "/health") | ("GET", "/v1/health") => {
             respond_json(&mut stream, 200, &obj(vec![("status", s("ok"))]), "")
         }
         ("GET", "/v1/models") => {
-            let i = &engine.info;
-            let m = obj(vec![
-                ("id", s(&i.alias)),
-                ("object", s("model")),
-                ("created", Json::Int(now())),
-                ("owned_by", s("forgeinfer")),
-                (
-                    "meta",
-                    obj(vec![
-                        ("n_ctx", Json::Int(i.n_ctx as i64)),
-                        ("n_vocab", Json::Int(i.vocab as i64)),
-                        ("n_params", Json::Int(i.n_params as i64)),
-                    ]),
-                ),
-            ]);
+            let mut models = Vec::new();
+            if let Some(engine) = engine.as_ref() {
+                let i = &engine.info;
+                models.push(obj(vec![
+                    ("id", s(&i.alias)),
+                    ("object", s("model")),
+                    ("created", Json::Int(now())),
+                    ("owned_by", s("forgeinfer")),
+                    (
+                        "meta",
+                        obj(vec![
+                            ("n_ctx", Json::Int(i.n_ctx as i64)),
+                            ("n_vocab", Json::Int(i.vocab as i64)),
+                            ("n_params", Json::Int(i.n_params as i64)),
+                        ]),
+                    ),
+                ]));
+            }
+            if let Some(emb) = cfg.embedder.as_ref() {
+                models.push(obj(vec![
+                    ("id", s(&cfg.embed_alias)),
+                    ("object", s("model")),
+                    ("created", Json::Int(now())),
+                    ("owned_by", s("forgeinfer")),
+                    (
+                        "meta",
+                        obj(vec![
+                            ("type", s("embedding")),
+                            ("n_ctx", Json::Int(emb.config().ctx as i64)),
+                            ("n_embd", Json::Int(emb.dim() as i64)),
+                            ("n_vocab", Json::Int(emb.config().vocab as i64)),
+                        ]),
+                    ),
+                ]));
+            }
             respond_json(
                 &mut stream,
                 200,
-                &obj(vec![("object", s("list")), ("data", Json::Arr(vec![m]))]),
+                &obj(vec![("object", s("list")), ("data", Json::Arr(models))]),
                 "",
             );
         }
+        ("POST", "/v1/embeddings") => {
+            let Some(emb) = cfg.embedder.as_ref() else {
+                return respond_error(&mut stream, 404, "invalid_request_error", "this server has no embedding model: start it with --embedding-model FILE");
+            };
+            let body = match body_json() {
+                Ok(b) => b,
+                Err(m) => return respond_error(&mut stream, 400, "invalid_request_error", &m),
+            };
+            match embeddings_response(&body, emb.as_ref(), &cfg.embed_alias) {
+                Ok(j) => {
+                    let n = j.get("data").and_then(|d| d.as_array()).map(|a| a.len()).unwrap_or(0);
+                    let tokens = j.get("usage").and_then(|u| u.get("prompt_tokens")).and_then(|t| t.as_usize()).unwrap_or(0);
+                    respond_json(&mut stream, 200, &j, "");
+                    eprintln!("[serve] POST {path} {n} texts, {tokens} tokens, {:.0} ms", t0.elapsed().as_secs_f64() * 1e3);
+                }
+                Err((code, m)) => respond_error(&mut stream, code, if code == 500 { "server_error" } else { "invalid_request_error" }, &m),
+            }
+        }
         ("GET", "/props") => {
+            let engine = chat_engine!();
             let i = &engine.info;
             let st = engine.stats();
             respond_json(
@@ -1082,6 +1210,7 @@ fn handle(mut stream: TcpStream, engine: Arc<Engine>, cfg: Arc<ServerConfig>) {
             );
         }
         ("POST", "/v1/chat/completions") => {
+            let engine = chat_engine!();
             let body = match body_json() {
                 Ok(b) => b,
                 Err(m) => return respond_error(&mut stream, 400, "invalid_request_error", &m),
@@ -1103,13 +1232,14 @@ fn handle(mut stream: TcpStream, engine: Arc<Engine>, cfg: Arc<ServerConfig>) {
                 .get("return_progress")
                 .and_then(|v| v.as_bool())
                 .unwrap_or(false);
-            handle_generation(&mut stream, &engine, request, true, streaming, usage, progress);
+            handle_generation(&mut stream, engine, request, true, streaming, usage, progress);
             eprintln!(
                 "[serve] POST {path} stream={streaming} {:.0} ms",
                 t0.elapsed().as_secs_f64() * 1e3
             );
         }
         ("POST", "/v1/completions") => {
+            let engine = chat_engine!();
             let body = match body_json() {
                 Ok(b) => b,
                 Err(m) => return respond_error(&mut stream, 400, "invalid_request_error", &m),
@@ -1140,13 +1270,14 @@ fn handle(mut stream: TcpStream, engine: Arc<Engine>, cfg: Arc<ServerConfig>) {
                 .get("return_progress")
                 .and_then(|v| v.as_bool())
                 .unwrap_or(false);
-            handle_generation(&mut stream, &engine, request, false, streaming, false, progress);
+            handle_generation(&mut stream, engine, request, false, streaming, false, progress);
             eprintln!(
                 "[serve] POST {path} stream={streaming} {:.0} ms",
                 t0.elapsed().as_secs_f64() * 1e3
             );
         }
         ("POST", "/apply-template") => {
+            let engine = chat_engine!();
             let body = match body_json() {
                 Ok(b) => b,
                 Err(m) => return respond_error(&mut stream, 400, "invalid_request_error", &m),
@@ -1167,6 +1298,7 @@ fn handle(mut stream: TcpStream, engine: Arc<Engine>, cfg: Arc<ServerConfig>) {
             }
         }
         ("POST", "/tokenize") => {
+            let engine = chat_engine!();
             let body = match body_json() {
                 Ok(b) => b,
                 Err(m) => return respond_error(&mut stream, 400, "invalid_request_error", &m),
@@ -1184,6 +1316,7 @@ fn handle(mut stream: TcpStream, engine: Arc<Engine>, cfg: Arc<ServerConfig>) {
             );
         }
         ("POST", "/detokenize") => {
+            let engine = chat_engine!();
             let body = match body_json() {
                 Ok(b) => b,
                 Err(m) => return respond_error(&mut stream, 400, "invalid_request_error", &m),
@@ -1208,6 +1341,7 @@ fn handle(mut stream: TcpStream, engine: Arc<Engine>, cfg: Arc<ServerConfig>) {
         | (_, "/v1/models")
         | (_, "/props")
         | (_, "/v1/chat/completions")
+        | (_, "/v1/embeddings")
         | (_, "/v1/completions") => {
             let head = "HTTP/1.1 405 Method Not Allowed\r\nAllow: GET, POST\r\nContent-Type: application/json\r\nConnection: close\r\nContent-Length: ";
             let b = to_text(&error_body(
@@ -1229,12 +1363,16 @@ fn handle(mut stream: TcpStream, engine: Arc<Engine>, cfg: Arc<ServerConfig>) {
 }
 
 /// Serve until the process ends (blocking).
-pub fn serve(engine: Arc<Engine>, cfg: ServerConfig) -> std::io::Result<()> {
+pub fn serve(engine: Option<Arc<Engine>>, cfg: ServerConfig) -> std::io::Result<()> {
     let listener = TcpListener::bind((cfg.host.as_str(), cfg.port))?;
-    eprintln!(
-        "[serve] listening on http://{}:{} (model {}, {} tokens of context)",
-        cfg.host, cfg.port, engine.info.alias, engine.info.n_ctx
-    );
+    let mut what = Vec::new();
+    if let Some(e) = &engine {
+        what.push(format!("model {}, {} tokens of context", e.info.alias, e.info.n_ctx));
+    }
+    if let Some(e) = &cfg.embedder {
+        what.push(format!("embedding model {}, {} dimensions, {} tokens of context, {}", cfg.embed_alias, e.dim(), e.config().ctx, e.backend()));
+    }
+    eprintln!("[serve] listening on http://{}:{} ({})", cfg.host, cfg.port, what.join("; "));
     let cfg = Arc::new(cfg);
     let live = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     for conn in listener.incoming() {
@@ -1269,6 +1407,16 @@ mod tests {
 
     fn request(body: &str) -> Result<Request, String> {
         chat_request(&Json::parse(body).unwrap())
+    }
+
+    #[test]
+    fn base64_matches_rfc_4648() {
+        for (plain, coded) in [("", ""), ("f", "Zg=="), ("fo", "Zm8="), ("foo", "Zm9v"), ("foob", "Zm9vYg=="), ("fooba", "Zm9vYmE="), ("foobar", "Zm9vYmFy")] {
+            assert_eq!(base64(plain.as_bytes()), coded);
+        }
+        // the bytes of floats, the way OpenAI's SDK reads them back (little endian f32)
+        let bytes: Vec<u8> = [1.0f32, -2.5].iter().flat_map(|x| x.to_le_bytes()).collect();
+        assert_eq!(base64(&bytes), "AACAPwAAIMA=");
     }
 
     #[test]

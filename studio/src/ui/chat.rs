@@ -31,18 +31,22 @@ pub fn md_style(size: f32) -> MdStyle {
 }
 
 pub fn show(app: &mut StudioApp, ui: &mut Ui) {
-    Panel::left("chat_list")
-        .default_size(232.0)
-        .size_range(190.0..=340.0)
-        .resizable(true)
-        .frame(
-            Frame::new()
-                .fill(theme::RAIL)
-                .inner_margin(Margin::same(10))
-                .stroke(Stroke::new(1.0, theme::BORDER)),
-        )
-        .show(ui, |ui| chat_list(app, ui));
-    if app.show_params {
+    // an embedding model has no conversations and no sampling parameters: only the playground
+    let embedding = app.active_is_embedding();
+    if !embedding {
+        Panel::left("chat_list")
+            .default_size(232.0)
+            .size_range(190.0..=340.0)
+            .resizable(true)
+            .frame(
+                Frame::new()
+                    .fill(theme::RAIL)
+                    .inner_margin(Margin::same(10))
+                    .stroke(Stroke::new(1.0, theme::BORDER)),
+            )
+            .show(ui, |ui| chat_list(app, ui));
+    }
+    if app.show_params && !embedding {
         Panel::right("chat_params")
             .default_size(300.0)
             .size_range(250.0..=440.0)
@@ -187,6 +191,13 @@ fn conversation(app: &mut StudioApp, ui: &mut Ui) {
                 .stroke(Stroke::new(1.0, theme::BORDER)),
         )
         .show(ui, |ui| top_bar(app, ui));
+    // an embedding model has no conversation: the playground takes the middle
+    if app.active_is_embedding() {
+        egui::CentralPanel::default()
+            .frame(Frame::new().fill(theme::PANEL).inner_margin(Margin::symmetric(16, 8)))
+            .show(ui, |ui| super::embed::show(app, ui));
+        return;
+    }
     Panel::bottom("chat_input")
         .resizable(false)
         .frame(
@@ -207,6 +218,9 @@ fn conversation(app: &mut StudioApp, ui: &mut Ui) {
 fn top_bar(app: &mut StudioApp, ui: &mut Ui) {
     ui.horizontal_centered(|ui| {
         model_picker(app, ui);
+        if app.active_is_embedding() {
+            return;
+        }
         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
             if ui
                 .selectable_label(app.show_params, "\u{2699}  Parameters")

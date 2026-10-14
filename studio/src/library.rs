@@ -33,7 +33,15 @@ pub struct ModelEntry {
 /// Architectures the ForgeInfer engine can run today.
 pub const FORGE_ARCHS: [&str; 4] = ["llama", "qwen2", "qwen3", "qwen35"];
 
+/// Embedding models the engine serves on `/v1/embeddings` (no chat: they turn text into vectors).
+pub const EMBEDDING_ARCHS: [&str; 1] = ["nomic-bert"];
+
 impl ModelEntry {
+    /// An embedding model: Studio shows an embedding playground for it instead of a chat.
+    pub fn is_embedding(&self) -> bool {
+        !self.projector && self.error.is_none() && EMBEDDING_ARCHS.contains(&self.arch.as_str())
+    }
+
     pub fn forge_supported(&self) -> bool {
         self.forge_issue().is_none()
     }
@@ -46,9 +54,13 @@ impl ModelEntry {
         if self.projector {
             return Some("a vision projector goes with a model, it is not a model".to_string());
         }
+        if self.is_embedding() {
+            // WordPiece tokenizer, read by the engine's embedding encoder
+            return None;
+        }
         if !FORGE_ARCHS.contains(&self.arch.as_str()) {
             return Some(format!(
-                "the \"{}\" architecture is not supported yet (llama, qwen2, qwen3 and qwen3.5 are)",
+                "the \"{}\" architecture is not supported yet (llama, qwen2, qwen3 and qwen3.5 are, and nomic-embed-text embedding models)",
                 self.arch
             ));
         }
@@ -585,6 +597,22 @@ mod tests {
         assert_eq!(e.params, 12 + 16 + 8);
         assert_eq!(e.quant, "F32");
         assert!(e.forge_supported());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn an_embedding_model_is_supported_and_is_not_a_chat_model() {
+        let dir = temp_dir("embed");
+        let f = dir.join("nomic.gguf");
+        tiny_gguf(&f, "nomic-bert");
+        let g = dir.join("chat.gguf");
+        tiny_gguf(&g, "qwen3");
+        let found = scan(&[dir.clone()], false);
+        let nomic = found.iter().find(|e| e.arch == "nomic-bert").unwrap();
+        assert!(nomic.is_embedding());
+        assert!(nomic.forge_supported());
+        let chat = found.iter().find(|e| e.arch == "qwen3").unwrap();
+        assert!(!chat.is_embedding());
         let _ = std::fs::remove_dir_all(&dir);
     }
 
