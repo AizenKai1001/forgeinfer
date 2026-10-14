@@ -550,6 +550,64 @@ extern "C" __global__ void __launch_bounds__(256) quant_rows_h_kernel(const half
     }
 }
 
+// QUALITY STUDY (FORGE_FAKEQ): quantize and dequantize the fp16 activations x [M][K] in place, one thread per group of G values (G <= 128, K a multiple of G), so that the fp16 GEMMs see what an int8-activation GEMM would see.
+// mode 0: the engine's rule (d = amax / 127, q = round(x / d), the scale stored as fp16); 1: the scale kept in fp32; 2: asymmetric (min / max, 255 steps); 3: the largest value of the group kept exact, the scale from the
+// second largest; 4: two int8 passes (the residual of the first pass quantized again with its own scale)
+extern "C" __global__ void __launch_bounds__(128) fakeq_rows_kernel(half* __restrict__ x, int M, int K, int G, int mode) {
+    const int row = blockIdx.x;
+    if (row >= M) return;
+    half* xr = x + (size_t)row * K;
+    for (int g0 = threadIdx.x * G; g0 < K; g0 += blockDim.x * G) {
+        float v[128];
+        float amax = 0.f, vmin = 3.0e38f, vmax = -3.0e38f;
+        int imax = 0;
+        for (int i = 0; i < G; i++) {
+            v[i] = __half2float(xr[g0 + i]);
+            const float a = fabsf(v[i]);
+            if (a > amax) {
+                amax = a;
+                imax = i;
+            }
+            vmin = fminf(vmin, v[i]);
+            vmax = fmaxf(vmax, v[i]);
+        }
+        if (mode == 0 || mode == 1) {
+            const float d = amax * (1.f / 127.f);
+            const float id = d != 0.f ? 1.f / d : 0.f;
+            const float dr = mode == 0 ? round_half(d) : d;
+            for (int i = 0; i < G; i++) xr[g0 + i] = __float2half(roundf(v[i] * id) * dr);
+        } else if (mode == 2) {
+            const float sc = (vmax - vmin) * (1.f / 255.f);
+            const float isc = sc != 0.f ? 1.f / sc : 0.f;
+            for (int i = 0; i < G; i++) xr[g0 + i] = __float2half(roundf((v[i] - vmin) * isc) * sc + vmin);
+        } else if (mode == 3) {
+            float a2 = 0.f;
+            for (int i = 0; i < G; i++)
+                if (i != imax) a2 = fmaxf(a2, fabsf(v[i]));
+            const float d = a2 * (1.f / 127.f);
+            const float id = d != 0.f ? 1.f / d : 0.f;
+            const float dr = round_half(d);
+            for (int i = 0; i < G; i++) xr[g0 + i] = i == imax ? __float2half(v[i]) : __float2half(fminf(fmaxf(roundf(v[i] * id), -127.f), 127.f) * dr);
+        } else {
+            const float d = amax * (1.f / 127.f);
+            const float id = d != 0.f ? 1.f / d : 0.f;
+            const float dr = round_half(d);
+            float rmax = 0.f;
+            for (int i = 0; i < G; i++) {
+                v[i] -= roundf(v[i] * id) * dr;
+                rmax = fmaxf(rmax, fabsf(v[i]));
+            }
+            const float d2 = rmax * (1.f / 127.f);
+            const float id2 = d2 != 0.f ? 1.f / d2 : 0.f;
+            const float dr2 = round_half(d2);
+            for (int i = 0; i < G; i++) {
+                const float first = __half2float(xr[g0 + i]) - v[i];  // (the first pass's value, exact in fp32)
+                xr[g0 + i] = __float2half(first + roundf(v[i] * id2) * dr2);
+            }
+        }
+    }
+}
+
 // a = silu(g) * u (g, u: fp16 [M][K]) and its int8 form for the integer GEMMs (the arrays of quant_rows_h_kernel) in ONE pass: the fp16 `a` of swiglu_kernel is never written or read back; the values are rounded through
 // fp16 exactly as swiglu_kernel stores them, so the result is bit-identical to swiglu_kernel followed by quant_rows_h_kernel
 extern "C" __global__ void __launch_bounds__(256) swiglu_quant_rows_kernel(const half* __restrict__ gx, const half* __restrict__ ux, int8_t* __restrict__ xq, float* __restrict__ adT, __half* __restrict__ ashT, int M, int K) {

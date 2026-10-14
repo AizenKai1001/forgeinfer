@@ -256,6 +256,7 @@ struct Kernels {
     /// fp16 [M][K] -> int8 plus a scale and a sum per 32 values (the activation arrays of the decode kernels and the input of `mmq`)
     quant_rows_h: Function,
     swiglu_quant_rows: Function,
+    fakeq_rows: Function,
     /// the plain tensor-core GEMMs of gemm_s80.cu (cp.async pipeline, m16n8k16; sm_80 and newer): C (+)= A B^T for contiguous A [M][K] and B [N][K], [fp16 out, fp32 out, fp32 add]; `gemm_s80h` accumulates in fp16
     /// (flushed into fp32 after every k16 step): 41 against 31 TFLOPs on the RTX 4060. They multiply a dequantized weight matrix (the long chunks of a prompt) and need `S80_SMEM` bytes of shared memory.
     gemm_s80: Vec<Function>,
@@ -1012,6 +1013,7 @@ impl GpuModel {
             mmq_ok,
             quant_rows_h: module.function("quant_rows_h_kernel")?,
             swiglu_quant_rows: module.function("swiglu_quant_rows_kernel")?,
+            fakeq_rows: module.function("fakeq_rows_kernel")?,
             embed_batch: module.function("embed_batch_kernel")?,
             rmsnorm_rows: module.function("rmsnorm_rows_kernel")?,
             colsq: module.function("colsq_accum_kernel")?,
@@ -1712,6 +1714,13 @@ pub struct GpuSession<'m> {
     mmq_min_m: usize,
     /// roles (bit i of `role`) whose matrices skip the integer GEMMs (FORGE_MMQ_SKIP, for quality studies)
     mmq_skip: u32,
+    /// ... only for chunks that start at this position or later (FORGE_MMQ_SKIP_FROM, default 0: always): the integer GEMMs lose almost nothing in the first 2,000 tokens, the recurrent state of a hybrid model
+    /// only accumulates their noise after that
+    mmq_skip_from: usize,
+    /// quality study (FORGE_FAKEQ): per role, the (group, mode) of an in-place quantize / dequantize of the activations before the fp16 GEMM
+    fakeq: [Option<(i32, i32)>; 9],
+    /// the start position of the prompt chunk being processed
+    chunk_pos: std::cell::Cell<usize>,
     /// the role of the matrix `gemm_w` is about to multiply (set by the layer code)
     role: std::cell::Cell<u8>,
     /// the SwiGLU and the int8 quantization of the down projection's input in one kernel (FORGE_SWIGLU_Q=0 keeps the two kernels); bit-identical results
@@ -1878,6 +1887,41 @@ fn default_fused_max(cc_major: i32, cc_minor: i32, two_pass_s80: bool) -> [usize
 
 /// Tokens per prefill chunk: 1024 (longer chunks were measured: 2048 is +2 % on the 4B and -4 % on the 9B, so the buffers stay at 1024). FORGE_PREFILL_CHUNK can lower it.
 /// The roles of FORGE_MMQ_SKIP (names or groups, comma separated) as a bit mask: 0 dn_qkv, 1 dn_z, 2 dn_out, 3 attn_q, 4 attn_kv, 5 attn_o, 6 ffn_gate_up, 7 ffn_down; groups dn, attn, ffn, all.
+/// FORGE_FAKEQ="roles:group:mode;roles:group:mode" (roles as in FORGE_MMQ_SKIP; group default 32, mode default 0) per role index.
+fn fakeq_spec() -> [Option<(i32, i32)>; 9] {
+    let mut out = [None; 9];
+    for item in std::env::var("FORGE_FAKEQ").unwrap_or_default().split(';') {
+        let mut parts = item.split(':');
+        let names = parts.next().unwrap_or("");
+        let group: i32 = parts.next().and_then(|v| v.parse().ok()).unwrap_or(32);
+        let mode: i32 = parts.next().and_then(|v| v.parse().ok()).unwrap_or(0);
+        let mut mask = 0u32;
+        for name in names.split(',') {
+            mask |= match name.trim() {
+                "dn_qkv" => 1,
+                "dn_z" => 2,
+                "dn_out" => 4,
+                "attn_q" => 8,
+                "attn_kv" => 16,
+                "attn_o" => 32,
+                "ffn_gate_up" => 64,
+                "ffn_down" => 128,
+                "dn" => 1 | 2 | 4,
+                "attn" => 8 | 16 | 32,
+                "ffn" => 64 | 128,
+                "all" => 255,
+                _ => 0,
+            };
+        }
+        for (r, slot) in out.iter_mut().enumerate().take(8) {
+            if mask >> r & 1 != 0 {
+                *slot = Some((group, mode));
+            }
+        }
+    }
+    out
+}
+
 fn mmq_skip_mask() -> u32 {
     let mut m = 0u32;
     for name in std::env::var("FORGE_MMQ_SKIP").unwrap_or_default().split(',') {
@@ -2039,6 +2083,9 @@ impl<'m> GpuSession<'m> {
                 .unwrap_or(16),
             mmq_no_mem: std::cell::Cell::new(false),
             mmq_skip: mmq_skip_mask(),
+            fakeq: fakeq_spec(),
+            mmq_skip_from: std::env::var("FORGE_MMQ_SKIP_FROM").ok().and_then(|v| v.parse().ok()).unwrap_or(0),
+            chunk_pos: std::cell::Cell::new(0),
             role: std::cell::Cell::new(0),
             swiglu_q: std::env::var("FORGE_SWIGLU_Q").map(|v| v != "0").unwrap_or(true),
             flash_a80,
@@ -3428,6 +3475,9 @@ impl<'m> GpuSession<'m> {
         k: usize,
         ldc: usize,
     ) -> Result<()> {
+        if let Some((group, mode)) = self.fakeq[self.role.get() as usize] {
+            self.m.k.fakeq_rows.launch((m as u32, 1, 1), (128, 1, 1), 0, &self.stream, &Args::new().ptr(a).i32(m as i32).i32(k as i32).i32(group).i32(mode))?;
+        }
         let fmt_index = match g.qf {
             Some(QFmt::Q4_K) => Some(0),
             Some(QFmt::Q5_K) => Some(1),
@@ -3508,7 +3558,7 @@ impl<'m> GpuSession<'m> {
             Some(QFmt::Q6_K) => 2,
             _ => return None,
         };
-        if self.mmq_skip >> self.role.get() & 1 != 0 {
+        if self.mmq_skip >> self.role.get() & 1 != 0 && self.chunk_pos.get() >= self.mmq_skip_from {
             return None;
         }
         (self.mmq && !g.is_host() && m >= self.mmq_min_m && k % 256 == 0 && n % 8 == 0 && ldc % 2 == 0).then_some(mf)
@@ -4285,6 +4335,7 @@ impl<'m> GpuSession<'m> {
             self.gemm_w(0, pf.h.ptr(), &l.w_gate, pf.g_ptr(), t, f, e, f)?;
             self.gemm_w(0, pf.h.ptr(), &l.w_up, pf.u_ptr(), t, f, e, f)?;
             self.ffn_down(pf, &l.w_down, li, t, f, e)?;
+            self.role.set(8);
         }
         if self.resid_out.is_some() && self.stats.as_ref().map(|s| s.body_only).unwrap_or(false) {
             // (`eval_chunk_resid` asked for the residual stream where this pass stopped)
@@ -4424,6 +4475,7 @@ impl<'m> GpuSession<'m> {
         pos0: usize,
         next_after: Option<u32>,
     ) -> Result<()> {
+        self.chunk_pos.set(pos0);
         if self.m.cfg.delta.is_some() {
             return self.prefill_chunk_h(tokens, pos0, next_after);
         }
@@ -4611,6 +4663,7 @@ impl<'m> GpuSession<'m> {
             self.gemm_w(0, pf.h.ptr(), &l.w_gate, pf.g_ptr(), t, f, e, f)?;
             self.gemm_w(0, pf.h.ptr(), &l.w_up, pf.u_ptr(), t, f, e, f)?;
             self.ffn_down(pf, &l.w_down, li, t, f, e)?;
+            self.role.set(8);
         }
         if self.resid_out.is_some() && self.stats.as_ref().map(|s| s.body_only).unwrap_or(false) {
             // (`eval_chunk_resid` asked for the residual stream where this pass stopped)
