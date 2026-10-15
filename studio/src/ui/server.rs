@@ -105,7 +105,7 @@ pub fn show_server(app: &mut StudioApp, ui: &mut Ui) {
                         &format!("from openai import OpenAI\n\nclient = OpenAI(base_url=\"{b}\", api_key=\"{key}\")\nreply = client.embeddings.create(\n    model=\"{model}\",\n    input=[\"search_query: What is TCP?\", \"search_document: TCP is a transport protocol.\"],\n)\nprint(len(reply.data[0].embedding), reply.data[0].embedding[:5])"),
                     );
                     ui.add_space(6.0);
-                    muted(ui, "Start the texts you search through with \"search_document: \" and the questions with \"search_query: \" (nomic-embed-text was trained that way). `dimensions` keeps the first N numbers (64 to 768).");
+                    muted(ui, "Start the texts you search through with \"search_document: \" and the questions with \"search_query: \" (nomic-embed-text was trained that way; e5 uses \"passage: \" and \"query: \", bge, MiniLM and gte no prefix). `dimensions` keeps the first N numbers (nomic-embed-text: 64 to 768).");
                 } else {
                     code(
                         ui,

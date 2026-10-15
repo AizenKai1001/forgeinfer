@@ -4,7 +4,7 @@
 use eframe::egui::{self, Align, Align2, Color32, CornerRadius, FontId, Key, Layout, RichText, ScrollArea, Sense, TextEdit, Ui};
 
 use super::widgets::*;
-use crate::app::{Action, EmbedOut, StudioApp, EMBED_SAMPLE};
+use crate::app::{Action, EmbedOut, StudioApp};
 use crate::client::cosine;
 use crate::engine::EngineState;
 use crate::theme;
@@ -35,8 +35,8 @@ fn body(app: &mut StudioApp, ui: &mut Ui) {
     muted(
         ui,
         "An embedding model turns a text into a list of numbers. Texts that mean similar things get lists that point the same way, which is how search, recommendations and \"chat with your documents\" find what is related. \
-         Type one text per line: the first line is the question, the others are ranked by how close they are to it. nomic-embed-text was trained with a prefix per task: \
-         start questions with \"search_query: \" and the passages to search with \"search_document: \".",
+         Type one text per line: the first line is the question, the others are ranked by how close they are to it. Some models were trained with a prefix per task: \
+         nomic-embed-text wants questions to start with \"search_query: \" and the passages to search with \"search_document: \", e5 wants \"query: \" and \"passage: \"; bge, MiniLM and gte need none.",
     );
     ui.add_space(10.0);
     card(ui, |ui| {
@@ -55,7 +55,7 @@ fn body(app: &mut StudioApp, ui: &mut Ui) {
                 app.actions.push(Action::Embed);
             }
             if ui.button("Sample").on_hover_text("Put the example lines back").clicked() {
-                app.embed_text = EMBED_SAMPLE.to_string();
+                app.embed_text = crate::rag::sample_for(&name);
             }
             if app.embed_busy {
                 ui.spinner();

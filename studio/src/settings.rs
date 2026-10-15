@@ -223,6 +223,8 @@ pub struct Settings {
     /// How many passages of the files a question gets, and the lowest cosine a passage may have to count (nomic-embed-text with its task prefixes: related passages score 0.65 to 0.9, unrelated ones 0.35 to 0.56).
     pub docs_limit: u32,
     pub docs_threshold: f32,
+    /// The minimum score is the one that suits the embedding model in use (`rag::profile_for`: models spread the cosine very differently) instead of `docs_threshold`.
+    pub docs_threshold_auto: bool,
     /// A request for a summary of files that are searched has the model read them part by part and summarize each, instead of answering from the passages that best match the request.
     pub docs_summarize: bool,
     /// Port of the local server (the default is the one LM Studio uses, so tools that know it just work).
@@ -274,6 +276,7 @@ impl Default for Settings {
             retrieval_model: String::new(),
             docs_limit: 3,
             docs_threshold: 0.6,
+            docs_threshold_auto: true,
             docs_summarize: true,
             port: 1234,
             serve_on_lan: false,
@@ -361,7 +364,14 @@ pub fn settings_path() -> PathBuf {
 impl Settings {
     /// The text of a settings file; Windows editors (Notepad, PowerShell 5) put a byte-order mark in front of it.
     pub fn parse(text: &str) -> serde_json::Result<Settings> {
-        let mut s: Settings = serde_json::from_str(text.trim_start_matches('\u{feff}'))?;
+        let text = text.trim_start_matches('\u{feff}');
+        let mut s: Settings = serde_json::from_str(text)?;
+        // a minimum score that was changed before it could be automatic is still the user's choice
+        if let Ok(raw) = serde_json::from_str::<serde_json::Value>(text) {
+            if raw.get("docs_threshold_auto").is_none() && raw.get("docs_threshold").and_then(|t| t.as_f64()).is_some_and(|t| (t - 0.6).abs() > 1e-6) {
+                s.docs_threshold_auto = false;
+            }
+        }
         s.sanitize();
         Ok(s)
     }
@@ -389,6 +399,7 @@ impl Settings {
         self.gen.top_k = self.gen.top_k.min(100_000);
         self.spec_depth = self.spec_depth.min(7);
         fix(&mut self.zoom, 0.7, 2.0, 1.0);
+        fix(&mut self.docs_threshold, 0.0, 1.0, 0.6);
     }
 
     pub fn load() -> Settings {
@@ -653,6 +664,22 @@ mod tests {
         assert_eq!(off.gen.thinking, ThinkingMode::Off);
         let named: Settings = serde_json::from_str(r#"{"gen": {"thinking": "default"}}"#).unwrap();
         assert_eq!(named.gen.thinking, ThinkingMode::Default);
+    }
+
+    #[test]
+    fn the_minimum_score_is_automatic_unless_the_user_had_changed_it() {
+        // a new file, or one from before the setting existed with the old default: automatic
+        assert!(Settings::default().docs_threshold_auto);
+        assert!(Settings::parse(r#"{"port": 4321}"#).unwrap().docs_threshold_auto);
+        assert!(Settings::parse(r#"{"docs_threshold": 0.6}"#).unwrap().docs_threshold_auto);
+        // a number the user chose stays what they chose
+        let kept = Settings::parse(r#"{"docs_threshold": 0.45}"#).unwrap();
+        assert!(!kept.docs_threshold_auto && (kept.docs_threshold - 0.45).abs() < 1e-6);
+        // once the file says it, the file decides
+        assert!(Settings::parse(r#"{"docs_threshold": 0.45, "docs_threshold_auto": true}"#).unwrap().docs_threshold_auto);
+        assert!(!Settings::parse(r#"{"docs_threshold": 0.6, "docs_threshold_auto": false}"#).unwrap().docs_threshold_auto);
+        // a value outside the range is brought into it
+        assert_eq!(Settings::parse(r#"{"docs_threshold": 7.0, "docs_threshold_auto": false}"#).unwrap().docs_threshold, 1.0);
     }
 
     #[test]

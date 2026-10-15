@@ -1,6 +1,6 @@
 [package]
 name = "forge-embed"
-description = "ForgeInfer embedding models: the nomic-embed-text / NomicBERT encoder on the CPU (WordPiece tokenizer, f32 forward pass, mean pooling), for the /v1/embeddings route (std only)"
+description = "ForgeInfer embedding models: the nomic-embed-text / NomicBERT and the BERT (bge, MiniLM, e5, gte) encoders on the CPU (WordPiece tokenizer, f32 forward pass, CLS or mean pooling), for the /v1/embeddings route (std only)"
 version.workspace = true
 edition.workspace = true
 publish.workspace = true

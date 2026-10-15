@@ -4,6 +4,7 @@ use eframe::egui::{self, RichText, ScrollArea, TextEdit, Ui};
 
 use super::widgets::*;
 use crate::app::{Action, StudioApp};
+use crate::rag;
 use crate::settings::{data_dir, find_forge, find_llama_server, EngineKind, KvMode, OverflowPolicy};
 use crate::theme;
 
@@ -257,14 +258,24 @@ fn documents(app: &mut StudioApp, ui: &mut Ui) {
             }
         }
         muted(ui, "It is announced to the engine when the chat model loads (the next one you load) but its weights are read only when the first long file is searched: then onto the graphics card if 700 MB are free, else onto the processor (slower). A chat that never attaches a long file never loads it.");
+        let profile = rag::profile_for(&app.retrieval_model_path().and_then(|p| p.file_name().map(|n| n.to_string_lossy().to_string())).unwrap_or_default());
         ui.horizontal(|ui| {
             ui.label("Passages per question");
             ui.add(egui::DragValue::new(&mut app.settings.docs_limit).range(1..=10));
             ui.add_space(12.0);
             ui.label("Minimum score");
-            ui.add(egui::DragValue::new(&mut app.settings.docs_threshold).range(0.0..=1.0).speed(0.01).fixed_decimals(2));
+            let auto = app.settings.docs_threshold_auto;
+            if auto {
+                ui.label(RichText::new(format!("{:.2}", profile.threshold)).strong());
+            } else {
+                ui.add(egui::DragValue::new(&mut app.settings.docs_threshold).range(0.0..=1.0).speed(0.01).fixed_decimals(2));
+            }
+            if ui.checkbox(&mut app.settings.docs_threshold_auto, format!("automatic (suits {})", profile.family)).changed() && auto {
+                // switching to a number of one's own: start from the figure that was in use
+                app.settings.docs_threshold = profile.threshold;
+            }
         });
-        muted(ui, "A passage counts when the cosine of its vector and the question's is above the minimum (LM Studio's defaults are 3 passages and 0.5, for texts embedded without the task prefixes that nomic-embed-text was trained with; with them related passages score 0.65 and up, unrelated ones stay below 0.56).");
+        muted(ui, "A passage counts when the cosine of its vector and the question's is above the minimum. Models spread the cosine very differently, so automatic picks the figure measured for the model in use: 0.60 for nomic-embed-text (with its task prefixes related passages score 0.63 and up, an unrelated question's best passage up to 0.64), 0.58 for bge, 0.20 for MiniLM (related from 0.23, unrelated up to 0.16), 0.82 for e5 and 0.78 for gte, which put every pair of texts between 0.7 and 0.9 so that the order of the passages says more than the minimum. LM Studio's defaults are 3 passages and 0.5.");
         ui.add_space(4.0);
         ui.checkbox(&mut app.settings.docs_summarize, "Read the whole file for a request to summarize it");
         muted(ui, "Searching by meaning cannot summarize a file. With this on, a request such as \"summarize this\" or \"what is this about\" on files that are searched has the chat model read them part by part (a part is about 14,000 characters at most) and summarize each one, which takes about five seconds a part; the answer is then written from those summaries, which are kept for the next request. Off: the answer comes from the opening of the file and the passages that match best.");

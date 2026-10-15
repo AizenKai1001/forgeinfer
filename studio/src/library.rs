@@ -33,13 +33,14 @@ pub struct ModelEntry {
 /// Architectures the ForgeInfer engine can run today.
 pub const FORGE_ARCHS: [&str; 4] = ["llama", "qwen2", "qwen3", "qwen35"];
 
-/// Embedding models the engine serves on `/v1/embeddings` (no chat: they turn text into vectors).
-pub const EMBEDDING_ARCHS: [&str; 1] = ["nomic-bert"];
+/// Embedding models the engine serves on `/v1/embeddings` (no chat: they turn text into vectors): `nomic-bert` (nomic-embed-text) and `bert` (bge, MiniLM, e5, gte ...).
+pub const EMBEDDING_ARCHS: [&str; 2] = ["nomic-bert", "bert"];
 
 impl ModelEntry {
-    /// An embedding model: Studio shows an embedding playground for it instead of a chat.
+    /// An embedding model: Studio shows an embedding playground for it instead of a chat. A `bert` file counts only with the WordPiece vocabulary the engine reads (bge-m3 and the multilingual
+    /// e5 models are BERT-shaped too, but use a SentencePiece vocabulary).
     pub fn is_embedding(&self) -> bool {
-        !self.projector && self.error.is_none() && EMBEDDING_ARCHS.contains(&self.arch.as_str())
+        !self.projector && self.error.is_none() && EMBEDDING_ARCHS.contains(&self.arch.as_str()) && (self.arch != "bert" || self.tokenizer == "bert")
     }
 
     pub fn forge_supported(&self) -> bool {
@@ -58,9 +59,15 @@ impl ModelEntry {
             // WordPiece tokenizer, read by the engine's embedding encoder
             return None;
         }
+        if self.arch == "bert" {
+            return Some(format!(
+                "this BERT model has a \"{}\" vocabulary; only the WordPiece ones (bge-*-en, MiniLM, e5-*-v2, gte, nomic-embed-text) are supported yet",
+                if self.tokenizer.is_empty() { "unknown" } else { &self.tokenizer }
+            ));
+        }
         if !FORGE_ARCHS.contains(&self.arch.as_str()) {
             return Some(format!(
-                "the \"{}\" architecture is not supported yet (llama, qwen2, qwen3 and qwen3.5 are, and nomic-embed-text embedding models)",
+                "the \"{}\" architecture is not supported yet (llama, qwen2, qwen3 and qwen3.5 are, and embedding models of the nomic-embed-text and BERT families: bge, MiniLM, e5, gte)",
                 self.arch
             ));
         }
@@ -535,6 +542,10 @@ mod tests {
 
     /// A tiny valid GGUF v3 file: arch "llama", 2 layers, one F32 tensor per kind.
     fn tiny_gguf(path: &Path, arch: &str) {
+        tiny_gguf_with_tokenizer(path, arch, "gpt2");
+    }
+
+    fn tiny_gguf_with_tokenizer(path: &Path, arch: &str, tokenizer: &str) {
         let mut b: Vec<u8> = Vec::new();
         b.extend(b"GGUF");
         b.extend(3u32.to_le_bytes());
@@ -547,7 +558,7 @@ mod tests {
         b.extend(5u64.to_le_bytes());
         put_str(&mut b, "tokenizer.ggml.model");
         b.extend(8u32.to_le_bytes());
-        put_str(&mut b, "gpt2");
+        put_str(&mut b, tokenizer);
         put_str(&mut b, "general.architecture");
         b.extend(8u32.to_le_bytes());
         put_str(&mut b, arch);
@@ -619,6 +630,21 @@ mod tests {
         assert!(nomic.forge_supported());
         let chat = found.iter().find(|e| e.arch == "qwen3").unwrap();
         assert!(!chat.is_embedding());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_bert_model_is_an_embedding_model_only_with_a_wordpiece_vocabulary() {
+        let dir = temp_dir("bert");
+        tiny_gguf_with_tokenizer(&dir.join("bge-small.gguf"), "bert", "bert");
+        std::fs::create_dir_all(dir.join("m3")).unwrap();
+        tiny_gguf_with_tokenizer(&dir.join("m3").join("bge-m3.gguf"), "bert", "t5");
+        let found = scan(&[dir.clone()], false);
+        let small = found.iter().find(|e| e.path.ends_with("bge-small.gguf")).unwrap();
+        assert!(small.is_embedding() && small.forge_supported(), "{:?}", small.forge_issue());
+        let m3 = found.iter().find(|e| e.path.ends_with("bge-m3.gguf")).unwrap();
+        assert!(!m3.is_embedding() && !m3.forge_supported());
+        assert!(m3.forge_issue().unwrap().contains("WordPiece"), "{:?}", m3.forge_issue());
         let _ = std::fs::remove_dir_all(&dir);
     }
 

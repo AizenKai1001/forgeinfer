@@ -12,8 +12,10 @@ pub const CHUNK_CHARS: usize = 1800;
 pub const OVERLAP_CHARS: usize = 350;
 
 /// Below the minimum score a passage does not count as an answer, but a question that matches nothing well (a request for a summary, a vague one) still gets the nearest passages, marked as weak matches, when
-/// they score at least this much: the model decides whether they help.
-pub const WEAK_FLOOR: f32 = 0.4;
+/// they score at least this much (0.4 for a minimum of 0.6): the model decides whether they help.
+pub fn weak_floor(threshold: f32) -> f32 {
+    (threshold - 0.2).max(0.0)
+}
 
 /// The share of the free context the files may take before they are searched instead of sent whole (LM Studio's 70 percent).
 const INLINE_SHARE: f32 = 0.7;
@@ -477,13 +479,61 @@ pub fn summaries_prompt(parts: &[(String, (u32, u32), String)], question: &str) 
 /// size hardly matters: 16 or 32 passages are one pass either way).
 const BATCH: usize = 16;
 
-/// The prefixes an embedding model wants in front of the passages it indexes and the questions it is asked (nomic-embed-text was trained with `search_document: ` and `search_query: `; other models use none).
-pub fn prefixes_for(model_file: &str) -> (&'static str, &'static str) {
-    if model_file.to_lowercase().contains("nomic") {
-        ("search_document: ", "search_query: ")
+/// What an embedding model needs from the search around it, known from its file name: the prefixes it was trained with, and the minimum cosine at which a passage counts as an answer. Models differ in
+/// how they spread the cosine (measured on this project's own documentation cut into passages, 14 questions with a known answer and 6 about something else entirely; `related` is the best passage that
+/// holds the answer, `unrelated` the best one for a question about bread or football):
+///   nomic-embed-text (with its prefixes)  related 0.63 to 0.73, unrelated up to 0.64     minimum 0.60
+///   bge-*-en-v1.5                         related 0.60 to 0.74, unrelated up to 0.57     minimum 0.58
+///   all-MiniLM-L6-v2                      related 0.23 to 0.48, unrelated up to 0.16     minimum 0.20
+///   e5-*-v2 (with its prefixes)           related 0.81 to 0.88, unrelated up to 0.81     minimum 0.82
+///   gte-*                                 related 0.78 to 0.88, unrelated up to 0.77     minimum 0.78
+/// (e5 and gte hardly separate the two: for them the order of the passages says more than the minimum.)
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Profile {
+    /// the family, for the settings page
+    pub family: &'static str,
+    /// in front of every passage that is indexed
+    pub doc_prefix: &'static str,
+    /// in front of the question
+    pub query_prefix: &'static str,
+    pub threshold: f32,
+}
+
+/// The profile of the embedding model in this file (an unknown model: no prefixes and the minimum that suits nomic-embed-text, 0.6).
+pub fn profile_for(model_file: &str) -> Profile {
+    let name = model_file.to_lowercase();
+    let e5 = name.starts_with("e5") || ["-e5", "_e5", " e5", "e5-", "e5_"].iter().any(|k| name.contains(k));
+    if name.contains("nomic") {
+        Profile { family: "nomic-embed-text", doc_prefix: "search_document: ", query_prefix: "search_query: ", threshold: 0.60 }
+    } else if name.contains("bge") {
+        Profile { family: "bge", doc_prefix: "", query_prefix: "", threshold: 0.58 }
+    } else if name.contains("minilm") {
+        Profile { family: "MiniLM", doc_prefix: "", query_prefix: "", threshold: 0.20 }
+    } else if e5 {
+        Profile { family: "e5", doc_prefix: "passage: ", query_prefix: "query: ", threshold: 0.82 }
+    } else if name.contains("gte") {
+        Profile { family: "gte", doc_prefix: "", query_prefix: "", threshold: 0.78 }
     } else {
-        ("", "")
+        Profile { family: "this model", doc_prefix: "", query_prefix: "", threshold: 0.60 }
     }
+}
+
+/// The example lines of the embedding playground with the task prefixes of this model: the first line is the question, the others are the passages to rank.
+pub fn sample_for(model: &str) -> String {
+    let p = profile_for(model);
+    let (q, d) = (p.query_prefix, p.doc_prefix);
+    format!("{q}What is the capital of France?
+{d}Paris is the capital and largest city of France.
+{d}The Eiffel Tower was finished in 1889 and stands in Paris.
+{d}The mitochondria is the powerhouse of the cell.
+{d}Berlin has been the capital of Germany since 1990.")
+}
+
+/// The prefixes an embedding model wants in front of the passages it indexes and the questions it is asked (nomic-embed-text was trained with `search_document: ` and `search_query: `, e5 with
+/// `passage: ` and `query: `; the others use none).
+pub fn prefixes_for(model_file: &str) -> (&'static str, &'static str) {
+    let p = profile_for(model_file);
+    (p.doc_prefix, p.query_prefix)
 }
 
 /// Search the files of a chat for a question: the files the index does not hold yet are split and embedded (`embed` turns a list of texts into their vectors), then the question is embedded and the best
@@ -537,9 +587,10 @@ pub fn search(
     let mut hits = index.search(q, limit, threshold);
     // the passages that have a word of the question that few passages have (a name, an identifier) count whatever their vectors say: one place at most when the vectors already fill the answer
     let keyword = index.lexical(question, if hits.len() >= limit { 1 } else { 2 });
-    let mut weak = hits.is_empty() && keyword.is_empty() && threshold > WEAK_FLOOR;
+    let floor = weak_floor(threshold);
+    let mut weak = hits.is_empty() && keyword.is_empty() && threshold > floor;
     if weak {
-        hits = index.search(q, limit.min(2), WEAK_FLOOR);
+        hits = index.search(q, limit.min(2), floor);
     }
     if !keyword.is_empty() {
         let mut merged: Vec<Hit> = keyword.iter().map(|&i| Hit { passage: i, score: index.vectors[i].iter().zip(q).map(|(a, b)| a * b).sum() }).collect();
@@ -815,6 +866,37 @@ mod tests {
     fn nomic_models_get_their_task_prefixes() {
         assert_eq!(prefixes_for("nomic-embed-text-v1.5.Q4_K_M.gguf"), ("search_document: ", "search_query: "));
         assert_eq!(prefixes_for("bge-small-en.gguf"), ("", ""));
+        assert_eq!(prefixes_for("e5-small-v2.Q8_0.gguf"), ("passage: ", "query: "));
+        assert_eq!(prefixes_for("multilingual-e5-small.Q8_0.gguf"), ("passage: ", "query: "));
+        assert_eq!(prefixes_for("all-MiniLM-L6-v2.Q8_0.gguf"), ("", ""));
+    }
+
+    #[test]
+    fn the_playground_sample_carries_the_prefixes_of_the_model() {
+        assert_eq!(sample_for("nomic-embed-text-v1.5"), crate::app::EMBED_SAMPLE);
+        let bge = sample_for("bge-small-en-v1.5-q8_0");
+        assert!(bge.starts_with("What is the capital of France?
+Paris is the capital") && !bge.contains("search_"));
+        let e5 = sample_for("e5-small-v2");
+        assert!(e5.starts_with("query: What is the capital of France?
+passage: Paris is") && e5.lines().count() == 5);
+    }
+
+    #[test]
+    fn every_embedding_family_has_its_own_minimum_score() {
+        let t = |f: &str| profile_for(f).threshold;
+        assert_eq!(t("nomic-embed-text-v1.5.Q4_K_M.gguf"), 0.60);
+        assert_eq!(t("bge-small-en-v1.5-q8_0.gguf"), 0.58);
+        assert_eq!(t("all-MiniLM-L6-v2.Q8_0.gguf"), 0.20);
+        assert_eq!(t("e5-small-v2.Q8_0.gguf"), 0.82);
+        assert_eq!(t("gte-small.Q8_0.gguf"), 0.78);
+        // a model we do not know keeps the figure that was the only one so far, and no prefixes
+        assert_eq!(profile_for("some-new-model.gguf"), Profile { family: "this model", doc_prefix: "", query_prefix: "", threshold: 0.60 });
+        // names that merely contain the letters
+        assert_eq!(profile_for("qwen3-embedding-0.6b.gguf").doc_prefix, "");
+        assert_eq!(profile_for("lne5ger.gguf").family, "this model");
+        // the weak matches start 0.2 below the minimum
+        assert!((weak_floor(0.6) - 0.4).abs() < 1e-6 && (weak_floor(0.2) - 0.0).abs() < 1e-6 && weak_floor(0.1) == 0.0);
     }
 
     #[test]

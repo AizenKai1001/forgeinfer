@@ -30,12 +30,13 @@ struct Pick {
     note: &'static str,
 }
 
-const PICKS: [Pick; 5] = [
+const PICKS: [Pick; 6] = [
     Pick { repo: "unsloth/Qwen3.5-4B-GGUF", file: "Qwen3.5-4B-Q4_K_M.gguf", size: 2_740_937_888, name: "Qwen3.5 4B", note: "A fast all-round chat model with a long context and an optional prediction head for faster answers. A good first model." },
     Pick { repo: "unsloth/Qwen3.5-9B-GGUF", file: "Qwen3.5-9B-Q4_K_M.gguf", size: 5_680_522_464, name: "Qwen3.5 9B", note: "The best quality that still fits an 8 GB card (with a medium context)." },
     Pick { repo: "unsloth/Qwen3.5-0.8B-GGUF", file: "Qwen3.5-0.8B-Q4_K_M.gguf", size: 532_517_120, name: "Qwen3.5 0.8B", note: "Tiny and instant: for a first try and for computers without a big graphics card." },
     Pick { repo: "unsloth/Qwen3-4B-Instruct-2507-GGUF", file: "Qwen3-4B-Instruct-2507-Q4_K_M.gguf", size: 2_497_281_120, name: "Qwen3 4B Instruct 2507", note: "Answers at once without a thinking phase." },
     Pick { repo: "nomic-ai/nomic-embed-text-v1.5-GGUF", file: "nomic-embed-text-v1.5.Q4_K_M.gguf", size: 84_106_624, name: "nomic-embed-text v1.5", note: "An embedding model: lets a chat search long PDF, Word and text files instead of sending them whole, and serves /v1/embeddings." },
+    Pick { repo: "CompendiumLabs/bge-small-en-v1.5-gguf", file: "bge-small-en-v1.5-q8_0.gguf", size: 36_806_944, name: "bge-small-en-v1.5", note: "A small English embedding model, the same job as nomic-embed-text in less than half the space: its context is 512 tokens, so a passage longer than about 350 words is cut." },
 ];
 
 /// The suggestions, shown while nothing has been searched yet.

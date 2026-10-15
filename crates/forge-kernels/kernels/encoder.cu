@@ -1,5 +1,6 @@
-// Kernels of the BERT-style embedding encoder (crates/forge-embed-gpu): the embedding gather, LayerNorm of rows, the rotary embedding of q and k, attention over the tokens of one text (no mask),
-// SwiGLU, and the pooling of the token vectors. The linear layers of the encoder are the gemm_nt_f16 and gemm_nt_res kernels of gemm.cu (y = x W^T with fp16 operands and fp32 accumulation).
+// Kernels of the BERT-style embedding encoder (crates/forge-embed-gpu): the embedding gather (with the learned positions of `bert`), LayerNorm of rows (with the bias of the matrix before it), the rotary
+// embedding of q and k (`nomic-bert`), attention over the tokens of one text (no mask), SwiGLU (`nomic-bert`) or the bias and GELU of `bert`, and the pooling of the token vectors. The linear layers of the
+// encoder are the gemm_nt_f16 and gemm_nt_res kernels of gemm.cu (y = x W^T with fp16 operands and fp32 accumulation).
 // The residual stream is fp32 (`x`), every GEMM input and output between the layers' steps is fp16; the arithmetic of the norms, the softmax and the pooling is fp32.
 //
 // Several texts go through the encoder in one pass without padding: their tokens are packed one after the other into `rows` rows. `starts` [S + 1] holds the first row of every text (and `rows` at the end),
@@ -52,11 +53,23 @@ extern "C" __global__ void __launch_bounds__(256) enc_embed(const unsigned* __re
     for (int i = threadIdx.x; i < e; i += blockDim.x) x[(size_t)blockIdx.x * e + i] = __half2float(tok_emb[(size_t)id * e + i]) + __half2float(type_row[i]);
 }
 
+// the same for `bert`: x[t] = token_embd[ids[t]] + token_types[0] + position_embd[place of the row inside its text]; `pos_emb` [ctx][e] is fp16
+extern "C" __global__ void __launch_bounds__(256) enc_embed_pos(const unsigned* __restrict__ ids, const half* __restrict__ tok_emb, const half* __restrict__ type_row, const half* __restrict__ pos_emb, const int* __restrict__ starts, const int* __restrict__ seq_of, float* __restrict__ x, int e) {
+    const unsigned id = ids[blockIdx.x];
+    const int pos = (int)blockIdx.x - starts[seq_of[blockIdx.x]];
+    for (int i = threadIdx.x; i < e; i += blockDim.x) x[(size_t)blockIdx.x * e + i] = __half2float(tok_emb[(size_t)id * e + i]) + __half2float(type_row[i]) + __half2float(pos_emb[(size_t)pos * e + i]);
+}
+
 // LayerNorm of the row blockIdx.x of x, in place, and its fp16 copy in x16 (the input of the next GEMM): y = (x - mean) / sqrt(var + eps) * w + b
-extern "C" __global__ void __launch_bounds__(256) enc_ln(float* __restrict__ x, const float* __restrict__ w, const float* __restrict__ b, half* __restrict__ x16, int e, float eps) {
+// `add` (null: nothing) is the bias of the matrix whose product was just added to x: x[i] += add[i] first (`bert` has a bias on every matrix; `nomic-bert` none)
+extern "C" __global__ void __launch_bounds__(256) enc_ln(float* __restrict__ x, const float* __restrict__ w, const float* __restrict__ b, half* __restrict__ x16, int e, float eps, const float* __restrict__ add) {
     __shared__ float sh[8];
     float* row = x + (size_t)blockIdx.x * e;
     float sum = 0.f;
+    // every thread visits the same indices in every pass of this kernel, so the bias can be added where the row is first read
+    if (add) {
+        for (int i = threadIdx.x; i < e; i += blockDim.x) row[i] += add[i];
+    }
     for (int i = threadIdx.x; i < e; i += blockDim.x) sum += row[i];
     const float mean = enc::block_sum(sum, sh) / (float)e;
     float sq = 0.f;
@@ -161,6 +174,21 @@ extern "C" __global__ void __launch_bounds__(256) enc_swiglu(const half* __restr
     if (i >= count) return;
     const float g = __half2float(gate[i]);
     out[i] = __float2half(g / (1.f + __expf(-g)) * __half2float(up[i]));
+}
+
+// y[i] += bias[i % cols] for a matrix of fp16 values with `cols` columns (the q, k, v projections of `bert`)
+extern "C" __global__ void __launch_bounds__(256) enc_bias16(half* __restrict__ y, const float* __restrict__ bias, long long count, int cols) {
+    const long long i = (long long)blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= count) return;
+    y[i] = __float2half(__half2float(y[i]) + bias[i % cols]);
+}
+
+// y[i] = gelu(y[i] + bias[i % cols]) with the exact gelu, x * Phi(x) = x / 2 * (1 + erf(x / sqrt(2))) (the feed-forward layer of `bert`)
+extern "C" __global__ void __launch_bounds__(256) enc_bias_gelu16(half* __restrict__ y, const float* __restrict__ bias, long long count, int cols) {
+    const long long i = (long long)blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= count) return;
+    const float v = __half2float(y[i]) + bias[i % cols];
+    y[i] = __float2half(0.5f * v * (1.f + erff(v * 0.70710678118654752f)));
 }
 
 // the vector of text s = blockIdx.x: the mean of its token rows of x (mean != 0) or its first row, normalised to length one; blocks of 256 threads, out [S][e]

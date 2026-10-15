@@ -938,9 +938,12 @@ impl StudioApp {
         let docs: Vec<(String, String)> = self.chat.messages.iter().filter(|m| m.by_retrieval).flat_map(|m| m.attachments.iter().map(|a| (a.name.clone(), a.text.clone()))).collect();
         let chat_id = self.chat.id.clone();
         let index = self.doc_index.remove(&chat_id).unwrap_or_default();
-        let (limit, threshold) = (self.settings.docs_limit.max(1) as usize, self.settings.docs_threshold);
+        let limit = self.settings.docs_limit.max(1) as usize;
         let file = self.engine.current().and_then(|l| l.embedding.clone()).map(|p| p.file_name().map(|s| s.to_string_lossy().to_string()).unwrap_or_default()).unwrap_or_default();
-        let (doc_prefix, query_prefix) = rag::prefixes_for(&file);
+        // the prefixes the model was trained with and, unless the user chose a number, the minimum score that suits how this model spreads the cosine
+        let profile = rag::profile_for(&file);
+        let threshold = if self.settings.docs_threshold_auto { profile.threshold } else { self.settings.docs_threshold };
+        let (doc_prefix, query_prefix) = (profile.doc_prefix, profile.query_prefix);
         let progress = rag::Progress::default();
         // a request to summarize files that are too long to read at once: the chat model reads them part by part and summarizes each (the passages that best match such a request are a poor summary)
         let summary_ctx = if self.settings.docs_summarize && rag::wants_summary(&question) { Some(self.effective_ctx() as usize) } else { None };

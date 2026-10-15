@@ -1,5 +1,7 @@
-//! Tests that need a GPU and a real embedding model: set FORGE_EMBED_GGUF to a nomic-embed-text GGUF file (FORGE_EMBED_GPU: the card's number, default 0); without them they print "skipped".
-//! The golden vectors are those of the CPU tests (crates/forge-embed/tests/golden), made by tools/ref_nomic_bert.py (numpy) from the same file.
+//! Tests that need a GPU and a real embedding model: set FORGE_EMBED_GGUF to an embedding GGUF file (FORGE_EMBED_GPU: the card's number, default 0); without them they print "skipped".
+//! The golden vectors are those of the CPU tests (crates/forge-embed/tests/golden), made by tools/ref_nomic_bert.py (numpy) from the nomic-embed-text file, or by tools/ref_hf_bert.py (Hugging Face) for a
+//! BERT-family model: FORGE_EMBED_GOLDEN is the name of the golden file (default: the nomic one; bge-small-en-v1.5 in f32: FORGE_EMBED_GOLDEN=bge_small_en_v15_hf.json). A quantized file of a BERT model
+//! cannot meet the CPU-exact 0.99999 checks of the lazy encoder test: use the f32 file there.
 
 use forge_core::Json;
 use forge_embed::{cosine, Embedder, Encode};
@@ -23,7 +25,8 @@ fn model() -> Option<GpuEmbedder> {
 }
 
 fn golden() -> Vec<(String, Vec<f32>)> {
-    let g = Json::from_file(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../forge-embed/tests/golden/nomic_v15_q4km.json")).expect("the golden file");
+    let name = std::env::var("FORGE_EMBED_GOLDEN").unwrap_or_else(|_| "nomic_v15_q4km.json".to_string());
+    let g = Json::from_file(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../forge-embed/tests/golden").join(name)).expect("the golden file");
     g["cases"]
         .as_array()
         .expect("cases")
@@ -39,7 +42,7 @@ fn golden() -> Vec<(String, Vec<f32>)> {
 fn vectors_match_the_reference() {
     let Some(g) = model() else { return };
     let cases = golden();
-    assert!(cases.len() >= 20);
+    assert!(cases.len() >= 8);
     let mut worst = 1.0f32;
     for (text, want) in &cases {
         let got = g.embed_many(&[text.as_str()]).expect("embeds").remove(0).vector;
@@ -70,10 +73,17 @@ fn a_pack_gives_the_vectors_of_the_single_texts() {
 #[test]
 fn texts_that_need_several_passes_keep_their_order() {
     let Some(g) = model() else { return };
-    // three texts of the full context (more rows than one pass takes) and short ones between them
-    let long: String = (0..g.config().ctx).map(|i| format!("word{} ", i % 97)).collect();
-    let long2: String = (0..g.config().ctx).map(|i| format!("thing{} ", i % 89)).collect();
-    let texts = ["a short one", long.as_str(), "another short text", long2.as_str(), long.as_str(), "the end"];
+    // texts of the full context, enough of them for more rows than one pass takes (3 of 2048 tokens for nomic-embed-text, 10 of 512 for a BERT model), and short ones between them
+    let ctx = g.config().ctx;
+    let longs: Vec<String> = (0..g.rows_max() / ctx + 2).map(|k| (0..ctx).map(|i| format!("word{} ", (i + 13 * k) % (97 - k))).collect()).collect();
+    let mut texts: Vec<&str> = vec!["a short one"];
+    for (k, l) in longs.iter().enumerate() {
+        texts.push(l);
+        if k == 0 {
+            texts.push("another short text");
+        }
+    }
+    texts.push("the end");
     let pack = g.embed_many(&texts).expect("embeds");
     assert_eq!(pack.len(), texts.len());
     assert!(pack.iter().map(|e| e.tokens).sum::<usize>() > g.rows_max());
@@ -94,9 +104,9 @@ fn the_lazy_encoder_loads_on_the_first_request_and_falls_back_to_the_cpu_without
     };
     // nothing is loaded at first: the configuration comes from the metadata
     let lazy = LazyEncoder::new(&p, Place::Auto, 0).expect("the metadata reads");
-    assert_eq!(lazy.dim(), 768);
-    assert!(lazy.backend().contains("first use"), "{}", lazy.backend());
     let want = golden();
+    assert_eq!(lazy.dim(), want[0].1.len());
+    assert!(lazy.backend().contains("first use"), "{}", lazy.backend());
     let first = lazy.embed_many(&[want[0].0.as_str()]).expect("the first request loads the model and embeds");
     assert!(!lazy.backend().contains("first use"), "{}", lazy.backend());
     assert!(cosine(&first[0].vector, &want[0].1) > 0.999, "the lazily loaded model gives the reference vector");
@@ -106,7 +116,9 @@ fn the_lazy_encoder_loads_on_the_first_request_and_falls_back_to_the_cpu_without
     let r = cpu.embed_many(&[want[0].0.as_str()]).unwrap();
     std::env::remove_var("FORGE_EMBED_MIN_FREE_MB");
     assert!(cpu.backend().starts_with("CPU"), "{}", cpu.backend());
-    assert!(cosine(&r[0].vector, &want[0].1) > 0.99999);
+    // the CPU copy is f32 and so exact for an f32 file; a quantized file differs from an f32 reference by its own rounding (FORGE_EMBED_MIN_COSINE=0.999 for those)
+    let min: f32 = std::env::var("FORGE_EMBED_MIN_COSINE").ok().and_then(|v| v.parse().ok()).unwrap_or(0.99999);
+    assert!(cosine(&r[0].vector, &want[0].1) > min);
 }
 
 #[test]

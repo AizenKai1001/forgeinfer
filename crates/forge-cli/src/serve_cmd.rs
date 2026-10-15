@@ -12,7 +12,7 @@
 //!   --no-speculate no speculative decoding at all (neither the MTP head nor the lookup);
 //!   --threads      CPU threads for the feed-forward layers kept in host memory; --host-ffn: force those layers (default: chosen automatically when the model does not fit the GPU);
 //!   --vram-reserve MiB of GPU memory left free for other programs;
-//!   --embedding-model FILE  an embedding model (a nomic-embed-text GGUF) served on /v1/embeddings next to the chat model; `forge serve nomic-embed-text.gguf` alone serves only the embeddings;
+//!   --embedding-model FILE  an embedding model (a GGUF of nomic-embed-text or of the BERT family: bge, MiniLM, e5, gte) served on /v1/embeddings next to the chat model; `forge serve nomic-embed-text.gguf` alone serves only the embeddings;
 //!   --embedding-device cpu|gpu|auto  where the embedding model runs (default: the GPU when it is served alone and one works, the CPU next to a chat model so that the chat engine keeps the card to itself; --device picks the GPU); --embedding-alias NAME: its name in /v1/models.
 
 use forge_chat::ChatFormat;

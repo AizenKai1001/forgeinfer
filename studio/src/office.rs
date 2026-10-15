@@ -1801,6 +1801,21 @@ Second\tab line\line broken \{braces\} \\ end.\par
             let _ = cell_styles(&s);
             let _ = html_text(&s);
             let _ = xml_text(&s, "w:t", "w:p");
+            let _ = notes_text(&s, "w:footnote");
+            let _ = decode_html(s.as_bytes());
+            let _ = repeat_headers(&s);
+        }
+        // number format codes: pieces of the language in random order, with values of every size
+        let code_pieces = ["0", "#", "?", ".", ",", "%", "E+", "E-", "E", "\"", "\\", "_", "*", "[", "]", "[$", "-407", ";", "$", "(", ")", " ", "-", "/", "x", "@", "General", "[Red]", "[>100]", "\u{20ac}"];
+        let values = [0.0, -0.0, 1.0, -1.5, 0.256, 1234567.891, 1e-9, 1e21, -1e300, f64::MAX, f64::MIN_POSITIVE, f64::NAN, f64::INFINITY];
+        for _ in 0..rounds.min(100_000) {
+            let mut code = String::new();
+            for _ in 0..(next() % 12) {
+                code.push_str(code_pieces[(next() as usize) % code_pieces.len()]);
+            }
+            for x in values {
+                let _ = format_number(x, &code);
+            }
         }
     }
 
